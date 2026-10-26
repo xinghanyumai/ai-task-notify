@@ -23,10 +23,12 @@
 from __future__ import annotations
 
 import copy
+import gc
 import os
 import re
 import subprocess
 import sys
+import threading
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -34,6 +36,7 @@ from pathlib import Path
 from wbn import anim, channels, config, events, pipeline, render, store, theme
 from wbn import widgets as W
 from wbn.theme import TS, S
+from wbn.tokens import DIM, MOTION, SP, STK
 
 APP_TITLE = "AI 任务通知"
 APP_VER = "个人版 v1.2"
@@ -150,7 +153,7 @@ class App:
         self.content_field = None
         self.preview_cv = None
         self.q_check = None
-        self._preview_w = S(252)
+        self._preview_w = DIM.PREVIEW_W
         self._dirty = False
 
         # 通道页的三个滚动宿主，切页后必须置空
@@ -174,9 +177,33 @@ class App:
         self.dirty_dot = None
         self.dirty_lbl = None
 
+        # 网络动作的按钮引用：加载态要落在「刚被点的那个按钮」上
+        self.ch_test_btn = None
+        self.ch_openid_btn = None
+        self.ch_why_lbl = None
+        self.test_btn = None
+        self._bg_busy = False
+
         self._setup_window()
         self._build_all()
         self._announce_auto()
+        self._relax_gc()
+
+    @staticmethod
+    def _relax_gc() -> None:
+        """放宽分代回收阈值。
+
+        实测：界面建好之后什么都不做，主线程仍会在启动约 300ms 后停顿一次
+        275~310ms。关掉 GC 做对照，同样场景最大停顿从 290ms 掉到 25ms，
+        所以这笔开销是回收，不是 Tk。这一版界面有上万个 Python 对象
+        （每个自绘控件都带画布、字体、闭包），第二代一到期就要全扫一遍。
+
+        这里只放宽阈值，不做 `gc.freeze()`：冻结能把启动那一次消掉，但之后
+        每次切页新建的那批控件照样会被扫，而且冻结之后启动页的控件再也不会
+        被回收（有界泄漏）。放宽阈值是零成本的——对象存活时间本来就长，
+        频繁扫第二代只会白烧 CPU。
+        """
+        gc.set_threshold(20000, 50, 200)
 
     def _pick_channel(self) -> str:
         """默认打开哪个通道：优先「已启用且配好」的那条，否则第一个自建通道。"""
@@ -193,8 +220,8 @@ class App:
 
     def _setup_window(self) -> None:
         self.root.title(APP_TITLE)
-        self.root.geometry(f"{S(1080)}x{S(760)}")
-        self.root.minsize(S(940), S(640))
+        self.root.geometry(f"{DIM.WIN_W}x{DIM.WIN_H}")
+        self.root.minsize(DIM.WIN_MIN_W, DIM.WIN_MIN_H)
         self.root.configure(bg=self.pal.bg_app)
         self._set_icon()
 
@@ -285,57 +312,57 @@ class App:
 
     def _build_sidebar(self) -> None:
         p = self.pal
-        side = tk.Frame(self.root, bg=p.sidebar, width=S(212))
+        side = tk.Frame(self.root, bg=p.sidebar, width=DIM.SIDEBAR_W)
         side.pack(side="left", fill="y")
         side.pack_propagate(False)
-        tk.Frame(self.root, bg=p.border, width=S(1)).place(
-            x=S(211), y=0, relheight=1)
+        tk.Frame(self.root, bg=p.border, width=STK.rule).place(
+            x=DIM.SIDEBAR_W - STK.rule, y=0, relheight=1)
 
         # -- 品牌区
         brand = tk.Frame(side, bg=p.sidebar)
-        brand.pack(fill="x", padx=S(16), pady=(S(18), S(14)))
-        mark = tk.Canvas(brand, width=S(32), height=S(32), bg=p.sidebar,
+        brand.pack(fill="x", padx=SP.lg, pady=(SP.lg, SP.lg))
+        mark = tk.Canvas(brand, width=DIM.LOGO, height=DIM.LOGO, bg=p.sidebar,
                          highlightthickness=0, bd=0)
         mark.pack(side="left")
-        W.round_rect_grad(mark, 0, 0, S(32), S(32), S(10),
+        W.round_rect_grad(mark, 0, 0, DIM.LOGO, DIM.LOGO, S(10),
                           p.brand_top, p.brand_bottom)
-        W.draw_icon(mark, "bell", S(8), S(8), S(16), p.on_brand, S(1.8))
+        W.draw_icon(mark, "bell", SP.sm, SP.sm, DIM.ICON, p.on_brand, STK.icon)
 
         titles = tk.Frame(brand, bg=p.sidebar)
-        titles.pack(side="left", padx=(S(10), 0))
+        titles.pack(side="left", padx=(SP.sm, 0))
         tk.Label(titles, text=APP_TITLE, bg=p.sidebar, fg=p.text,
-                 font=theme.font(self.root, 11, "bold")).pack(anchor="w")
+                 font=theme.font(self.root, TS["section"], "bold")).pack(anchor="w")
         tk.Label(titles, text=APP_VER, bg=p.sidebar, fg=p.text_tertiary,
                  font=theme.font(self.root, TS["micro"])).pack(
-            anchor="w", pady=(S(1), 0))
+            anchor="w", pady=(SP.xxs, 0))
 
-        tk.Frame(side, bg=p.border, height=1).pack(fill="x", padx=S(16))
+        tk.Frame(side, bg=p.border, height=STK.rule).pack(fill="x", padx=SP.lg)
 
         # -- 导航：竖脊 + 节点
         navwrap = tk.Frame(side, bg=p.sidebar)
-        navwrap.pack(fill="x", pady=(S(8), 0))
-        self.nav_rail = W.NavRail(navwrap, p, bg=p.sidebar, width=24)
+        navwrap.pack(fill="x", pady=(SP.sm, 0))
+        self.nav_rail = W.NavRail(navwrap, p, bg=p.sidebar, width=DIM.NAV_RAIL_W)
         self.nav_rail.pack(side="left", fill="y")
 
         nav = tk.Frame(navwrap, bg=p.sidebar)
-        nav.pack(side="left", fill="both", expand=True, padx=(0, S(8)))
+        nav.pack(side="left", fill="both", expand=True, padx=(0, SP.sm))
         for key, label, icon, _desc, gap in PAGES:
             item = W.NavItem(nav, p, key, label, icon, self._show_page,
-                             bg=p.sidebar, height=38)
-            item.pack(fill="x", pady=S(1))
+                             bg=p.sidebar, height=DIM.NAV_ITEM_H)
+            item.pack(fill="x", pady=SP.xxs)
             self.nav_items[key] = item
             self.nav_rail.add(item, gap_before=gap)
         anim.later(side, 40, self.nav_rail.repaint)
 
         # -- 底部：接入状态
         foot = tk.Frame(side, bg=p.sidebar)
-        foot.pack(side="bottom", fill="x", padx=S(16), pady=(0, S(14)))
-        tk.Frame(foot, bg=p.border, height=1).pack(fill="x", pady=(0, S(10)))
+        foot.pack(side="bottom", fill="x", padx=SP.lg, pady=(0, SP.lg))
+        tk.Frame(foot, bg=p.border, height=STK.rule).pack(fill="x", pady=(0, SP.sm))
 
         installed = self._hooks_installed()
         state = tk.Frame(foot, bg=p.sidebar)
         state.pack(fill="x")
-        dot = tk.Canvas(state, width=S(10), height=S(14), bg=p.sidebar,
+        dot = tk.Canvas(state, width=DIM.DOT_W, height=DIM.DOT_H, bg=p.sidebar,
                         highlightthickness=0, bd=0)
         dot.pack(side="left")
         color = p.success if installed else p.warning
@@ -343,13 +370,13 @@ class App:
         tk.Label(state, text="已接入宿主" if installed else "未接入宿主",
                  bg=p.sidebar, fg=p.text_secondary,
                  font=theme.font(self.root, TS["small"])).pack(
-            side="left", padx=(S(2), 0))
+            side="left", padx=(SP.xxs, 0))
 
         tip = ("任务结束时自动推送" if installed
                else "运行 install.py 完成接入")
         tk.Label(foot, text=tip, bg=p.sidebar, fg=p.text_tertiary,
                  font=theme.font(self.root, TS["micro"])).pack(
-            anchor="w", pady=(S(3), 0))
+            anchor="w", pady=(SP.xs, 0))
 
     def _build_topbar(self) -> None:
         """顶栏 = 一句关于当前配置的陈述句，不是页面标题。
@@ -358,36 +385,38 @@ class App:
         放全局状态；页面自身的身份由左侧高亮的节点和页面第一个分节说明。
         """
         p = self.pal
-        bar = tk.Frame(self.main, bg=p.bg_app, height=S(56))
+        bar = tk.Frame(self.main, bg=p.bg_app, height=DIM.TOPBAR_H)
         bar.pack(fill="x")
         bar.pack_propagate(False)
 
         right = tk.Frame(bar, bg=p.bg_app)
-        right.pack(side="right", padx=(0, S(24)))
+        right.pack(side="right", padx=(0, SP.xl))
         W.Segmented(right, p, THEME_OPTIONS, self.theme_mode,
                     command=self._switch_theme, bg=p.bg_app,
-                    height=26, font_size=TS["micro"]).pack(side="left")
+                    height=DIM.SEG_H, font_size=TS["micro"]).pack(side="left")
 
-        tk.Frame(right, bg=p.border, width=1, height=S(16)).pack(
-            side="left", padx=S(14))
+        tk.Frame(right, bg=p.border, width=STK.rule,
+                 height=DIM.DIVIDER_V_H).pack(
+            side="left", padx=SP.lg)
         self.master_switch = W.Switch(right, p, bool(self.cfg.get("enabled", True)),
                                       command=self._on_master, bg=p.bg_app)
         self.master_switch.pack(side="right")
         self.master_lbl = tk.Label(right, text="", bg=p.bg_app,
                                    font=theme.font(self.root, TS["small"]))
-        self.master_lbl.pack(side="right", padx=(0, S(8)))
+        self.master_lbl.pack(side="right", padx=(0, SP.sm))
 
         # 左侧必须 expand，宽度由 packer 决定；否则宽度会跟着文字长度变，
         # 省略计算就会陷入「越省越窄、越窄越省」的死循环。
         left = tk.Frame(bar, bg=p.bg_app)
-        left.pack(side="left", fill="both", expand=True, padx=(S(24), S(12)))
-        self.chain_dot = tk.Canvas(left, width=S(10), height=S(16), bg=p.bg_app,
+        left.pack(side="left", fill="both", expand=True, padx=(SP.xl, SP.md))
+        self.chain_dot = tk.Canvas(left, width=DIM.DOT_W, height=DIM.DOT_H,
+                                   bg=p.bg_app,
                                    highlightthickness=0, bd=0)
         self.chain_dot.pack(side="left")
         self.chain_lbl = tk.Label(left, text="", bg=p.bg_app, fg=p.text,
                                   font=theme.font(self.root, TS["body"]),
                                   anchor="w", justify="left")
-        self.chain_lbl.pack(side="left", padx=(S(2), 0))
+        self.chain_lbl.pack(side="left", padx=(SP.xxs, 0))
         left.bind("<Configure>", self._fit_chain)
 
         self._paint_master()
@@ -472,35 +501,35 @@ class App:
 
     def _build_footer(self) -> None:
         p = self.pal
-        foot = tk.Frame(self.main, bg=p.bg_card, height=S(58))
+        foot = tk.Frame(self.main, bg=p.bg_card, height=DIM.FOOTER_H)
         foot.pack(fill="x", side="bottom")
         foot.pack_propagate(False)
-        tk.Frame(foot, bg=p.border, height=1).pack(side="top", fill="x")
+        tk.Frame(foot, bg=p.border, height=STK.rule).pack(side="top", fill="x")
 
         self.save_btn = W.Button(foot, "保存配置", p, command=self.on_save,
-                                 variant="primary", min_width=S(112), height=34)
-        self.save_btn.pack(side="right", padx=(S(8), S(24)), pady=S(12))
-        W.Button(foot, "发送测试", p, command=self.on_test,
-                 variant="secondary", min_width=S(96), height=34).pack(
-            side="right", pady=S(12))
+                                 variant="primary", min_width=DIM.BTN_MIN_W)
+        self.save_btn.pack(side="right", padx=(SP.sm, SP.xl), pady=SP.md)
+        self.test_btn = W.Button(foot, "发送测试", p, command=self.on_test,
+                                 variant="secondary", min_width=DIM.BTN_MIN_W_SM)
+        self.test_btn.pack(side="right", pady=SP.md)
 
         # 左：保存状态。这是真实信息（改动落盘没有），不是装饰。
         box = tk.Frame(foot, bg=p.bg_card)
-        box.pack(side="left", padx=(S(20), 0), pady=S(12))
-        self.dirty_dot = tk.Canvas(box, width=S(8), height=S(16), bg=p.bg_card,
+        box.pack(side="left", padx=(SP.xl, 0), pady=SP.md)
+        self.dirty_dot = tk.Canvas(box, width=SP.sm, height=DIM.DOT_H, bg=p.bg_card,
                                    highlightthickness=0, bd=0)
         self.dirty_dot.pack(side="left")
         self.dirty_lbl = tk.Label(box, text="", bg=p.bg_card,
                                   fg=p.text_tertiary,
                                   font=theme.font(self.root, TS["small"]))
-        self.dirty_lbl.pack(side="left", padx=(S(4), 0))
+        self.dirty_lbl.pack(side="left", padx=(SP.xs, 0))
 
-        W.Button(foot, "日志", p, command=self.on_open_logs, variant="ghost",
-                 font_size=TS["small"], height=30).pack(
-            side="left", padx=(S(16), 0), pady=S(14))
-        W.Button(foot, "配置目录", p, command=self.on_open_root, variant="ghost",
-                 font_size=TS["small"], height=30).pack(
-            side="left", padx=S(2), pady=S(14))
+        W.Button(foot, "日志", p, command=self.on_open_logs,
+                 variant="ghost").pack(
+            side="left", padx=(SP.lg, 0), pady=SP.lg)
+        W.Button(foot, "配置目录", p, command=self.on_open_root,
+                 variant="ghost").pack(
+            side="left", padx=SP.xxs, pady=SP.lg)
         self._paint_dirty()
 
     def _mark_dirty(self) -> None:
@@ -631,22 +660,22 @@ class App:
         """
         if self.current_page == "channels":
             if self.ch_list_sc is not None:
-                self.ch_list_sc.slide_in(dy=8, duration=180)
+                self.ch_list_sc.slide_in(dy=SP.sm, duration=MOTION.base)
             if self.ch_form_sc is not None:
-                self.ch_form_sc.slide_in(dx=14, dy=3, duration=200)
+                self.ch_form_sc.slide_in(dx=SP.md, dy=SP.xxs, duration=MOTION.base)
         elif self.page_sc is not None:
-            self.page_sc.slide_in(dy=8, duration=180)
+            self.page_sc.slide_in(dy=SP.sm, duration=MOTION.base)
 
     def _on_content_conf(self, e) -> None:
         """窄窗口下的尺寸适配。桌面程序没有断点，只有「别撑破」。"""
         if e.width <= 1:
             return
         if self.current_page == "channels" and self.left_col is not None:
-            w = max(S(232), min(S(276), int(e.width * 0.30)))
+            w = max(DIM.LIST_COL_MIN, min(DIM.LIST_COL_MAX, int(e.width * 0.30)))
             if abs(self.left_col.winfo_width() - w) > S(6):
                 self.left_col.configure(width=w)
         elif self.current_page == "template" and self.preview_cv is not None:
-            w = max(S(226), min(S(272), int(e.width * 0.34)))
+            w = max(DIM.PREVIEW_MIN, min(DIM.PREVIEW_MAX, int(e.width * 0.34)))
             if abs(w - self._preview_w) > S(6):
                 self._preview_w = w
                 try:
@@ -670,30 +699,30 @@ class App:
         """
         p = self.pal
         row = tk.Frame(parent, bg=bg)
-        row.pack(fill="x", pady=(S(8), S(10)))
+        row.pack(fill="x", pady=(SP.sm, SP.sm))
         tk.Label(row, text=text, bg=bg, fg=p.text_tertiary,
                  font=theme.font(self.root, TS["micro"])).pack(side="left")
-        tk.Frame(row, bg=p.border, height=1).pack(
-            side="left", fill="x", expand=True, padx=(S(10), 0))
+        tk.Frame(row, bg=p.border, height=STK.rule).pack(
+            side="left", fill="x", expand=True, padx=(SP.sm, 0))
 
     def _para(self, parent, text: str, bg: str, fg: str, size: int | None = None,
               weight: str = "normal", pady: int = 0, mono: bool = False):
         txt = W.Paragraph(parent, self.pal, text, bg, fg,
                           size=size or TS["small"], mono=mono)
-        txt.pack(fill="x", pady=S(pady))
+        txt.pack(fill="x", pady=pady)
         return txt
 
     def _bullet(self, parent, text: str, bg: str) -> None:
         p = self.pal
         row = tk.Frame(parent, bg=bg)
-        row.pack(fill="x", pady=S(3))
+        row.pack(fill="x", pady=SP.xs)
         dot = tk.Canvas(row, width=S(12), height=S(18), bg=bg,
                         highlightthickness=0, bd=0)
         dot.pack(side="left", anchor="n")
         dot.create_oval(S(3), S(7), S(7), S(11),
                         fill=p.text_tertiary, outline=p.text_tertiary)
         W.Paragraph(row, p, text, bg, p.text_secondary,
-                    size=TS["small"], spacing=2).pack(
+                    size=TS["small"], spacing=SP.xxs).pack(
             side="left", fill="x", expand=True)
 
     def _form_field(self, parent, label: str, value: str, hint: str = "",
@@ -703,7 +732,7 @@ class App:
         ground = bg or p.bg_app
         cell = tk.Frame(parent, bg=ground)
         head = tk.Frame(cell, bg=ground)
-        head.pack(fill="x", pady=(0, S(5)))
+        head.pack(fill="x", pady=(0, SP.xs))
         tk.Label(head, text=label, bg=ground, fg=p.text_secondary,
                  font=theme.font(self.root, TS["small"])).pack(side="left")
         if required:
@@ -711,16 +740,17 @@ class App:
             # 而星号是约定俗成的，几乎不占视觉重量。
             tk.Label(head, text="*", bg=ground, fg=p.danger,
                      font=theme.font(self.root, TS["small"], "bold")).pack(
-                side="left", padx=(S(3), 0))
+                side="left", padx=(SP.xs, 0))
         fld = W.Field(cell, p, value=value, show=show, multiline=multiline,
-                      height=76 if multiline else 36)
+                      height=(DIM.FIELD_H_MULTI if multiline
+                              else DIM.FIELD_H))
         fld.pack(fill="x")
         fld.bind_change(self._mark_dirty)
         if hint:
             tk.Label(cell, text=hint, bg=ground, fg=p.text_tertiary,
                      font=theme.font(self.root, TS["micro"]),
                      justify="left", anchor="w",
-                     wraplength=S(240)).pack(anchor="w", pady=(S(4), 0))
+                     wraplength=DIM.HINT_WRAP).pack(anchor="w", pady=(SP.xs, 0))
         return fld
 
     # ------------------------------------------------------------ 页：推送通道
@@ -728,16 +758,16 @@ class App:
     def _page_channels(self, parent) -> None:
         p = self.pal
         wrap = tk.Frame(parent, bg=p.bg_app)
-        wrap.pack(fill="both", expand=True, padx=S(24), pady=(0, S(12)))
+        wrap.pack(fill="both", expand=True, padx=SP.xl, pady=(0, SP.md))
 
         # -- 左：出口列表。不做成卡片，靠一条竖线与右侧详情分开。
-        left = tk.Frame(wrap, bg=p.bg_app, width=S(250))
+        left = tk.Frame(wrap, bg=p.bg_app, width=DIM.LIST_COL_W)
         left.pack(side="left", fill="y")
         left.pack_propagate(False)
         self.left_col = left
 
         head = tk.Frame(left, bg=p.bg_app)
-        head.pack(fill="x", pady=(S(2), S(6)))
+        head.pack(fill="x", pady=(SP.xxs, SP.sm))
         tk.Label(head, text="全部通道", bg=p.bg_app, fg=p.text,
                  font=theme.font(self.root, TS["section"], "bold")).pack(side="left")
         self.ch_count_pill = W.Pill(head, p, "", bg=p.bg_app, size=TS["micro"])
@@ -748,12 +778,12 @@ class App:
         self.ch_list_inner = sc.inner
         self.ch_list_sc = sc
 
-        tk.Frame(wrap, bg=p.border, width=S(1)).pack(
-            side="left", fill="y", padx=(S(12), 0))
+        tk.Frame(wrap, bg=p.border, width=STK.rule).pack(
+            side="left", fill="y", padx=(SP.md, 0))
 
         # -- 右：出口详情（独立滚动）
         right = tk.Frame(wrap, bg=p.bg_app)
-        right.pack(side="left", fill="both", expand=True, padx=(S(16), 0))
+        right.pack(side="left", fill="both", expand=True, padx=(SP.lg, 0))
         self.ch_form_host = right
 
         self._build_channel_list()
@@ -782,11 +812,11 @@ class App:
 
         for group, types in CHANNEL_GROUPS:
             row = tk.Frame(host, bg=p.bg_app)
-            row.pack(fill="x", padx=S(4), pady=(S(10), S(3)))
+            row.pack(fill="x", padx=SP.xs, pady=(SP.sm, SP.xs))
             tk.Label(row, text=group, bg=p.bg_app, fg=p.text_tertiary,
                      font=theme.font(self.root, TS["micro"])).pack(side="left")
-            tk.Frame(row, bg=p.border, height=1).pack(
-                side="left", fill="x", expand=True, padx=(S(8), 0))
+            tk.Frame(row, bg=p.border, height=STK.rule).pack(
+                side="left", fill="x", expand=True, padx=(SP.sm, 0))
             for ctype in types:
                 meta = channels.CHANNEL_META.get(ctype)
                 if not meta:
@@ -797,11 +827,11 @@ class App:
                     subtitle=subtitle, dot=dot, icon_on=lit,
                     active=ctype == self.current_channel,
                     command=lambda c=ctype: self._select_channel(c),
-                    bg=p.bg_app, height=44, icon=meta.get("icon", "bell"),
+                    bg=p.bg_app, icon=meta.get("icon", "bell"),
                 )
                 item.pack(fill="x")
                 self.ch_rows[ctype] = item
-        tk.Frame(host, bg=p.bg_app, height=S(8)).pack(fill="x")
+        tk.Frame(host, bg=p.bg_app, height=SP.sm).pack(fill="x")
 
     def _sync_channel_rows(self) -> None:
         """就地刷新左栏每一行的状态，不重建控件（重建会闪）。"""
@@ -851,6 +881,11 @@ class App:
         if host is None or not host.winfo_exists():
             return
         old = host.winfo_children()
+        # 表单重建后旧按钮已经销毁，引用必须先失效，否则后台任务结束时
+        # 会去操作一个不存在的控件
+        self.ch_test_btn = None
+        self.ch_openid_btn = None
+        self.ch_why_lbl = None
 
         sc = W.ScrollFrame(host, self.pal, bg=self.pal.bg_app)
         sc.place(x=0, y=0, relwidth=1, relheight=1)
@@ -861,7 +896,7 @@ class App:
 
         self.ch_form_sc = sc
         if animate:
-            sc.slide_in(dx=14, dy=3, duration=200)
+            sc.slide_in(dx=SP.md, dy=SP.xxs, duration=MOTION.base)
 
     def _channel_form(self, parent) -> None:
         p = self.pal
@@ -875,23 +910,23 @@ class App:
 
         # -- 头部：出口的身份 + 开关
         head = tk.Frame(parent, bg=p.bg_app)
-        head.pack(fill="x", pady=(S(2), 0))
+        head.pack(fill="x", pady=(SP.xxs, 0))
 
         sw = W.Switch(head, p, on, bg=p.bg_app,
                       command=lambda v: self._on_channel_switch(ctype, v))
-        sw.pack(side="right", padx=(S(12), 0))
+        sw.pack(side="right", padx=(SP.md, 0))
         self.ch_vars.setdefault(ctype, {})["__enabled__"] = sw
 
-        badge = tk.Canvas(head, width=S(40), height=S(40), bg=p.bg_app,
+        badge = tk.Canvas(head, width=DIM.BADGE, height=DIM.BADGE, bg=p.bg_app,
                           highlightthickness=0, bd=0)
         badge.pack(side="left")
-        W.draw_badge(badge, 0, 0, S(40), meta.get("icon", "bell"),
+        W.draw_badge(badge, 0, 0, DIM.BADGE, meta.get("icon", "bell"),
                      p.brand if on else p.bg_subtle,
                      p.on_brand if on else p.text_tertiary,
-                     radius=S(11), icon_scale=0.5)
+                     icon_scale=0.5)
 
         info = tk.Frame(head, bg=p.bg_app)
-        info.pack(side="left", fill="x", expand=True, padx=(S(12), S(10)))
+        info.pack(side="left", fill="x", expand=True, padx=(SP.md, SP.sm))
         title_row = tk.Frame(info, bg=p.bg_app)
         title_row.pack(fill="x")
         # 用短名做标题：完整 label 里带着「（自建，推荐）」，会和右边的
@@ -906,22 +941,22 @@ class App:
         else:
             state, fg, fill = "未启用", p.text_tertiary, p.bg_subtle
         W.Pill(title_row, p, state, fg=fg, fill=fill, bg=p.bg_app,
-               size=TS["micro"]).pack(side="left", padx=(S(8), 0))
+               size=TS["micro"]).pack(side="left", padx=(SP.sm, 0))
         if ctype == "wxmp":
             W.Pill(title_row, p, "推荐", bg=p.bg_app,
-                   size=TS["micro"]).pack(side="left", padx=(S(5), 0))
+                   size=TS["micro"]).pack(side="left", padx=(SP.xs, 0))
 
         W.Paragraph(info, p, meta["summary"], p.bg_app, p.text_tertiary,
-                    size=TS["small"], spacing=2).pack(fill="x", pady=(S(3), 0))
+                    size=TS["small"], spacing=SP.xxs).pack(fill="x", pady=(SP.xs, 0))
 
         # -- 缺配置：一条色带，不是卡片。左边 3px 竖条就是「这里有阻塞」。
         if miss:
             band = tk.Frame(parent, bg=p.warning_soft)
-            band.pack(fill="x", pady=(S(12), 0))
+            band.pack(fill="x", pady=(SP.md, 0))
             tk.Frame(band, bg=p.warning, width=S(3)).pack(side="left", fill="y")
             inner = tk.Frame(band, bg=p.warning_soft)
             inner.pack(side="left", fill="x", expand=True,
-                       padx=S(10), pady=S(8))
+                       padx=SP.sm, pady=SP.sm)
             labels = channels.FIELD_LABELS.get(ctype, {})
             tk.Label(inner, text="还差：" + "、".join(
                 labels.get(k, k) for k in miss),
@@ -930,11 +965,11 @@ class App:
             tk.Label(inner, text="填齐后开关会自动打开，不用手动拨。",
                      bg=p.warning_soft, fg=p.warning,
                      font=theme.font(self.root, TS["micro"])).pack(
-                anchor="w", pady=(S(2), 0))
+                anchor="w", pady=(SP.xxs, 0))
 
         # -- 配置
-        sec = W.Section(parent, p, "配置", bg=p.bg_app, gap=10)
-        sec.pack(fill="x", pady=(S(14), 0))
+        sec = W.Section(parent, p, "配置", bg=p.bg_app, gap=SP.sm)
+        sec.pack(fill="x", pady=(SP.lg, 0))
 
         fields = meta.get("fields") or []
         if fields:
@@ -953,18 +988,18 @@ class App:
                         row, col = row + 1, 0
                     cell = tk.Frame(grid, bg=p.bg_app)
                     cell.grid(row=row, column=0, columnspan=2, sticky="ew",
-                              padx=S(4), pady=(S(4), S(14)))
+                              padx=SP.xs, pady=(SP.xs, SP.lg))
                     var = W.Switch(cell, p,
                                    str(value).lower() in ("1", "true", "yes"),
                                    bg=p.bg_app, command=lambda v: self._mark_dirty())
                     var.pack(anchor="w")
                     tk.Label(cell, text=label, bg=p.bg_app, fg=p.text_secondary,
                              font=theme.font(self.root, TS["small"])).pack(
-                        anchor="w", pady=(S(5), 0))
+                        anchor="w", pady=(SP.xs, 0))
                     if hint:
                         tk.Label(cell, text=hint, bg=p.bg_app, fg=p.text_tertiary,
                                  font=theme.font(self.root, TS["micro"])).pack(
-                            anchor="w", pady=(S(2), 0))
+                            anchor="w", pady=(SP.xxs, 0))
                     self.ch_vars.setdefault(ctype, {})[key] = var
                     row, col = row + 1, 0
                     continue
@@ -976,7 +1011,7 @@ class App:
                     required=key in required,
                 )
                 fld.master.grid(row=row, column=col, columnspan=span,
-                                sticky="ew", padx=S(4), pady=(0, S(14)))
+                                sticky="ew", padx=SP.xs, pady=(0, SP.lg))
                 self.ch_vars.setdefault(ctype, {})[key] = fld
                 col += span
                 if col >= 2:
@@ -985,35 +1020,91 @@ class App:
             tk.Label(sec.body, text="这个通道不需要额外配置，开关打开即可使用。",
                      bg=p.bg_app, fg=p.text_tertiary,
                      font=theme.font(self.root, TS["small"])).pack(
-                anchor="w", pady=(S(2), S(4)))
+                anchor="w", pady=(SP.xxs, SP.xs))
 
         # -- 操作
         ops = tk.Frame(parent, bg=p.bg_app)
-        ops.pack(fill="x", pady=(S(4), S(10)))
-        W.Button(ops, "测试此通道", p, command=lambda: self._test_channel(ctype),
-                 variant="secondary", height=32,
-                 font_size=TS["small"]).pack(side="left")
+        ops.pack(fill="x", pady=(SP.xs, SP.sm))
+        self.ch_test_btn = W.Button(ops, "测试此通道", p,
+                                    command=lambda: self._test_channel(ctype),
+                                    variant="secondary")
+        self.ch_test_btn.pack(side="left")
+        # 原因说明紧跟在按钮后面：禁用的按钮必须当场说明为什么灰着，
+        # 让人去猜、或者靠弹一条会消失的提示，都是把成本推给用户。
+        self.ch_why_lbl = tk.Label(ops, text="", bg=p.bg_app, fg=p.text_tertiary,
+                                   font=theme.font(self.root, TS["micro"]))
+        self.ch_why_lbl.pack(side="left", padx=(SP.sm, 0))
         if ctype == "wxmp":
-            W.Button(ops, "自动获取 openid", p, command=self._fetch_openid,
-                     variant="ghost", height=32, font_size=TS["small"]).pack(
-                side="right", padx=(S(6), 0))
+            self.ch_openid_btn = W.Button(ops, "自动获取 openid", p,
+                                          command=self._fetch_openid,
+                                          variant="ghost")
+            self.ch_openid_btn.pack(side="right", padx=(SP.sm, 0))
             W.Button(ops, "打开测试号后台", p,
                      command=lambda: self._open(
                          "https://mp.weixin.qq.com/debug/cgi-bin/sandbox?t=sandbox/login"),
-                     variant="ghost", height=32, font_size=TS["small"]).pack(
+                     variant="ghost").pack(
                 side="right")
         elif ctype == "wecom_app":
             W.Button(ops, "打开企业微信后台", p,
                      command=lambda: self._open("https://work.weixin.qq.com/"),
-                     variant="ghost", height=32, font_size=TS["small"]).pack(
+                     variant="ghost").pack(
                 side="right")
 
         # -- 帮助：渐进披露。没配好默认展开（第一次用需要引导）。
         col = W.Collapsible(parent, p, "怎么配置", bg=p.bg_app,
                             expanded=bool(miss), icon="book")
-        col.pack(fill="x", pady=(S(8), S(16)))
+        col.pack(fill="x", pady=(SP.sm, SP.lg))
         self._para(col.body, meta.get("help", ""), p.bg_app,
-                   p.text_secondary, size=TS["small"], pady=4)
+                   p.text_secondary, size=TS["small"], pady=SP.xs)
+
+        # 表单里任何一个值变了，都要重新判断两个操作按钮能不能点
+        for fld in (self.ch_vars.get(ctype) or {}).values():
+            if hasattr(fld, "bind_change"):
+                fld.bind_change(self._sync_action_state)
+        self._sync_action_state()
+
+    def _sync_action_state(self) -> None:
+        """按当前表单内容决定操作按钮可不可用，并把原因写在按钮旁边。
+
+        「测试此通道」在必填项没填完时必然失败（后端直接返回缺字段），
+        「自动获取 openid」在没 appID/secret 时也一样。与其让人点一下、
+        等一条 1.4 秒就消失的 toast，不如让按钮当场灰掉并写明缺什么。
+        """
+        if self.current_page != "channels" or self.ch_form_host is None:
+            return
+        ctype = self.current_channel
+        ch = config.get_channel(self._collect(), ctype) or {}
+        ready = channels.is_ready(ctype, ch)
+        why = ""
+        if not ready:
+            missing = channels.missing_fields(ctype, ch)
+            why = ("还需要填写：" + "、".join(missing)) if missing else "先把配置填完"
+
+        if self.ch_test_btn is not None:
+            self.ch_test_btn.set_enabled(ready)
+        # 只有文字真的变了才 configure：改 Label 的文字会让它重新量宽度，
+        # 进而触发一整轮几何计算。这个方法每敲一个键都会跑一次，
+        # 无条件写同一个值等于每次输入都白算一轮布局。
+        why = "" if ready else why
+        if self.ch_why_lbl is not None:
+            try:
+                if str(self.ch_why_lbl.cget("text")) != why:
+                    self.ch_why_lbl.configure(text=why)
+            except tk.TclError:
+                return
+
+        if self.ch_openid_btn is not None:
+            appid = (ch.get("appid") or "").strip()
+            secret = (ch.get("secret") or "").strip()
+            ok_wx = bool(appid and secret)
+            self.ch_openid_btn.set_enabled(ok_wx)
+            if not ok_wx and not why and self.ch_why_lbl is not None:
+                hint = "填好 appID 和 appsecret 才能自动获取"
+                try:
+                    if str(self.ch_why_lbl.cget("text")) != hint:
+                        self.ch_why_lbl.configure(text=hint)
+                except tk.TclError:
+                    pass
 
     # -- 通道开关 ------------------------------------------------------
 
@@ -1072,6 +1163,55 @@ class App:
             return
         self._build_channel_form(animate=False)
 
+    # ------------------------------------------------------------ 后台任务
+
+    def _run_bg(self, work, done, *, button=None, busy: str | None = None) -> None:
+        """把会阻塞的调用挪到后台线程，结果回主线程处理。
+
+        为什么必须这样做：Tk 只有主线程，回调里同步发 HTTP 会让窗口在这段
+        时间里完全停止响应。微信模板消息是「取 access_token（10s 超时）+
+        发消息（8s 超时）」，最坏情况主线程要冻十几秒，Windows 直接把标题栏
+        改成「未响应」；而「正在发送…」的 toast 1.4 秒就消失了，用户看到的
+        是「窗口卡死 + 提示已消失」。
+
+        线程规则（写死，别绕过）：
+        - 子线程里只跑 `work()`，一个 Tk 调用都不做，连 toast 都不行
+        - 主线程用 `after` 轮询线程是否结束，所有界面更新都在主线程里做
+        - 同一时刻只允许一个后台动作，避免重复点按钮发起并发请求
+        """
+        if self._bg_busy:
+            self.toast.show("上一个操作还在进行中", "info")
+            return
+        self._bg_busy = True
+        if button is not None:
+            button.set_loading(True, busy)
+
+        box: dict = {}
+
+        def runner() -> None:
+            try:
+                box["value"] = work()
+            except Exception as e:  # 异常带回主线程再报，子线程里不许碰界面
+                box["error"] = e
+
+        th = threading.Thread(target=runner, daemon=True, name="wbn-bg")
+        th.start()
+
+        def poll() -> None:
+            try:
+                if th.is_alive():
+                    self.root.after(60, poll)
+                    return
+                self._bg_busy = False
+                if button is not None:
+                    button.set_loading(False)
+                done(box.get("value"), box.get("error"))
+            except tk.TclError:
+                # 窗口在请求飞行途中被关掉了，没什么可更新的
+                self._bg_busy = False
+
+        self.root.after(60, poll)
+
     def _fetch_openid(self) -> None:
         cfg = self._collect()
         ch = config.get_channel(cfg, "wxmp") or {}
@@ -1080,16 +1220,24 @@ class App:
         if not appid or not secret:
             self.toast.show("先填 appID 和 appsecret", "warn")
             return
-        self.toast.show("正在向微信查询关注者…", "info", 1400)
-        self.root.update_idletasks()
-        ids, err = channels.wx_followers(appid, secret)
-        if not ids:
-            self.toast.show(f"获取失败：{err}", "error", 4200)
-            return
-        fld = (self.ch_vars.get("wxmp") or {}).get("openid")
-        if fld:
-            fld.set(ids[0])
-        self.toast.show(f"已填入 openid（共 {len(ids)} 位关注者）", "ok")
+
+        def work():
+            return channels.wx_followers(appid, secret)
+
+        def done(value, error):
+            if error is not None:
+                self.toast.show(f"获取失败：{error}", "error", 4200)
+                return
+            ids, err = value
+            if not ids:
+                self.toast.show(f"获取失败：{err}", "error", 4200)
+                return
+            fld = (self.ch_vars.get("wxmp") or {}).get("openid")
+            if fld:
+                fld.set(ids[0])
+            self.toast.show(f"已填入 openid（共 {len(ids)} 位关注者）", "ok")
+
+        self._run_bg(work, done, button=self.ch_openid_btn, busy="查询中…")
 
     def _test_channel(self, ctype: str) -> None:
         cfg = self._collect()
@@ -1098,22 +1246,27 @@ class App:
             return
         was = ch.get("enabled")
         ch["enabled"] = True
-        self.toast.show("正在发送…", "info", 1400)
-        self.root.update_idletasks()
-        try:
-            res = pipeline.send_test(cfg, [ctype])
-        except Exception as e:
-            self.toast.show(f"发送异常：{e}", "error", 4200)
-            return
-        ch["enabled"] = was
-        if not res:
-            self.toast.show("没有可用的目标通道", "warn")
-            return
-        r = res[0]
-        if r.get("ok"):
-            self.toast.show(f"发送成功：{r.get('msg', '')}", "ok")
-        else:
-            self.toast.show(f"失败：{r.get('msg', '')}", "error", 5000)
+
+        def work():
+            try:
+                return pipeline.send_test(cfg, [ctype])
+            finally:
+                ch["enabled"] = was
+
+        def done(value, error):
+            if error is not None:
+                self.toast.show(f"发送异常：{error}", "error", 4200)
+                return
+            if not value:
+                self.toast.show("没有可用的目标通道", "warn")
+                return
+            r = value[0]
+            if r.get("ok"):
+                self.toast.show(f"发送成功：{r.get('msg', '')}", "ok")
+            else:
+                self.toast.show(f"失败：{r.get('msg', '')}", "error", 5000)
+
+        self._run_bg(work, done, button=self.ch_test_btn, busy="发送中…")
 
     # ------------------------------------------------------------ 页：触发条件
 
@@ -1124,7 +1277,7 @@ class App:
         sec = W.Section(inner, p, "通知哪些事件",
                         "勾选后才会推送对应类型的消息。不确定就只留前两项。",
                         bg=p.bg_app)
-        sec.pack(fill="x", padx=S(24), pady=(S(4), 0))
+        sec.pack(fill="x", padx=SP.xl, pady=(SP.xs, 0))
 
         grid = tk.Frame(sec.body, bg=p.bg_app)
         grid.pack(fill="x")
@@ -1136,7 +1289,7 @@ class App:
         for i, kind in enumerate(kinds):
             cell = tk.Frame(grid, bg=p.bg_app)
             cell.grid(row=i // 2, column=i % 2, sticky="w",
-                      padx=S(2), pady=S(7))
+                      padx=SP.xxs, pady=SP.sm)
             cb = W.Checkbox(cell, p, events.KIND_LABELS.get(kind, kind),
                             bool(self.cfg["triggers"].get(kind)), bg=p.bg_app,
                             font_size=TS["body"],
@@ -1145,12 +1298,12 @@ class App:
             tk.Label(cell, text=KIND_DESC.get(kind, ""), bg=p.bg_app,
                      fg=p.text_tertiary,
                      font=theme.font(self.root, TS["micro"])).pack(
-                anchor="w", padx=S(30))
+                anchor="w", padx=SP.xxl)
             self.tr_vars[kind] = cb
 
         sec2 = W.Section(inner, p, "过滤与限流",
                          "用这些规则压掉噪音，避免手机被刷屏", bg=p.bg_app)
-        sec2.pack(fill="x", padx=S(24), pady=(S(4), 0))
+        sec2.pack(fill="x", padx=SP.xl, pady=(SP.xs, 0))
 
         self._section(sec2.body, "阈值", p.bg_app)
         f = self.cfg.get("filters", {})
@@ -1171,7 +1324,7 @@ class App:
         for i, (key, label, hint) in enumerate(rows):
             fld = self._form_field(grid2, label, str(f.get(key, "")), hint)
             fld.master.grid(row=i // 2, column=i % 2, sticky="ew",
-                            padx=S(4), pady=(0, S(14)))
+                            padx=SP.xs, pady=(0, SP.lg))
             self.filt_vars[key] = fld
 
         self._section(sec2.body, "范围", p.bg_app)
@@ -1192,11 +1345,11 @@ class App:
             fld = self._form_field(grid3, label, text, hint)
             span = 2 if (i == len(lists) - 1 and len(lists) % 2 == 1) else 1
             fld.master.grid(row=i // 2, column=i % 2, columnspan=span,
-                            sticky="ew", padx=S(4), pady=(0, S(14)))
+                            sticky="ew", padx=SP.xs, pady=(0, SP.lg))
             self.filt_vars[key] = fld
 
         qcell = tk.Frame(sec2.body, bg=p.bg_app)
-        qcell.pack(fill="x", pady=(S(2), 0))
+        qcell.pack(fill="x", pady=(SP.xxs, 0))
         self.q_check = W.Checkbox(
             qcell, p, "助手最后一句是问句时，归类为「等你确认」而不是「已完成」",
             bool(f.get("question_as_need_input", True)), bg=p.bg_app,
@@ -1211,16 +1364,16 @@ class App:
         inner = self._scroll_area(parent)
 
         bar = tk.Frame(inner, bg=p.bg_app)
-        bar.pack(fill="x", padx=S(24), pady=(S(4), S(14)))
+        bar.pack(fill="x", padx=SP.xl, pady=(SP.xs, SP.lg))
         opts = [(k, events.KIND_LABELS.get(k, k))
                 for k in ("task_done", "task_failed", "need_input",
                           "tool_failed", "test")]
         W.Segmented(bar, p, opts, self.tpl_kind, command=self._on_tpl_kind,
-                    bg=p.bg_app, height=30,
-                    font_size=TS["small"]).pack(side="left")
+                    bg=p.bg_app, height=DIM.SEG_H,
+                    font_size=TS["micro"]).pack(side="left")
 
         cols = tk.Frame(inner, bg=p.bg_app)
-        cols.pack(fill="both", expand=True, padx=S(24), pady=(0, S(16)))
+        cols.pack(fill="both", expand=True, padx=SP.xl, pady=(0, SP.lg))
         cols.columnconfigure(0, weight=1)
         cols.columnconfigure(1, weight=0)
 
@@ -1228,12 +1381,12 @@ class App:
         ed.grid(row=0, column=0, sticky="nsew")
 
         s1 = W.Section(ed, p, "标题与正文",
-                       "改动即时反映到右侧预览", bg=p.bg_app, gap=14)
+                       "改动即时反映到右侧预览", bg=p.bg_app, gap=SP.lg)
         s1.pack(fill="x")
 
         tk.Label(s1.body, text="标题", bg=p.bg_app, fg=p.text_secondary,
                  font=theme.font(self.root, TS["small"])).pack(
-            anchor="w", pady=(0, S(5)))
+            anchor="w", pady=(0, SP.xs))
         self.title_field = W.Field(s1.body, p,
                                    value=self.cfg["titles"].get(self.tpl_kind, ""))
         self.title_field.pack(fill="x")
@@ -1241,32 +1394,32 @@ class App:
 
         tk.Label(s1.body, text="正文", bg=p.bg_app, fg=p.text_secondary,
                  font=theme.font(self.root, TS["small"])).pack(
-            anchor="w", pady=(S(12), S(5)))
+            anchor="w", pady=(SP.md, SP.xs))
         self.content_field = W.Field(
             s1.body, p, value=self.cfg["templates"].get(self.tpl_kind, ""),
-            multiline=True, height=132,
+            multiline=True, height=DIM.FIELD_H_TALL,
         )
         self.content_field.pack(fill="x")
         self.content_field.bind_change(self._on_preview_change)
 
         s2 = W.Section(ed, p, "可用占位符",
-                       "发送前会被替换成真实内容", bg=p.bg_app, gap=4)
-        s2.pack(fill="x", pady=(S(6), 0))
+                       "发送前会被替换成真实内容", bg=p.bg_app, gap=SP.xs)
+        s2.pack(fill="x", pady=(SP.sm, 0))
         chips = tk.Frame(s2.body, bg=p.bg_app)
         chips.pack(fill="x")
         for i, (token, desc) in enumerate(PLACEHOLDERS):
             chip = tk.Frame(chips, bg=p.bg_subtle)
             chip.grid(row=i // 3, column=i % 3, sticky="w",
-                      padx=(0, S(6)), pady=S(3))
+                      padx=(0, SP.sm), pady=SP.xs)
             tk.Label(chip, text=token, bg=p.bg_subtle, fg=p.brand_ink,
                      font=theme.font(self.root, TS["micro"], mono=True)).pack(
-                side="left", padx=(S(7), S(3)), pady=S(3))
+                side="left", padx=(SP.sm, SP.xs), pady=SP.xs)
             tk.Label(chip, text=desc, bg=p.bg_subtle, fg=p.text_tertiary,
                      font=theme.font(self.root, TS["micro"])).pack(
-                side="left", padx=(0, S(7)), pady=S(3))
+                side="left", padx=(0, SP.sm), pady=SP.xs)
 
         prev = tk.Frame(cols, bg=p.bg_app)
-        prev.grid(row=0, column=1, sticky="n", padx=(S(20), 0))
+        prev.grid(row=0, column=1, sticky="n", padx=(SP.xl, 0))
         self.preview_cv = tk.Canvas(
             prev, width=self._preview_w, height=int(self._preview_w * 1.72),
             bg=p.bg_app, highlightthickness=0, bd=0)
@@ -1337,13 +1490,13 @@ class App:
                                 W_ - S(48) + i * S(3.4), S(23),
                                 fill=ink, outline=ink)
         W.round_rect(cv, W_ - S(32), S(16), W_ - S(20), S(24), S(2),
-                     fill="", outline=sub, width=S(1))
+                     fill="", outline=sub, width=STK.rule)
         cv.create_rectangle(W_ - S(30), S(18), W_ - S(24), S(22),
                             fill=ink, outline=ink)
 
         # 导航栏
         ny = S(44)
-        W.draw_icon(cv, "chevron", S(16), ny, S(14), ink, S(1.8))
+        W.draw_icon(cv, "chevron", S(16), ny, S(14), ink, STK.icon)
         cv.create_text(W_ / 2, ny + S(7), text="微信测试号", fill=ink,
                        font=theme.font(self.root, TS["small"], "bold"))
         for i in range(3):
@@ -1411,7 +1564,7 @@ class App:
 
         # -- 指标：数字 + 标签，竖线分隔。不做卡片。
         mrow = tk.Frame(inner, bg=p.bg_app)
-        mrow.pack(fill="x", padx=S(24), pady=(S(6), S(24)))
+        mrow.pack(fill="x", padx=SP.xl, pady=(SP.sm, SP.xl))
         metrics = [
             ("今日通知", str(stats["today"]), p.text),
             ("送达成功", str(stats["ok"]), p.success),
@@ -1422,8 +1575,8 @@ class App:
         ]
         for i, (label, value, color) in enumerate(metrics):
             if i:
-                tk.Frame(mrow, bg=p.border, width=S(1)).pack(
-                    side="left", fill="y", padx=S(20))
+                tk.Frame(mrow, bg=p.border, width=STK.rule).pack(
+                    side="left", fill="y", padx=SP.xl)
             W.Metric(mrow, p, label, value, color, bg=p.bg_app).pack(side="left")
 
         # -- 通道状态：只列已启用的。
@@ -1431,7 +1584,7 @@ class App:
         # 通道在这里没有信息量——它们不在这条链路上。
         sec = W.Section(inner, p, "通道状态",
                         "右侧的点表示这条出口现在通不通", bg=p.bg_app)
-        sec.pack(fill="x", padx=S(24))
+        sec.pack(fill="x", padx=SP.xl)
         live = [c for c in self.cfg.get("channels", []) if c.get("enabled")]
         idle = len(channels.CHANNEL_META) - len(live)
         for ch in live:
@@ -1442,7 +1595,7 @@ class App:
             W.ListRow(sec.body, p, channels.short_label(ctype),
                       subtitle=meta["summary"],
                       dot=p.brand, icon_on=True, bg=p.bg_app,
-                      height=44, icon=meta.get("icon", "bell")).pack(fill="x")
+                      icon=meta.get("icon", "bell")).pack(fill="x")
         if not live:
             W.EmptyState(
                 sec.body, p, "bell", "没有任何通道在跑",
@@ -1456,13 +1609,13 @@ class App:
                 f"另有 {idle} 条通道未启用，它们不在这条链路上，"
                 "需要时去「推送通道」打开。",
                 p.bg_app, p.text_tertiary, size=TS["micro"],
-            ).pack(fill="x", pady=(S(6), 0))
+            ).pack(fill="x", pady=(SP.sm, 0))
 
         # -- 最近通知：时间轴
         sec2 = W.Section(inner, p, "最近通知",
                          "来自 logs/notifications.log，最新的在上面。"
                          "红点表示这次是失败类事件", bg=p.bg_app)
-        sec2.pack(fill="x", padx=S(24))
+        sec2.pack(fill="x", padx=SP.xl)
         recent = stats["recent"]
         if not recent:
             W.EmptyState(
@@ -1478,13 +1631,13 @@ class App:
 
         # -- 运行日志
         sec3 = W.Section(inner, p, "运行日志",
-                         "最近 12 行，排查问题用", bg=p.bg_app, gap=8)
-        sec3.pack(fill="x", padx=S(24))
+                         "最近 12 行，排查问题用", bg=p.bg_app, gap=SP.sm)
+        sec3.pack(fill="x", padx=SP.xl)
         box3 = tk.Frame(sec3.body, bg=p.bg_subtle)
         box3.pack(fill="x")
         W.Paragraph(box3, p, store.tail_log(12) or "（暂无）", p.bg_subtle,
                     p.text_secondary, size=TS["micro"], mono=True).pack(
-            fill="x", padx=S(12), pady=S(10))
+            fill="x", padx=SP.md, pady=SP.sm)
 
     def _stats(self) -> dict:
         today = datetime.now().strftime("%Y-%m-%d")
@@ -1542,25 +1695,25 @@ class App:
 
         # -- 开场：一句话说清目标与代价。不用渐变横幅，用排版。
         head = tk.Frame(inner, bg=p.bg_app)
-        head.pack(fill="x", padx=S(24), pady=(S(6), S(20)))
+        head.pack(fill="x", padx=SP.xl, pady=(SP.sm, SP.xl))
         tk.Label(head, text="从零到收到第一条通知", bg=p.bg_app, fg=p.text,
                  font=theme.font(self.root, TS["display"], "bold")).pack(anchor="w")
         # 拆成两句而不是一整段：一句是承诺，一句是推荐路线的理由。
         # 一整段时长句会在中间的空格处折得很丑。
         W.Paragraph(
             head, p, "四步走完，全程免费，第一次配置大约三分钟。",
-            p.bg_app, p.text, size=TS["body"], spacing=3,
-        ).pack(fill="x", pady=(S(7), 0))
+            p.bg_app, p.text, size=TS["body"], spacing=SP.xxs,
+        ).pack(fill="x", pady=(SP.sm, 0))
         W.Paragraph(
             head, p,
             "推荐路线是微信测试号：微信官方的开发者测试号，扫码即得凭证，"
             "不用实名、不用付费、不限条数。",
-            p.bg_app, p.text_secondary, size=TS["small"], spacing=2,
-        ).pack(fill="x", pady=(S(3), 0))
+            p.bg_app, p.text_secondary, size=TS["small"], spacing=SP.xxs,
+        ).pack(fill="x", pady=(SP.xs, 0))
 
         # -- 四步
         sec = W.Section(inner, p, "四步走通", bg=p.bg_app)
-        sec.pack(fill="x", padx=S(24))
+        sec.pack(fill="x", padx=SP.xl)
         steps = [
             ("选一条通道",
              "打开「推送通道」，左边选「微信测试号」。它是微信官方的开发者测试号，"
@@ -1588,7 +1741,7 @@ class App:
             inner, p, "手机弹窗怎么开",
             "通道配好只保证「消息发出去了」，能不能弹出来由系统通知权限决定",
             bg=p.bg_app)
-        sec2.pack(fill="x", padx=S(24))
+        sec2.pack(fill="x", padx=SP.xl)
         blocks = [
             ("微信内", [
                 "我 → 设置 → 新消息通知：打开「接收新消息通知」「通知显示消息详情」",
@@ -1616,7 +1769,7 @@ class App:
             inner, p, "电脑上也要弹窗",
             "本程序本身不弹窗（宿主已有自己的提示）。想让 Windows 也弹，"
             "配一个带桌面客户端的通道即可。", bg=p.bg_app)
-        sec3.pack(fill="x", padx=S(24))
+        sec3.pack(fill="x", padx=SP.xl)
         plans = [
             ("方案 A · ntfy（最轻）",
              "通道选「ntfy」，起一个别人猜不到的 topic 填进去。电脑装 ntfy 桌面客户端"
@@ -1633,11 +1786,11 @@ class App:
         ]
         for name, body in plans:
             self._section(sec3.body, name, p.bg_app)
-            self._para(sec3.body, body, p.bg_app, p.text_secondary, pady=2)
+            self._para(sec3.body, body, p.bg_app, p.text_secondary, pady=SP.xxs)
 
         # -- 排查：这里的内容确实是「按顺序」，所以编号是有意义的
-        sec4 = W.Section(inner, p, "收不到？按这个顺序查", bg=p.bg_app, gap=8)
-        sec4.pack(fill="x", padx=S(24))
+        sec4 = W.Section(inner, p, "收不到？按这个顺序查", bg=p.bg_app, gap=SP.sm)
+        sec4.pack(fill="x", padx=SP.xl)
         checks = [
             ("先看「运行状态」页的「今日通知」",
              "是 0 → 说明根本没发出去，问题在触发条件或限流（比如最短耗时 20 秒、静默时段）。"),
@@ -1651,7 +1804,7 @@ class App:
         ]
         for i, (title, body) in enumerate(checks):
             row = tk.Frame(sec4.body, bg=p.bg_app)
-            row.pack(fill="x", pady=S(5))
+            row.pack(fill="x", pady=SP.xs)
             num = tk.Canvas(row, width=S(20), height=S(18), bg=p.bg_app,
                             highlightthickness=0, bd=0)
             num.pack(side="left", anchor="n")
@@ -1660,10 +1813,10 @@ class App:
             num.create_text(S(8), S(9), text=str(i + 1), fill=p.text_secondary,
                             font=theme.font(self.root, TS["micro"], "bold"))
             cell = tk.Frame(row, bg=p.bg_app)
-            cell.pack(side="left", fill="x", expand=True, padx=(S(8), 0))
+            cell.pack(side="left", fill="x", expand=True, padx=(SP.sm, 0))
             tk.Label(cell, text=title, bg=p.bg_app, fg=p.text,
                      font=theme.font(self.root, TS["small"], "bold")).pack(anchor="w")
-            self._para(cell, body, p.bg_app, p.text_tertiary, pady=2)
+            self._para(cell, body, p.bg_app, p.text_tertiary, pady=SP.xxs)
 
     # ------------------------------------------------------------ 数据读写
 
@@ -1747,22 +1900,28 @@ class App:
 
     def on_test(self) -> None:
         self.on_save()
-        self.toast.show("正在发送测试通知…", "info", 1400)
-        self.root.update_idletasks()
-        try:
-            res = pipeline.send_test(config.load())
-        except Exception as e:
-            self.toast.show(f"发送异常：{e}", "error", 4200)
-            return
-        if not res:
-            self.toast.show("没有启用任何通道，先在「推送通道」里打开一个", "warn", 4200)
-            return
-        ok = [r for r in res if r.get("ok")]
-        if ok:
-            self.toast.show(
-                f"已发送（{len(ok)}/{len(res)} 成功）：{ok[0].get('msg', '')}", "ok")
-        else:
-            self.toast.show(f"全部失败：{res[0].get('msg', '')}", "error", 5000)
+
+        def work():
+            return pipeline.send_test(config.load())
+
+        def done(value, error):
+            if error is not None:
+                self.toast.show(f"发送异常：{error}", "error", 4200)
+                return
+            if not value:
+                self.toast.show("没有启用任何通道，先在「推送通道」里打开一个",
+                                "warn", 4200)
+                return
+            ok = [r for r in value if r.get("ok")]
+            if ok:
+                self.toast.show(
+                    f"已发送（{len(ok)}/{len(value)} 成功）：{ok[0].get('msg', '')}",
+                    "ok")
+            else:
+                self.toast.show(f"全部失败：{value[0].get('msg', '')}",
+                                "error", 5000)
+
+        self._run_bg(work, done, button=self.test_btn, busy="发送中…")
 
     def on_open_logs(self) -> None:
         config.ensure_dirs()

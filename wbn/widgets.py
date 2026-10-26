@@ -17,6 +17,7 @@ from collections.abc import Callable
 
 from . import anim, theme
 from .theme import RADIUS_LG, RADIUS_MD, RADIUS_PILL, RADIUS_SM, S
+from .tokens import DIM, MOTION, SP, STK
 
 # 列表行圆角比卡片小一档，单独给个名字，免得和 RADIUS_XL 混淆
 RADIUS_LG_ROW = 10
@@ -209,7 +210,7 @@ def draw_focus_ring(cv: tk.Canvas, x1, y1, x2, y2, r, pal: theme.Palette,
     颜色用 border_focus（白底 3.47:1，满足非文本 3:1 要求）。
     """
     round_rect(cv, x1, y1, x2, y2, r, fill="", outline=color or pal.border_focus,
-               width=S(2), tags=tags)
+               width=STK.ring, tags=tags)
 
 
 def enable_focus(widget, redraw: Callable[[], None],
@@ -288,34 +289,42 @@ class Button(tk.Canvas):
         command: Callable | None = None,
         variant: str = "secondary",
         icon: str | None = None,
-        height: int = 34,
+        height: int | None = None,
         min_width: int = 0,
-        font_size: int = 9,
+        font_size: int | None = None,
         bold: bool = False,
         bg: str | None = None,
-        pad_x: int = 16,
+        pad_x: int | None = None,
     ):
         self.pal = pal
         self.text = text
         self.variant = variant
         self.icon = icon
         self.command = command
-        self.h = S(height)
-        self.font_size = font_size
+        # height / font_size / pad_x 允许覆盖，但传进来的值必须已经过 DPI 换算
+        # （和 Section.gap 同一个约定）。默认值全部取自令牌，所以「没传」这件事
+        # 不会退化成某个散落的字面量。
+        self.h = height if height is not None else DIM.BTN_H
+        self.font_size = (font_size if font_size is not None
+                          else theme.TS["small"])
         self.bold = bold
         self._enabled = True
+        self._loading = False
+        self._loading_text = "处理中…"
+        self._spin = 0
+        self._spin_job = None
         self._hover = False
         self._press = False
         self._hv = 0.0
         self._bg = bg or master.cget("bg")
-        self._pad_x = S(pad_x)
+        self._pad_x = pad_x if pad_x is not None else SP.lg
 
-        f = theme.font(master, font_size, "bold" if bold else "normal")
+        f = theme.font(master, self.font_size, "bold" if bold else "normal")
         probe = tk.Canvas(master, width=1, height=1)
         tw = probe.tk.call("font", "measure", f, text) if text else 0
         probe.destroy()
-        iw = S(15) if icon else 0
-        gap = S(6) if icon and text else 0
+        iw = DIM.ICON if icon else 0
+        gap = SP.xs if icon and text else 0
         self.w = max(min_width, int(tw) + self._pad_x * 2 + iw + gap)
 
         super().__init__(master, width=self.w, height=self.h, bg=self._bg,
@@ -381,18 +390,20 @@ class Button(tk.Canvas):
             round_rect_grad(self, S(1), S(1) + dy, w - S(1), h - S(2) + dy, r, top, bot)
         else:
             round_rect(self, S(1), S(1) + dy, w - S(1), h - S(1) + dy, r,
-                       fill=fill, outline=outline or fill, width=S(1))
+                       fill=fill, outline=outline or fill, width=STK.control)
 
         f = theme.font(self, self.font_size, "bold" if self.bold else "normal")
         cx = w / 2
         cy = h / 2 + dy
-        if self.icon and self.text:
-            icon_w = S(15)
+        if self._loading:
+            self._paint_loading(cx, cy, fg, f)
+        elif self.icon and self.text:
+            icon_w = DIM.ICON
             tw = self.tk.call("font", "measure", f, self.text)
-            total = icon_w + S(6) + tw
+            total = icon_w + SP.xs + tw
             left = cx - total / 2
-            draw_icon(self, self.icon, left, cy - icon_w / 2, icon_w, fg, S(1.6))
-            self.create_text(left + icon_w + S(6), cy, text=self.text, anchor="w",
+            draw_icon(self, self.icon, left, cy - icon_w / 2, icon_w, fg, STK.icon_thin)
+            self.create_text(left + icon_w + SP.xs, cy, text=self.text, anchor="w",
                              fill=fg, font=f)
         elif self.text:
             self.create_text(cx, cy, text=self.text, fill=fg, font=f)
@@ -414,7 +425,8 @@ class Button(tk.Canvas):
             self._hv = start + (target - start) * t
             self._draw()
 
-        anim.tween(self, "hover", 130, frame, anim.ease_out_cubic, interval=16)
+        anim.tween(self, "hover", MOTION.quick, frame, anim.ease_out_cubic,
+                   interval=MOTION.interval)
 
     def _on_enter(self, _e=None):
         if not self._enabled:
@@ -444,6 +456,10 @@ class Button(tk.Canvas):
 
     # -- 外部接口 ----------------------------------------------------
     def set_enabled(self, on: bool) -> None:
+        # 幂等：状态没变就不重绘。这个方法是「随输入实时求值」调用的，
+        # 每敲一个键都会走一遍，无条件重绘等于每键多花十几个 Tcl 调用。
+        if on == self._enabled:
+            return
         self._enabled = on
         self.configure(cursor="hand2" if on else "arrow")
         self._draw()
@@ -457,6 +473,66 @@ class Button(tk.Canvas):
         self._colors = self._resolve_colors()
         self._draw()
 
+    # -- 加载态 ------------------------------------------------------
+    def set_loading(self, on: bool, text: str | None = None) -> None:
+        """转圈 + 禁用，直到调用方拿到结果。
+
+        为什么加载态必须挂在按钮上、而不是只弹一条 toast：网络慢的时候
+        toast 早就自己消失了，人看不到「还在跑」这件事，只会觉得点了没反应。
+        按钮是「刚被点的那个东西」，状态留在原地最容易被看见。
+
+        为什么用定时重绘而不是补间：加载的时长由网络决定，没有终点可补。
+        系统开了减弱动效时不转，画一段静止的弧——按钮仍然是灰的、文字仍然
+        写着「发送中」，状态可读，只是不动。
+        """
+        if on == self._loading and (text or "处理中…") == self._loading_text:
+            return
+        self._loading = bool(on)
+        self._loading_text = text or "处理中…"
+        # 加载中不接受点击：重复点会并发发起同一个请求
+        self._enabled = not on
+        self._hover = self._press = False
+        self._spin = 0
+        try:
+            self.configure(cursor="arrow" if on else "hand2")
+        except tk.TclError:
+            return
+        self._draw()
+        if on:
+            self._tick()
+        elif self._spin_job is not None:
+            try:
+                self.after_cancel(self._spin_job)
+            except Exception:
+                pass
+            self._spin_job = None
+
+    def _tick(self) -> None:
+        if not self._loading:
+            self._spin_job = None
+            return
+        if anim.reduced():
+            # 减弱动效：不转，弧停在固定角度
+            self._spin_job = None
+            return
+        self._spin = (self._spin + 30) % 360
+        try:
+            self._draw()
+            self._spin_job = self.after(MOTION.interval * 3, self._tick)
+        except tk.TclError:
+            self._spin_job = None
+
+    def _paint_loading(self, cx: float, cy: float, fg: str, f) -> None:
+        tw = self.tk.call("font", "measure", f, self._loading_text)
+        d = DIM.ICON
+        total = d + SP.xs + int(tw)
+        left = cx - total / 2
+        self.create_arc(left, cy - d / 2, left + d, cy + d / 2,
+                        start=self._spin, extent=270, style="arc",
+                        outline=fg, width=STK.ring)
+        self.create_text(left + d + SP.xs, cy, text=self._loading_text,
+                         anchor="w", fill=fg, font=f)
+
 
 # ---------------------------------------------------------------- 卡片
 
@@ -469,12 +545,14 @@ class Switch(tk.Canvas):
 
     def __init__(self, master, pal: theme.Palette, value: bool = False,
                  command: Callable[[bool], None] | None = None,
-                 bg: str | None = None, width: int = 40, height: int = 22):
+                 bg: str | None = None, width: int | None = None,
+                 height: int | None = None):
         self.pal = pal
         self.value = bool(value)
         self.command = command
         self._bg = bg or master.cget("bg")
-        self.w, self.h = S(width), S(height)
+        self.w = width if width is not None else DIM.SWITCH_W
+        self.h = height if height is not None else DIM.SWITCH_H
         self._pos = 1.0 if self.value else 0.0
         super().__init__(master, width=self.w, height=self.h + S(2), bg=self._bg,
                          highlightthickness=0, bd=0, cursor="hand2")
@@ -493,7 +571,7 @@ class Switch(tk.Canvas):
         # 加一圈 border_control 描边，开关的「可点区域」才读得出来。
         round_rect(self, 1, y1, self.w - 1, y2, (y2 - y1) / 2,
                    fill=track, outline=theme.mix(p.border_control, track, t),
-                   width=1)
+                   width=STK.control)
 
         knob = self.h - S(4)
         travel = self.w - knob - S(4)
@@ -516,14 +594,16 @@ class Switch(tk.Canvas):
         if self.command:
             self.command(self.value)
 
-    def animate(self, target: float, duration: int = 190) -> None:
+    def animate(self, target: float, duration: int | None = None) -> None:
         start = self._pos
 
         def frame(t):
             self._pos = start + (target - start) * t
             self._draw()
 
-        anim.tween(self, "knob", duration, frame, anim.ease_out_back, interval=13)
+        # 开关滑块是唯一用 ease_out_back 的地方：它有物理感，末端要轻微过冲。
+        anim.tween(self, "knob", duration or MOTION.base, frame,
+                   anim.ease_out_back, interval=MOTION.interval)
 
     def set_value(self, v: bool, animate: bool = False) -> None:
         self.value = bool(v)
@@ -552,7 +632,7 @@ class Checkbox(tk.Canvas):
         self._bg = bg or master.cget("bg")
         self.font_size = font_size
         self.text_color = text_color
-        self.box = S(18)
+        self.box = DIM.CHECK_BOX
         self._hover = False
         self._hv = 0.0
 
@@ -582,10 +662,10 @@ class Checkbox(tk.Canvas):
             outline = theme.mix(p.border_control, p.border_focus, self._hv)
 
         round_rect(self, 0.5, top + 0.5, self.box - 0.5, top + self.box - 0.5,
-                   S(5), fill=fill, outline=outline, width=S(1))
+                   S(RADIUS_SM), fill=fill, outline=outline, width=STK.control)
         if self.value:
             draw_icon(self, "check", S(2), top + S(2), self.box - S(4),
-                      p.on_brand, S(2))
+                      p.on_brand, STK.icon_bold)
         self.create_text(self.box + S(10), top + self.box / 2, anchor="w",
                          text=self.label, fill=self.text_color or p.text,
                          font=theme.font(self, self.font_size))
@@ -602,7 +682,8 @@ class Checkbox(tk.Canvas):
             self._hv = start + (target - start) * t
             self._draw()
 
-        anim.tween(self, "hover", 130, frame, anim.ease_out_cubic, interval=16)
+        anim.tween(self, "hover", MOTION.quick, frame, anim.ease_out_cubic,
+                   interval=MOTION.interval)
 
     def _toggle(self, _e=None):
         self.value = not self.value
@@ -623,7 +704,7 @@ class NavItem(tk.Canvas):
 
     def __init__(self, master, pal: theme.Palette, key: str, label: str, icon: str,
                  command: Callable[[str], None], bg: str | None = None,
-                 height: int = 40, badge: str = ""):
+                 height: int | None = None, badge: str = ""):
         self.pal = pal
         self.key = key
         self.label = label
@@ -634,7 +715,7 @@ class NavItem(tk.Canvas):
         self._hover = False
         self._hv = 0.0
         self.badge = badge
-        self.h = S(height)
+        self.h = height if height is not None else DIM.NAV_ITEM_H
         super().__init__(master, height=self.h, bg=self._bg,
                          highlightthickness=0, bd=0, cursor="hand2")
         self._draw()
@@ -670,7 +751,7 @@ class NavItem(tk.Canvas):
         ic = S(16)
         ix = S(12)
         iy = (self.h - ic) / 2
-        draw_icon(self, self.icon_name, ix, iy, ic, fg, S(1.6))
+        draw_icon(self, self.icon_name, ix, iy, ic, fg, STK.icon_thin)
         self.create_text(ix + ic + S(11), self.h / 2, anchor="w", text=self.label,
                          fill=fg, font=theme.font(self, theme.TS["body"], weight))
         if self.badge:
@@ -696,7 +777,8 @@ class NavItem(tk.Canvas):
             self._hv = start + (target - start) * t
             self._draw()
 
-        anim.tween(self, "hover", 120, frame, anim.ease_out_cubic, interval=16)
+        anim.tween(self, "hover", MOTION.quick, frame, anim.ease_out_cubic,
+                   interval=MOTION.interval)
 
     def set_selected(self, on: bool) -> None:
         if self.selected != on:
@@ -717,21 +799,23 @@ class Segmented(tk.Canvas):
 
     def __init__(self, master, pal: theme.Palette, options: list[tuple[str, str]],
                  value: str, command: Callable[[str], None] | None = None,
-                 bg: str | None = None, height: int = 28, font_size: int = 8):
+                 bg: str | None = None, height: int | None = None,
+                 font_size: int | None = None):
         self.pal = pal
         self.options = options
         self.value = value
         self.command = command
         self._bg = bg or master.cget("bg")
-        self.h = S(height)
-        self.font_size = font_size
-        f = theme.font(master, font_size)
+        self.h = height if height is not None else DIM.SEG_H
+        self.font_size = (font_size if font_size is not None
+                          else theme.TS["micro"])
+        f = theme.font(master, self.font_size)
         probe = tk.Canvas(master, width=1, height=1)
-        widths = [int(probe.tk.call("font", "measure", f, label)) + S(20)
+        widths = [int(probe.tk.call("font", "measure", f, label)) + SP.lg
                   for _, label in options]
         probe.destroy()
         self.seg_w = widths
-        self.w = sum(widths) + S(4)
+        self.w = sum(widths) + SP.xs
         super().__init__(master, width=self.w, height=self.h, bg=self._bg,
                          highlightthickness=0, bd=0, cursor="hand2")
         keys = [k for k, _ in options]
@@ -759,7 +843,7 @@ class Segmented(tk.Canvas):
         p = self.pal
         track = p.bg_subtle if p.name == "light" else p.bg_app
         round_rect(self, 0.5, 0.5, self.w - 0.5, self.h - 0.5, S(RADIUS_MD),
-                   fill=track, outline=p.border, width=S(1))
+                   fill=track, outline=p.border, width=STK.control)
 
         x1, x2 = self._thumb_bounds(self._slide)
         thumb = p.bg_card if p.name == "light" else p.bg_hover
@@ -767,7 +851,7 @@ class Segmented(tk.Canvas):
         round_rect(self, x1, S(3.5), x2, self.h - S(2) + S(1.5), S(RADIUS_SM),
                    fill=p.shadow_near, outline=p.shadow_near)
         round_rect(self, x1, S(2), x2, self.h - S(2), S(RADIUS_SM),
-                   fill=thumb, outline=p.border, width=S(1))
+                   fill=thumb, outline=p.border, width=STK.control)
 
         for i, (_key, label) in enumerate(self.options):
             a, b = self._seg_bounds(i)
@@ -828,7 +912,8 @@ class Segmented(tk.Canvas):
             self._slide = start + (target - start) * t
             self._draw()
 
-        anim.tween(self, "thumb", 170, frame, anim.ease_out_cubic, interval=13)
+        anim.tween(self, "thumb", MOTION.base, frame, anim.ease_out_quint,
+                   interval=MOTION.interval)
         if self.command:
             self.command(key)
 
@@ -841,28 +926,29 @@ class Field(tk.Frame):
 
     def __init__(self, master, pal: theme.Palette, value: str = "",
                  placeholder: str = "", show: str | None = None,
-                 multiline: bool = False, height: int = 34,
-                 font_size: int = 9, bg: str | None = None):
+                 multiline: bool = False, height: int | None = None,
+                 font_size: int | None = None, bg: str | None = None):
         self.pal = pal
         self._bg = bg or master.cget("bg")
         self.placeholder = placeholder
         self.multiline = multiline
         self._focused = False
         self._focus_t = 0.0
-        self.h = S(height)
+        self.h = height if height is not None else DIM.FIELD_H
 
         super().__init__(master, bg=self._bg)
         self.cv = tk.Canvas(self, bg=self._bg, highlightthickness=0, bd=0,
                             height=self.h)
         self.cv.pack(fill="both", expand=True)
 
-        f = theme.font(self, font_size)
+        f = theme.font(self, font_size if font_size is not None
+                       else theme.TS["small"])
         if multiline:
             self.entry = tk.Text(self.cv, bd=0, relief="flat", font=f,
                                  bg=pal.bg_input, fg=pal.text,
                                  insertbackground=pal.brand,
                                  highlightthickness=0, wrap="word",
-                                 padx=S(4), pady=S(3), spacing1=1, spacing3=2)
+                                 padx=SP.xs, pady=SP.xs, spacing1=1, spacing3=2)
             self.entry.insert("1.0", value)
             self.entry.configure(height=4)
         else:
@@ -917,7 +1003,7 @@ class Field(tk.Frame):
                        outline="", tags="fieldbg")
         round_rect(self.cv, 0.5, 0.5, w - 0.5, h - 0.5, S(RADIUS_MD),
                    fill=fill, outline=border,
-                   width=S(1) + (1 if t > 0.5 else 0), tags="fieldbg")
+                   width=STK.ring if t > 0.5 else STK.control, tags="fieldbg")
         self.cv.tag_lower("fieldbg")
 
         inner_w = max(1, w - S(22))
@@ -936,7 +1022,8 @@ class Field(tk.Frame):
             self._focus_t = start + (target - start) * t
             self._on_conf()
 
-        anim.tween(self, "focus", 150, frame, anim.ease_out_cubic, interval=16)
+        anim.tween(self, "focus", MOTION.quick, frame, anim.ease_out_cubic,
+                   interval=MOTION.interval)
 
     def _on_focus_in(self, _e=None):
         self._focused = True
@@ -963,7 +1050,7 @@ class Field(tk.Frame):
             x, y, anchor = S(13), self.h / 2, "w"
         self._placeholder_id = self.cv.create_text(
             x, y, anchor=anchor, text=self.placeholder,
-            fill=self.pal.placeholder, font=theme.font(self, 9),
+            fill=self.pal.placeholder, font=theme.font(self, theme.TS["small"]),
         )
 
     # -- 值接口 ------------------------------------------------------
@@ -1025,6 +1112,8 @@ class ScrollFrame(tk.Frame):
         self._win = self.cv.create_window(0, 0, window=self.inner, anchor="nw")
         self._wheel_bound = False
         self._bind_wheel()
+        self._last_w = -1
+        self._drawn_view = (0.0, 1.0)
 
         self.inner.bind("<Configure>", self._on_inner)
         self.cv.bind("<Configure>", self._on_canvas)
@@ -1033,10 +1122,20 @@ class ScrollFrame(tk.Frame):
         self.bar.bind("<Configure>", lambda e: self._draw_bar(*self._last_view))
 
     def _on_inner(self, _e=None):
-        self.cv.configure(scrollregion=self.cv.bbox("all"))
+        try:
+            # 用 inner 的请求高度而不是 bbox("all")：bbox 要遍历画布上所有
+            # item，而这里只关心那一个 window item 有多高。
+            h = max(self.inner.winfo_reqheight(), self.inner.winfo_height())
+            self.cv.configure(scrollregion=(0, 0, self._last_w, h))
+        except tk.TclError:
+            return
         self._refresh_bar()
 
     def _on_canvas(self, e):
+        # 宽度没变就不用改 inner 的宽度——改了会反过来再触发一次 _on_inner
+        if e.width == self._last_w:
+            return
+        self._last_w = e.width
         self.cv.itemconfigure(self._win, width=e.width)
         self._refresh_bar()
 
@@ -1056,6 +1155,11 @@ class ScrollFrame(tk.Frame):
         self._draw_bar(float(first), float(last))
 
     def _draw_bar(self, first: float, last: float):
+        # 视图没变就不重画：一次重画是 delete + 几个 create，而 <Configure>
+        # 会在布局收敛前反复触发，同样的参数画第二遍没有任何意义。
+        if (first, last) == self._drawn_view and self.bar.find_all():
+            return
+        self._drawn_view = (first, last)
         self.bar.delete("all")
         h = self.bar.winfo_height()
         if h <= 1:
@@ -1107,7 +1211,8 @@ class ScrollFrame(tk.Frame):
             def frame(t):
                 self.cv.yview_moveto(start + (target - start) * t)
 
-            anim.tween(self, "scroll", 170, frame, anim.ease_out_cubic, interval=13)
+            anim.tween(self, "scroll", MOTION.base, frame, anim.ease_out_quint,
+                       interval=MOTION.interval)
         except Exception:
             pass
 
@@ -1145,18 +1250,22 @@ class ScrollFrame(tk.Frame):
             def frame(t):
                 self.cv.yview_moveto(start + (frac - start) * t)
 
-            anim.tween(self, "scroll", 180, frame, anim.ease_out_cubic, interval=13)
+            anim.tween(self, "scroll", MOTION.base, frame, anim.ease_out_quint,
+                       interval=MOTION.interval)
         except Exception:
             pass
 
     # -- 过渡 --------------------------------------------------------
-    def slide_in(self, dx: int = 0, dy: int = 12, duration: int = 220) -> None:
+    def slide_in(self, dx: int = 0, dy: int | None = None,
+                 duration: int | None = None) -> None:
         """把内容整体从偏移处滑到位。
 
         直接动 Canvas 里那个 window item 的坐标，不碰布局，
         所以不会引起重排闪烁。
         """
-        ox, oy = S(dx), S(dy)
+        # dx / dy 是已经过 DPI 换算的像素（调用方传 SP.*），这里不再套 S()。
+        ox = dx
+        oy = dy if dy is not None else SP.sm
 
         def frame(t):
             try:
@@ -1164,7 +1273,8 @@ class ScrollFrame(tk.Frame):
             except tk.TclError:
                 pass
 
-        anim.tween(self, "slide", duration, frame, anim.ease_out_quint, interval=13)
+        anim.tween(self, "slide", duration or MOTION.base, frame,
+                   anim.ease_out_quint, interval=MOTION.interval)
 
 
 # ---------------------------------------------------------------- 段落文本
@@ -1186,13 +1296,16 @@ class Paragraph(tk.Label):
     """
 
     def __init__(self, master, pal: theme.Palette, text: str, bg: str, fg: str,
-                 size: int = 8, mono: bool = False, spacing: int = 2,
-                 lh: int = 0):
+                 size: int | None = None, mono: bool = False,
+                 spacing: int | None = None, lh: int = 0):
         self.pal = pal
+        # spacing 是段落的上下留白，属于间距，走 SP；传进来的必须是已换算的像素。
+        pad = spacing if spacing is not None else SP.xxs
         super().__init__(
             master, text=text, bg=bg, fg=fg,
-            font=theme.font(master, size, mono=mono),
-            justify="left", anchor="w", bd=0, padx=0, pady=spacing,
+            font=theme.font(master, size if size is not None else theme.TS["body"],
+                            mono=mono),
+            justify="left", anchor="w", bd=0, padx=0, pady=pad,
             # 先给一个偏小的折行宽度：Label 的请求宽度不会超过它，
             # 所以父容器不会因为「文本太长」而被撑开。真正的宽度在
             # 第一次 Configure 时换成实测值。
@@ -1233,7 +1346,7 @@ class ListRow(tk.Canvas):
     def __init__(self, master, pal: theme.Palette, title: str, subtitle: str = "",
                  active: bool = False, dot: str | None = None,
                  trailing: str = "", command: Callable | None = None,
-                 bg: str | None = None, height: int = 46,
+                 bg: str | None = None, height: int | None = None,
                  icon: str = "", icon_on: bool = True, badge: str = ""):
         self.pal = pal
         self.title = title
@@ -1243,7 +1356,7 @@ class ListRow(tk.Canvas):
         self.trailing = trailing
         self.command = command
         self._bg = bg or master.cget("bg")
-        self.h = S(height)
+        self.h = height if height is not None else DIM.ROW_H
         self.icon = icon
         self.icon_on = icon_on
         self.badge = badge
@@ -1302,7 +1415,7 @@ class ListRow(tk.Canvas):
             round_rect(self, right - bw, self.h / 2 - S(9), right, self.h / 2 + S(9),
                        S(RADIUS_PILL), fill=p.brand_soft, outline=p.brand_soft)
             self.create_text(right - bw / 2, self.h / 2, text=self.badge,
-                             fill=p.brand_ink, font=theme.font(self, 7, "bold"))
+                             fill=p.brand_ink, font=theme.font(self, theme.TS["micro"], "bold"))
             right -= bw + S(8)
 
         if self.dot and self.icon:
@@ -1321,9 +1434,9 @@ class ListRow(tk.Canvas):
 
         if self.trailing:
             self.create_text(right, self.h / 2, anchor="e", text=self.trailing,
-                             fill=p.text_tertiary, font=theme.font(self, 8))
+                             fill=p.text_tertiary, font=theme.font(self, theme.TS["micro"]))
             right -= S(6) + self.tk.call(
-                "font", "measure", theme.font(self, 8), self.trailing)
+                "font", "measure", theme.font(self, theme.TS["micro"]), self.trailing)
 
         text_x = left + S(2)
         avail = int(right - text_x - S(4))
@@ -1356,7 +1469,8 @@ class ListRow(tk.Canvas):
             self._hv = start + (target - start) * t
             self._draw()
 
-        anim.tween(self, "hover", 120, frame, anim.ease_out_cubic, interval=16)
+        anim.tween(self, "hover", MOTION.quick, frame, anim.ease_out_cubic,
+                   interval=MOTION.interval)
 
     def set_active(self, on: bool) -> None:
         if self.active != on:
@@ -1443,12 +1557,12 @@ class Step(tk.Frame):
         rail.pack(side="left", fill="y")
 
         text = tk.Frame(self, bg=self._bg)
-        text.pack(side="left", fill="both", expand=True, pady=(0, S(14)))
+        text.pack(side="left", fill="both", expand=True, pady=(0, SP.lg))
 
         tk.Label(text, text=title, bg=self._bg, fg=pal.text,
-                 font=theme.font(self, 9, "bold")).pack(anchor="w")
-        Paragraph(text, pal, body, self._bg, pal.text_secondary, size=8,
-                  spacing=3).pack(fill="x", pady=(S(3), 0))
+                 font=theme.font(self, theme.TS["small"], "bold")).pack(anchor="w")
+        Paragraph(text, pal, body, self._bg, pal.text_secondary,
+                  size=theme.TS["micro"], spacing=SP.xxs).pack(fill="x", pady=(SP.xs, 0))
 
         def paint(_e=None):
             h = self.winfo_height()
@@ -1458,11 +1572,11 @@ class Step(tk.Frame):
             cy = S(11)
             if not last:
                 rail.create_line(S(15), cy + S(10), S(15), h - S(2),
-                                 fill=pal.border, width=S(1.5))
+                                 fill=pal.border, width=STK.rule)
             rail.create_oval(S(15) - S(9), cy - S(9), S(15) + S(9), cy + S(9),
                              fill=pal.brand_soft, outline=pal.brand_soft)
             rail.create_text(S(15), cy, text=str(index), fill=pal.brand_ink,
-                             font=theme.font(self, 8, "bold"))
+                             font=theme.font(self, theme.TS["micro"], "bold"))
 
         self.bind("<Configure>", paint)
         anim.later(self, 20, paint)
@@ -1491,23 +1605,23 @@ class Collapsible(tk.Frame):
         self.head = head
 
         if icon:
-            ic = tk.Canvas(head, width=S(16), height=S(16), bg=self._bg,
+            ic = tk.Canvas(head, width=DIM.ICON, height=DIM.ICON, bg=self._bg,
                            highlightthickness=0, bd=0, cursor="hand2")
-            ic.pack(side="left", padx=(0, S(7)))
-            draw_icon(ic, icon, 0, 0, S(16), pal.brand_ink, S(1.6))
+            ic.pack(side="left", padx=(0, SP.sm))
+            draw_icon(ic, icon, 0, 0, DIM.ICON, pal.brand_ink, STK.icon_thin)
             ic.bind("<Button-1>", lambda e: self.toggle())
 
         self.lbl = tk.Label(head, text=title, bg=self._bg, fg=pal.text,
-                            font=theme.font(self, 9, "bold"), cursor="hand2")
+                            font=theme.font(self, theme.TS["small"], "bold"), cursor="hand2")
         self.lbl.pack(side="left")
 
-        self.chev = tk.Canvas(head, width=S(16), height=S(16), bg=self._bg,
+        self.chev = tk.Canvas(head, width=DIM.ICON, height=DIM.ICON, bg=self._bg,
                               highlightthickness=0, bd=0, cursor="hand2")
-        self.chev.pack(side="left", padx=(S(4), 0))
+        self.chev.pack(side="left", padx=(SP.xs, 0))
 
         self.body = tk.Frame(self, bg=self._bg)
         if expanded:
-            self.body.pack(fill="x", pady=(S(6), 0))
+            self.body.pack(fill="x", pady=(SP.sm, 0))
 
         for w in (head, self.lbl, self.chev):
             w.bind("<Button-1>", lambda e: self.toggle())
@@ -1539,11 +1653,11 @@ class Collapsible(tk.Frame):
         # 收起时朝右、展开时朝下，方向本身就是状态提示
         if self.expanded:
             self.chev.create_line(S(4), S(6), S(8), S(10), S(12), S(6),
-                                  fill=self.pal.text_tertiary, width=S(1.6),
+                                  fill=self.pal.text_tertiary, width=STK.icon_thin,
                                   capstyle="round", joinstyle="round")
         else:
             self.chev.create_line(S(6), S(4), S(10), S(8), S(6), S(12),
-                                  fill=self.pal.text_tertiary, width=S(1.6),
+                                  fill=self.pal.text_tertiary, width=STK.icon_thin,
                                   capstyle="round", joinstyle="round")
 
     def _set_hover(self, on: bool):
@@ -1554,40 +1668,58 @@ class Collapsible(tk.Frame):
     def toggle(self):
         self.expanded = not self.expanded
         if self.expanded:
-            self.body.pack(fill="x", pady=(S(6), 0))
+            self.body.pack(fill="x", pady=(SP.sm, 0))
         else:
             self.body.pack_forget()
         self._paint()
 
 
 class Toast(tk.Frame):
-    """底部浮出的轻提示，自动消失。出现时上滑 + 颜色渐显。"""
+    """底部浮出的轻提示，自动消失。出现时上滑 + 颜色渐显。
+
+    宽度按内容自适应，但有上限：一条「发送异常：<一长串 traceback>」如果
+    不设上限，toast 会横向撑出窗口，超出部分被画布裁掉，人反而看不到
+    错误的后半句。所以文字超过 DIM.TOAST_W 就折行，画布随之长高。
+    """
 
     def __init__(self, master, pal: theme.Palette):
         self.pal = pal
         self._timer = None
         super().__init__(master, bg=pal.bg_card, highlightthickness=0)
         self.cv = tk.Canvas(self, bg=pal.bg_card, highlightthickness=0, bd=0,
-                            height=S(40))
+                            height=DIM.TOAST_H)
         self.cv.pack(fill="both", expand=True)
-        self.icon = tk.Canvas(self.cv, width=S(18), height=S(18), bg=pal.bg_card,
+        self.icon = tk.Canvas(self.cv, width=DIM.ICON_LG, height=DIM.ICON_LG, bg=pal.bg_card,
                               highlightthickness=0, bd=0)
-        self._icon_win = self.cv.create_window(S(14), S(20), window=self.icon,
-                                               anchor="w")
+        self._icon_win = self.cv.create_window(S(14), DIM.TOAST_H / 2,
+                                               window=self.icon, anchor="w")
         self.label = tk.Label(self.cv, text="", bg=pal.bg_card, fg=pal.text,
-                              font=theme.font(master, 9))
-        self._win = self.cv.create_window(S(40), S(20), window=self.label, anchor="w")
+                              font=theme.font(master, theme.TS["small"]),
+                              justify="left")
+        self._win = self.cv.create_window(S(40), DIM.TOAST_H / 2,
+                                          window=self.label, anchor="w")
         self.cv.bind("<Configure>", self._draw)
+
+    def _fit(self) -> None:
+        """按文字实测尺寸定画布宽高，并把图标与文字重新垂直居中。"""
+        self.label.configure(wraplength=DIM.TOAST_W)
+        self.label.update_idletasks()
+        tw = min(self.label.winfo_reqwidth(), DIM.TOAST_W)
+        th = self.label.winfo_reqheight()
+        h = max(DIM.TOAST_H, th + SP.md)
+        self.cv.configure(width=S(40) + tw + SP.md, height=h)
+        self.cv.coords(self._icon_win, S(14), h / 2)
+        self.cv.coords(self._win, S(40), h / 2)
 
     def _draw(self, e=None):
         self.cv.delete("bg")
         w = self.cv.winfo_width() or S(300)
-        h = self.cv.winfo_height() or S(40)
+        h = self.cv.winfo_height() or DIM.TOAST_H
         p = self.pal
         round_rect(self.cv, 0, S(2), w, h + S(2), S(RADIUS_LG),
                    fill=p.shadow_near, outline=p.shadow_near, tags="bg")
         round_rect(self.cv, 0.5, 0.5, w - 0.5, h - 0.5, S(RADIUS_LG),
-                   fill=p.bg_card, outline=p.border, width=S(1), tags="bg")
+                   fill=p.bg_card, outline=p.border, width=STK.control, tags="bg")
         self.cv.tag_lower("bg")
 
     def show(self, text: str, kind: str = "ok", ms: int = 2600) -> None:
@@ -1600,9 +1732,10 @@ class Toast(tk.Frame):
         }
         color, icon = colors.get(kind, colors["ok"])
         self.icon.delete("all")
-        draw_badge(self.icon, 0, 0, S(18), icon, color, "#ffffff", radius=S(5),
+        draw_badge(self.icon, 0, 0, DIM.ICON_LG, icon, color, "#ffffff", radius=S(RADIUS_SM),
                    icon_scale=0.62)
         self.label.configure(text=text, fg=p.text)
+        self._fit()
         if self._timer:
             try:
                 self.after_cancel(self._timer)
@@ -1615,7 +1748,8 @@ class Toast(tk.Frame):
             self.place(relx=0.5, rely=1.0, anchor="s", y=-S(14) + int(S(10) * (1 - t)))
 
         self.place(relx=0.5, rely=1.0, anchor="s", y=-S(14) + S(10))
-        anim.tween(self, "in", 180, frame, anim.ease_out_cubic, interval=13)
+        anim.tween(self, "in", MOTION.base, frame, anim.ease_out_cubic,
+                   interval=MOTION.interval)
 
     def hide(self) -> None:
         self._timer = None
@@ -1627,7 +1761,8 @@ class Toast(tk.Frame):
             except tk.TclError:
                 pass
 
-        anim.tween(self, "in", 130, frame, anim.ease_out_cubic, interval=13,
+        anim.tween(self, "in", MOTION.quick, frame, anim.ease_out_cubic,
+                   interval=MOTION.interval,
                    on_done=self.place_forget)
 
 
@@ -1708,8 +1843,8 @@ class NavRail(tk.Canvas):
                              fill=self.pal.brand, outline=self.pal.brand,
                              tags="travel")
 
-        anim.tween(self, "travel", 240, frame, anim.ease_in_out_cubic,
-                   interval=13, on_done=lambda: self.delete("travel"))
+        anim.tween(self, "travel", MOTION.slow, frame, anim.ease_out_quint,
+                   interval=MOTION.interval, on_done=lambda: self.delete("travel"))
 
     def _ys(self) -> list[tuple[float, bool]]:
         out = []
@@ -1732,9 +1867,9 @@ class NavRail(tk.Canvas):
                 continue
             if pts[i][1]:
                 self.create_line(cx, y0 + S(4), cx, y1 - S(4), fill=self.pal.rail,
-                                 width=S(1), dash=(S(1), S(4)))
+                                 width=STK.rule, dash=(S(1), S(4)))
             else:
-                self.create_line(cx, y0, cx, y1, fill=self.pal.rail, width=S(1))
+                self.create_line(cx, y0, cx, y1, fill=self.pal.rail, width=STK.rule)
 
         for (cy, _gap), (item, _g) in zip(pts, self._entries, strict=False):
             sel = bool(getattr(item, "selected", False))
@@ -1748,7 +1883,7 @@ class NavRail(tk.Canvas):
                 r = S(2.8)
                 self.create_oval(cx - r, cy - r, cx + r, cy + r,
                                  fill=self._bg, outline=self.pal.rail,
-                                 width=S(1.5))
+                                 width=STK.rule)
 
 
 class Section(tk.Frame):
@@ -1760,7 +1895,7 @@ class Section(tk.Frame):
     """
 
     def __init__(self, master, pal: theme.Palette, title: str, desc: str = "",
-                 bg: str | None = None, gap: int = 18):
+                 bg: str | None = None, gap: int | None = None):
         self.pal = pal
         self._bg = bg or master.cget("bg")
         super().__init__(master, bg=self._bg)
@@ -1772,16 +1907,17 @@ class Section(tk.Frame):
                  font=theme.font(self, theme.TS["section"], "bold")).pack(side="left")
 
         line = tk.Canvas(head, height=S(11), bg=self._bg, highlightthickness=0, bd=0)
-        line.pack(side="left", fill="x", expand=True, padx=(S(10), 0))
+        line.pack(side="left", fill="x", expand=True, padx=(SP.sm, 0))
         line.bind("<Configure>", lambda e, c=line: self._paint_rule(c))
 
         if desc:
             Paragraph(self, pal, desc, self._bg, pal.text_tertiary,
                       size=theme.TS["small"], spacing=2).pack(
-                fill="x", pady=(S(3), 0))
+                fill="x", pady=(SP.xs, 0))
 
         self.body = tk.Frame(self, bg=self._bg)
-        self.body.pack(fill="x", pady=(S(10), S(gap)))
+        # gap 传的是已换算过的像素；不传就用分节默认的下边距
+        self.body.pack(fill="x", pady=(SP.sm, gap if gap is not None else SP.lg))
 
     def _paint_rule(self, c: tk.Canvas):
         c.delete("all")
@@ -1789,7 +1925,7 @@ class Section(tk.Frame):
         if w <= 2:
             return
         c.create_line(0, c.winfo_height() / 2, w, c.winfo_height() / 2,
-                      fill=self.pal.border, width=S(1))
+                      fill=self.pal.border, width=STK.rule)
 
 
 class Metric(tk.Frame):
@@ -1815,10 +1951,10 @@ class Metric(tk.Frame):
         if unit:
             tk.Label(row, text=unit, bg=self._bg, fg=pal.text_tertiary,
                      font=theme.font(self, theme.TS["micro"])).pack(
-                side="left", padx=(S(3), 0), pady=(S(4), 0))
+                side="left", padx=(SP.xs, 0), pady=(SP.xs, 0))
         tk.Label(self, text=label, bg=self._bg, fg=pal.text_tertiary,
                  font=theme.font(self, theme.TS["micro"])).pack(
-            anchor="w", pady=(S(1), 0))
+            anchor="w", pady=(SP.xxs, 0))
 
     def set_value(self, value: str, color: str | None = None) -> None:
         self.value_lbl.configure(text=value)
@@ -1882,7 +2018,7 @@ class Timeline(tk.Frame):
         # 竖向连线（除了最后一行都往下延伸）
         if cv is not self._rows[-1]:
             cv.create_line(x_node, cy, x_node, S(self.ROW_H), fill=p.border,
-                           width=S(1))
+                           width=STK.rule)
 
         cv.create_text(x_time, cy, anchor="w", text=r.get("time", ""),
                        fill=theme.mix(p.border_strong, p.text_tertiary, t),
@@ -1923,7 +2059,8 @@ class Timeline(tk.Frame):
                     c._rev = t
                     self._paint(c)
 
-                anim.tween(c, "rev", 260, frame, anim.ease_out_quint, interval=16)
+                anim.tween(c, "rev", MOTION.slow, frame, anim.ease_out_quint,
+                           interval=MOTION.interval)
 
             anim.later(cv, 45 * i, run)
 
@@ -1941,20 +2078,20 @@ class EmptyState(tk.Frame):
         self._bg = bg or master.cget("bg")
         super().__init__(master, bg=self._bg)
         box = tk.Frame(self, bg=self._bg)
-        box.pack(anchor="w", pady=(S(6), S(10)))
+        box.pack(anchor="w", pady=(SP.sm, SP.sm))
 
-        ic = tk.Canvas(box, width=S(30), height=S(30), bg=self._bg,
+        ic = tk.Canvas(box, width=DIM.ICON_BOX, height=DIM.ICON_BOX, bg=self._bg,
                        highlightthickness=0, bd=0)
         ic.pack(anchor="w")
-        draw_badge(ic, 0, 0, S(30), icon, pal.bg_subtle, pal.text_tertiary,
+        draw_badge(ic, 0, 0, DIM.ICON_BOX, icon, pal.bg_subtle, pal.text_tertiary,
                    radius=S(9), icon_scale=0.5)
 
         tk.Label(box, text=title, bg=self._bg, fg=pal.text,
                  font=theme.font(self, theme.TS["body"], "bold")).pack(
-            anchor="w", pady=(S(8), 0))
+            anchor="w", pady=(SP.sm, 0))
         Paragraph(box, pal, body, self._bg, pal.text_tertiary,
-                  size=theme.TS["small"], spacing=3).pack(fill="x", pady=(S(2), 0))
+                  size=theme.TS["small"], spacing=3).pack(fill="x", pady=(SP.xxs, 0))
         if action:
             text, cmd = action
             Button(box, text, pal, cmd, variant="secondary",
-                   bg=self._bg).pack(anchor="w", pady=(S(10), 0))
+                   bg=self._bg).pack(anchor="w", pady=(SP.sm, 0))
