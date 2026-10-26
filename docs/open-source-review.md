@@ -258,6 +258,75 @@ pytest 报 `AssertionError: 测试中禁止联网` → 装置确实生效。探�
 
 ---
 
+## 一之七、CI 与静态检查（提示词 3 执行结果）
+
+```
+ruff check .                     → All checks passed!   (54 → 0)
+python -m compileall -q ...      → exit 0
+pytest -q                        → 170 passed in 4.7s
+actionlint .github/workflows/ci.yml → exit 0
+```
+
+矩阵 2 OS × 3 Python = 6 job。Windows 跑全量（ruff + compileall + pytest），
+ubuntu 只跑 pytest —— 本项目是 Windows 专有实现（DWM 标题栏、`icacls`、
+`SPI_GETCLIENTAREAANIMATION`），在 ubuntu 上静态检查通过不代表任何东西，
+反而会给人「跨平台可用」的错觉。ubuntu 只回答一个问题：
+**纯逻辑层（折行 / 清洗 / 过滤 / 事件）是不是真的与平台无关。**
+
+模拟 ubuntu：163 passed, 5 skipped（`skipif` 而非 `-k` 排除 ——
+被跳过的会以 skipped 出现在报告里，用 `-k` 排除的话哪天用例被误删也看不出来）。
+
+### ruff 54 → 0，挖出 3 个真问题
+
+**① `Toast` 的背景从第一次提交起就没画出来过。**
+
+`wbn/widgets.py` 的 `_draw()` 用了 `RADIUS_LG`，但 import 行只有
+`RADIUS_MD, RADIUS_PILL, RADIUS_SM, S`。`git show 8b085a8:wbn/widgets.py`
+确认：初始提交就是坏的。
+
+为什么活了 8 个提交、两轮人工审查、一套无障碍审查都没发现：
+**`pythonw.exe` 的 stderr 是 None，Tk 把回调异常写不出去，等于没有。**
+用户看到的现象只是「提示弹出来了，但没有圆角背景」—— 没人会去查日志。
+
+已补 import，并加 `test_toast_draws_its_background` 守行为。
+
+**② `tray.py` 的 `store` 未使用** —— 已删（正是本报告 P1-3 点的那处）。
+
+**③ `audit.py:19` 的 `channels`** —— 已在 `5d0cc09` 删过，本次复核确认不在。
+
+另外处理了 `B023 ×3`（audit.py 循环里定义嵌套遍历器，闭包捕获循环变量）、
+`E741`、`B904`，以及 41 处机械修复（27 个多余 coding cookie、8 处 import 排序、
+`typing.Callable` → `collections.abc`）。
+
+### 三个坑
+
+| 坑 | 现象 | 处理 |
+|---|---|---|
+| `pytest.ini` 压过 `pyproject.toml` | 两文件并存时 `[tool.pytest.ini_options]` 整段静默失效，markers 没注册 | 删 `pytest.ini`，`--tb=short -ra` 并入 addopts |
+| `-m 'not gui'` 会连 Windows 一起排除 | 原 addopts 写 `not gui and not network`，Windows 上 GUI 用例也跑不到，与「Windows 跑全量」冲突 | addopts 只留 `not network`，gui 交给 `skipif` |
+| Tk 反复创建会崩 | 同进程第 3 次 `Tk()` 在 `source tk.tcl` 阶段失败（`SourceLibFile icons`） | `tk_root` 改 session scope 共享 root，每例只清子控件 |
+
+### workflow 本身也有测试
+
+`tests/test_ci_workflow.py`（12 例）解析 `ci.yml`，把约定变成断言：
+矩阵是 2×3、ruff 在 compileall 之前、lint 只在 Windows、pytest 步不许出现 `-k`、
+`fail-fast` 为真、`PYTHONUTF8=1` 存在、markers 已注册。
+
+**workflow 是纯配置，改错了本地毫无感觉，只能靠测试兜。** 这个思路值得保留。
+
+### 本次复核后补的一处（`cd6cef1`）
+
+上面 ① 的根因是「Tk 异常被吞」，补 import 只治了这一例，不治这一类。
+已新增 `theme.install_tk_exception_hook(root, on_error=None)`：
+
+- `ui.py` 的 `main()` 装上它 → 同类异常落进 `logs/notify-*.log`
+- `audit.py` 装上并把异常计入 `FAIL` → 审查脚本从此能看见「界面少画了东西」
+
+配 2 个用例：验证钩子确实写日志、确实调用 `on_error`。
+装完跑 `audit.py` 仍然全绿 —— 说明当前没有其他隐藏异常，这是安全网不是补丁。
+
+---
+
 ## 二、现状盘点（已核实，非推测）
 
 ### 2.1 已验证通过的部分
@@ -517,10 +586,10 @@ README 第五章「安全设计」写得很好，但不在 GitHub 识别的标�
 
 | # | 动作 | 完成判据 | 状态 |
 |---|---|---|---|
-| 10 | `tests/` + pytest，覆盖折行 / 编码 / 事件归类 | `pytest -q` 全绿，用例 ≥ 25 | ✅ **139 用例，全绿** |
-| 11 | ruff 配置 + 修 2 处未使用 import | `ruff check .` 零 error | 🟡 配置已就位，未装 ruff 跑过 |
-| 12 | GitHub Actions（3 OS × 3 Python） | PR 上 CI 全绿 | ❌ 待做 |
-| 13 | `channels.py` 拆出 `wechat.py` | `channels.py` < 750 行，`wechat.py` 可独立测 | ❌ 待做（测试已就位，现在可以做了） |
+| 10 | `tests/` + pytest，覆盖折行 / 编码 / 事件归类 | `pytest -q` 全绿，用例 ≥ 25 | ✅ **170 用例，全绿** |
+| 11 | ruff 配置 + 修 2 处未使用 import | `ruff check .` 零 error | ✅ **54 → 0** |
+| 12 | GitHub Actions（2 OS × 3 Python） | PR 上 CI 全绿 | ✅ 6 job，actionlint 通过 |
+| 13 | `channels.py` 拆出 `wechat.py` | `channels.py` < 750 行，`wechat.py` 可独立测 | ❌ 待做（测试与 CI 已就位，可以做了） |
 | 14 | `install.py status` 检测解释器失效 | 手动改坏 settings.json 里的路径后能报出来 | ❌ 待做 |
 
 ### 阶段 4 · 可传播（按需）
