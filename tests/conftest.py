@@ -42,9 +42,13 @@ def isolated_state(tmp_path, monkeypatch):
     return tmp_path
 
 
-@pytest.fixture
+@pytest.fixture(autouse=True)
 def no_network(monkeypatch):
-    """把 socket 连接掐死，任何漏网的网络调用都会直接报错而不是静默通过。"""
+    """把 socket 连接掐死，任何漏网的网络调用都会直接报错而不是静默通过。
+
+    设为 autouse：这条防线的价值在于拦住**将来**误写的联网测试。
+    如果做成按需使用，下一个人加了发真实通知的用例也不会有人发现。
+    """
     import socket
 
     def _boom(*args, **kwargs):
