@@ -1,2 +1,6 @@
 # 开发 / CI 依赖。运行时本体仍是纯标准库（托盘模块的 pystray / pillow 见 README）。
 pytest>=8.0
+# 固定到次版本：ruff 的规则集随版本变化，CI 与本地必须同一版才谈得上「零 error」
+ruff==0.17.2
+# 只给 tests/test_ci_workflow.py 解析 .github/workflows/ci.yml 用
+pyyaml>=6.0

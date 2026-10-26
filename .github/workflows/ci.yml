@@ -1,0 +1,70 @@
+name: CI
+
+# 两道门：PR 上拦、main 上兜底。
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+# 同一分支连续推送时取消上一轮，省 runner 也省等待
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    name: ${{ matrix.os }} / py${{ matrix.python-version }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 15
+
+    # 2 OS × 3 Python = 6 个 job。fail-fast：任一组合红了就停掉其余，
+    # 不让 5 个绿勾掩盖 1 个红叉。
+    strategy:
+      fail-fast: true
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+        python-version: ["3.10", "3.12", "3.13"]
+
+    env:
+      # Windows runner 默认按 cp936 处理 stdio，断言里的中文/符号会 encode 失败
+      PYTHONUTF8: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+
+      - name: 安装开发依赖
+        run: python -m pip install -r requirements-dev.txt
+
+      # ---------------------------------------------------------------
+      # 检查项按「快 → 慢」排，任何一步失败后续不再执行：
+      #   ruff（秒级，纯静态） → compileall（秒级，语法/字节码）
+      #   → pytest（十秒级，真实执行）
+      # 只有 Windows 跑前两步：本项目是 Windows 专有实现（DWM 标题栏、
+      # icacls、SPI_GETCLIENTAREAANIMATION），在 ubuntu 上静态检查跑通
+      # 不代表任何东西，反而会给人「跨平台可用」的错觉。
+      # ubuntu 只负责回答一个问题：纯逻辑层（折行/清洗/过滤/事件）是不是
+      # 真的与平台无关。
+      # ---------------------------------------------------------------
+
+      - name: ruff check
+        if: runner.os == 'Windows'
+        run: python -m ruff check --output-format=github .
+
+      - name: byte-compile
+        if: runner.os == 'Windows'
+        run: python -m compileall -q -x '(^|[/\\])\.venv' .
+
+      - name: pytest
+        # 不加 -k：平台差异由用例内的 pytest.mark.skipif 表达，
+        # 这样 ubuntu 上被跳过的东西会以 skipped 出现在报告里，而不是消失。
+        run: python -m pytest -q
