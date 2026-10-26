@@ -1,5 +1,4 @@
 #!/usr/bin/env python
-# -*- coding: utf-8 -*-
 """界面响应性能基线。
 
 为什么需要这个脚本：
