@@ -22,6 +22,44 @@
 
 ---
 
+## 一之二、执行进度（2026-10-26 更新）
+
+| P0 项 | 状态 | 证据 |
+|---|---|---|
+| P0-1 凭证剥离 | 🟡 **部分完成** | 仓库内零命中；但 **appsecret 仍需用户去后台重置** |
+| P0-2 git + .gitignore | ✅ 完成 | 37 文件入库，`git status` clean |
+| P0-3 LICENSE | ✅ 完成 | MIT，Copyright (c) 2026 XingHan |
+| P0-4 依赖声明 | 🟡 部分完成 | `requirements.txt` ✅ / `pyproject.toml` 待补 |
+| P0-5 README 从零流程 | ❌ **未做** | README 仍假设 `.venv` 已存在（L309） |
+| P0-6 README 事实错误 | ❌ **未做** | theme.py 重复、3 处绝对路径、图片重复引用 |
+
+已验证的克隆可用性（`git clone` 到临时目录后实测）：
+
+```
+不存在(正确): config.json / state/token_cache.json / logs/*.log / .venv
+compileall 退出码=0
+11 个模块导入成功，tkinter 8.6
+config.save_default_if_missing() → True，通道数 10
+tray.py 在无 pystray 时 pystray=None，降级路径可用
+selftest.py --encoding → 编码检查全部通过 / 折行检查全部通过
+```
+
+结论：核心链路确实是「标准库即可运行」，克隆后不需要任何 pip 安装就能跑通引擎。
+`requirements.txt` 只是托盘与开发工具的补充。
+
+**另已处理**：commit 作者邮箱从真实邮箱改为 `XingHan@users.noreply.github.com`，
+reflog 已清空并 `gc --prune=now`，旧对象（含真实邮箱）已物理删除，
+`git fsck --unreachable` 无残留。若 GitHub 用户名不是 `XingHan`，推送前改一行：
+
+```bash
+git config user.email "<你的用户名>@users.noreply.github.com"
+git commit --amend --reset-author --no-edit
+```
+
+
+
+---
+
 ## 二、现状盘点（已核实，非推测）
 
 ### 2.1 已验证通过的部分
