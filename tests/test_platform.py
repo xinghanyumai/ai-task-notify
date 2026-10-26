@@ -103,6 +103,41 @@ def test_toast_draws_its_background(tk_root):
     assert len(toast.cv.find_all()) >= 2, "Toast 背景没画出来"
 
 
+@pytest.mark.gui
+def test_tk_exception_hook_records_swallowed_callback_errors(tk_root):
+    """Tk 回调异常默认只写 stderr，pythonw.exe 下 stderr 是 None，等于消失。
+
+    Toast 的 bug 就是这么活过 8 个提交的。装了钩子必须能落进运行日志，
+    否则等于没装。
+    """
+    from wbn import store
+
+    theme.install_tk_exception_hook(tk_root)
+    try:
+        raise ValueError("draw 挂了")
+    except ValueError:
+        tk_root.report_callback_exception(*sys.exc_info())
+
+    log = store.log_path().read_text(encoding="utf-8", errors="replace")
+    assert "Tk 回调异常" in log
+    assert "draw 挂了" in log
+
+
+@pytest.mark.gui
+def test_tk_exception_hook_calls_on_error_callback(tk_root):
+    """审查脚本靠这个回调把异常计成失败项，不能只记日志。"""
+    captured: list[str] = []
+
+    theme.install_tk_exception_hook(tk_root, on_error=captured.append)
+    try:
+        raise RuntimeError("审查用")
+    except RuntimeError:
+        tk_root.report_callback_exception(*sys.exc_info())
+
+    assert captured, "on_error 没被调用"
+    assert "审查用" in captured[0]
+
+
 # ---------------------------------------------------------------- Windows API
 
 

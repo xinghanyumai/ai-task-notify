@@ -1800,6 +1800,9 @@ def main() -> None:
     theme.set_app_user_model_id()      # 必须在建窗口之前，否则任务栏认不到我们的图标
     config.save_default_if_missing()
     root = tk.Tk()
+    # pythonw.exe 下 stderr 是 None，Tk 回调里的异常会彻底消失。
+    # 装上钩子后至少能在 logs/notify-*.log 里查到。
+    theme.install_tk_exception_hook(root)
     app = App(root)
     root.bind("<Control-s>", lambda e: app.on_save())
     root.bind("<Control-t>", lambda e: app.on_test())

@@ -351,3 +351,40 @@ def contrast(fg: str, bg: str) -> float:
     a, b = _srgb_lum(fg), _srgb_lum(bg)
     hi, lo = max(a, b), min(a, b)
     return (hi + 0.05) / (lo + 0.05)
+
+
+# ---------------------------------------------------------------- 回调异常
+
+def install_tk_exception_hook(root, on_error=None) -> None:
+    """把 Tk 回调里未捕获的异常接住，别让它凭空消失。
+
+    Tk 默认把回调异常打到 stderr。但本程序是用 pythonw.exe 启动的，
+    **stderr 是 None**，异常写不出去就等于没有。Toast 的圆角背景从第一次
+    提交起就没画出来过 —— `_draw()` 里引用了未导入的 `RADIUS_LG`，
+    NameError 被吞掉，界面上只表现为「提示弹出来了但没有背景」，
+    没人会想到去查日志。这个坑活了 8 个提交、两轮人工审查、一套无障碍审查。
+
+    装了这个钩子之后，同类问题会以「Tk 回调异常」出现在
+    `logs/notify-YYYY-MM-DD.log`，`audit.py` 也能把它算成失败项。
+
+    on_error：可选回调，收到格式化后的异常文本。审查脚本用它把异常计入失败，
+    而不是只记日志。
+    """
+    import traceback
+
+    def _hook(exc_type, exc_value, exc_tb) -> None:
+        text = "".join(traceback.format_exception(exc_type, exc_value, exc_tb))
+        try:
+            from . import store
+
+            store.log(f"Tk 回调异常: {text}")
+        except Exception:
+            pass
+        if on_error is not None:
+            try:
+                on_error(text)
+            except Exception:
+                pass
+
+    root.report_callback_exception = _hook
+

@@ -260,6 +260,11 @@ def main() -> None:
     import ui
 
     root = tk.Tk()
+    # Tk 回调里的异常默认只写 stderr，审查脚本就看不见。
+    # 装钩子把它们计入失败项 —— 否则「界面少画了点东西」这类问题永远是绿的。
+    theme.install_tk_exception_hook(
+        root, on_error=lambda text: FAIL.append(f"Tk 回调异常：{text.splitlines()[-1]}")
+    )
     app = ui.App(root)
     root.update_idletasks()
 
