@@ -3,6 +3,28 @@
 本文件记录所有值得用户注意的变更。格式参考 [Keep a Changelog](https://keepachangelog.com/zh-CN/1.1.0/)，
 版本号遵循 [语义化版本](https://semver.org/lang/zh-CN/)。
 
+## [未发布]
+
+### 变更
+
+- **文档体系重构**：README 从 738 行压到 167 行，只留定位、截图、从零快速开始、
+  通道选择表、常见问题和索引。正文拆到 `docs/`：`architecture.md`（hook 协议、
+  事件归类、两段式架构）、`design.md`（界面语汇、设计令牌、自绘控件、无障碍）、
+  `security.md`、`troubleshooting.md`（含编码事故完整复盘）。
+- **新增 `docs/channels/`**：10 个通道各一页，写申请步骤、字段含义和各自的坑。
+- **新增 `docs/adr/`**：6 条决策记录（hooks 而非轮询、管道而非临时文件、微信测试号
+  而非第三方平台、品牌绿拆令牌、多变量而非 `\n`、Python 加 Tkinter），
+  每条都有背景、决策、代价、备选方案，带实测数据。
+- **开源自查报告拆成 `docs/reviews/` 七部分**，单文件从 1039 行降到 300 行以内。
+
+### 修复
+
+- **README 事实错误**：文件结构里 `theme.py` 被列了两次；三处硬编码绝对路径
+  `D:\Code\Work buddy 通知` 改为相对路径；「`.venv` 已就绪」改为从零创建虚拟环境的命令。
+- `Toast` 控件引用了从未导入的 `RADIUS_LG`，这个 `NameError` 从首个提交起就存在，
+  被 `pythonw.exe` 吞掉，现已修复并加了回归用例。
+- `sanitize.redact` 把 CRLF 折成两个空格，改为用一条正则折成一个，脱敏后的日志行不再有多余空格。
+
 ## [1.0.0] - 2026-10-25
 
 首个可用版本。核心链路已在 WorkBuddy / CodeBuddy 上完成端到端验证。
