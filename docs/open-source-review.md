@@ -128,6 +128,68 @@ git config user.email "<你的用户名>@users.noreply.github.com"
 git commit --amend --reset-author --no-edit
 ```
 
+---
+
+## 一之五、死代码清理（ponytail-audit 执行结果）
+
+用 `ponytail-audit` 全仓扫了一遍，结论是**这个项目的规模不是靠抽象膨胀起来的**，
+是靠「每个部件都手绘一遍」堆起来的（widgets + ui = 42% 的代码在画界面）。
+所以能砍的只有死代码，没有架构级冗余。
+
+### 审计提出的 10 项，执行 6 项
+
+| # | 项 | 核实 | 处理 |
+|---|---|---|---|
+| 1 | `Card` / `StatTile` / `MonoRow` 三个类零引用 | ✅ 全仓 grep 确认 0 引用 | **已删 -190 行** |
+| 2 | `draw_icon` 里 11 个零调用图标分支 | ✅ 逐个核对：external/refresh/moon/sun/monitor/play/shield/clock/grid/spark/x 定义外引用均为 0 | **已删** |
+| 7 | `overlay` 字段 + `with_alpha()` | ✅ 0 引用 | **已删 -8 行** |
+| 9 | `_clip()` 只有一个调用点 | ✅ | **已删**，调用点改用 `_clip_line`（会断在标点处，行为更好） |
+| 10 | `audit.py` 的永真断言 | ✅ `hasattr(W,"EmptyState")` 只要类还在就通过 | **换成真检查**：用 `inspect.signature` 验 `EmptyState.__init__` 有 `action` 参数 |
+| — | `audit.py` 未使用 import | ✅ | **已删** `channels` |
+
+### 跳过 4 项，理由统一：改逻辑需要测试，删死代码不需要
+
+| # | 项 | 为什么现在不做 |
+|---|---|---|
+| 3 | `deep_merge` + `_merge_channels` 合并成一个 | 会改配置合并行为，老用户 config.json 的兼容性靠它撑着。等提示词 2 的测试就位 |
+| 4 | `selftest._channel_desc` 改用 `channels.missing_fields` | 输出格式会变，属于行为变更，需先有快照测试 |
+| 5 | `_wrap_detail` 的 `join`/`split` 往返改成 `_split_slots` | 折行是最易回归的排版逻辑，先有测试再动 |
+| 6 | `selftest` 5 处横幅收敛成 helper | 纯样式，收益 11 行，不值一次提交 |
+
+另外**否掉了审计的第 8 项**（`tray.pythonw` 与 `hook.pythonw` 逐字节相同）：
+合并它需要新建一条 `tray → hook` 的导入边，而 `hook.py` 是 stdin 驱动的入口脚本，
+被托盘模块导入在语义上很别扭。**6 行纯函数重复，比一条错误的依赖边更便宜。**
+
+### 结果
+
+```
+9321 → 9123 行  (-198, -2.1%)
+wbn/widgets.py  2151 → 1961
+wbn/theme.py     364 →  355
+wbn/channels.py 1405 → 1400
+```
+
+验证（全部实测）：
+
+```
+python -m compileall .            通过
+11 个 wbn 模块导入                 通过
+selftest.py --encoding            编码 + 折行检查全绿
+selftest.py --dry                 4/4 场景渲染正常
+audit.py                          全部通过，含新增的「EmptyState 接受 action」真断言
+```
+
+> 顺带修掉一个隐性隐患：Edit 工具会把文件写成 CRLF，与 `.gitattributes` 的
+> `eol=lf` 冲突。已把全部 30 个文本文件统一转回 LF，`git ls-files --eol` 现在
+> 只有 `w/lf` 与 `w/-text`（图片），不再有 CRLF 警告。
+
+### 下一个决策点
+
+死代码清完了，剩下的都是**行为变更**。此时继续动代码是赌博 ——
+下一步应该是提示词 2（把 `selftest.py` 的手工检查改成 pytest），
+有了测试再回头做第 3/4/5 项。
+
+
 
 
 
