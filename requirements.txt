@@ -1,0 +1,12 @@
+# 核心链路不需要任何第三方依赖。
+#
+# hook.py / dispatch.py / wbn/ 全部只用 Python 标准库（json / urllib / smtplib /
+# tkinter / hashlib …），所以「装完就能收通知」这件事不依赖 pip。
+#
+# 下面两个包只在这两种场景需要：
+#   1. 托盘常驻（tray.py）—— pystray 负责系统托盘，Pillow 负责画图标
+#   2. 开发工具（make_icon.py 生成图标、shot.py 截图）
+# 缺了它们，设置中心仍能正常打开，只是没有托盘图标（tray.py 会自动降级）。
+
+pystray>=0.19,<0.20
+Pillow>=10.0

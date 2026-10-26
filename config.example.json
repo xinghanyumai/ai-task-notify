@@ -1,0 +1,130 @@
+{
+  "version": 1,
+  "enabled": true,
+  "app_name": "WorkBuddy",
+  "channels": [
+    {
+      "type": "wxmp",
+      "enabled": false,
+      "appid": "",
+      "secret": "",
+      "template_id": "",
+      "openid": "",
+      "url": "",
+      "wrap": true
+    },
+    {
+      "type": "wecom_app",
+      "enabled": false,
+      "corpid": "",
+      "secret": "",
+      "agentid": "",
+      "touser": "@all"
+    },
+    {
+      "type": "bark",
+      "enabled": false,
+      "server": "https://api.day.app",
+      "key": "",
+      "group": "AI 任务",
+      "sound": "bell",
+      "level": "active",
+      "icon": ""
+    },
+    {
+      "type": "ntfy",
+      "enabled": false,
+      "server": "https://ntfy.sh",
+      "topic": "",
+      "priority": 3,
+      "tags": "robot"
+    },
+    {
+      "type": "wecom_bot",
+      "enabled": false,
+      "webhook": ""
+    },
+    {
+      "type": "dingtalk_bot",
+      "enabled": false,
+      "webhook": "",
+      "secret": ""
+    },
+    {
+      "type": "feishu_bot",
+      "enabled": false,
+      "webhook": ""
+    },
+    {
+      "type": "smtp",
+      "enabled": false,
+      "host": "smtp.qq.com",
+      "port": 465,
+      "ssl": true,
+      "user": "",
+      "password": "",
+      "to": ""
+    },
+    {
+      "type": "webhook",
+      "enabled": false,
+      "url": "",
+      "method": "POST",
+      "headers": {},
+      "body_template": ""
+    },
+    {
+      "type": "log",
+      "enabled": true
+    }
+  ],
+  "triggers": {
+    "task_done": true,
+    "task_failed": true,
+    "need_input": true,
+    "tool_failed": false,
+    "session_start": false,
+    "session_end": false
+  },
+  "filters": {
+    "min_duration_seconds": 20,
+    "question_as_need_input": true,
+    "quiet_hours": "",
+    "projects_include": [],
+    "projects_exclude": [],
+    "keywords_include": [],
+    "dedup_seconds": 180,
+    "max_per_minute": 4,
+    "max_per_hour": 20,
+    "tool_fail_threshold": 3
+  },
+  "templates": {
+    "task_done": "**项目**：{project}\n**耗时**：{duration}\n**时间**：{time}\n\n{summary}",
+    "task_failed": "**项目**：{project}\n**原因**：{error}\n**时间**：{time}\n\n{summary}",
+    "need_input": "**项目**：{project}\n**提示**：{summary}\n**时间**：{time}",
+    "tool_failed": "**项目**：{project}\n**工具**：{tool}\n**错误**：{error}\n**时间**：{time}",
+    "session_start": "**项目**：{project}\n**时间**：{time}",
+    "session_end": "**项目**：{project}\n**时间**：{time}",
+    "test": "通道工作正常。\n**时间**：{time}\n**主机**：{host}"
+  },
+  "titles": {
+    "task_done": "✅ {app} 任务完成",
+    "task_failed": "❌ {app} 任务失败",
+    "need_input": "🙋 {app} 等你确认",
+    "tool_failed": "⚠️ 工具失败 · {tool}",
+    "session_start": "▶️ {app} 会话开始",
+    "session_end": "⏹ {app} 会话结束",
+    "test": "🔔 通知测试"
+  },
+  "advanced": {
+    "http_timeout": 8,
+    "retries": 2,
+    "include_summary": true,
+    "summary_max_chars": 200,
+    "log_retention_days": 14,
+    "hook_budget_ms": 1500
+  },
+  "ui": {
+    "theme": "light"
+  }
+}
