@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """补间动画驱动。
 
 Tkinter 没有动画系统，只有 `after()`。这里封一层可取消的补间：
@@ -14,7 +13,7 @@ from __future__ import annotations
 
 import time
 import tkinter as tk
-from typing import Callable
+from collections.abc import Callable
 
 # (id(widget), key) -> 当前有效的补间序号
 _active: dict[tuple[int, str], int] = {}

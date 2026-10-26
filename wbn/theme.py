@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """设计令牌：对齐 WorkBuddy 的视觉语言。
 
 品牌来源
@@ -31,7 +30,6 @@ from __future__ import annotations
 import ctypes
 import sys
 from dataclasses import dataclass
-
 
 # ---------------------------------------------------------------- 令牌结构
 

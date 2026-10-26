@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """设置中心。
 
 设计说明
@@ -34,7 +33,7 @@ from pathlib import Path
 
 from wbn import anim, channels, config, events, pipeline, render, store, theme
 from wbn import widgets as W
-from wbn.theme import S, TS
+from wbn.theme import TS, S
 
 APP_TITLE = "AI 任务通知"
 APP_VER = "个人版 v1.2"

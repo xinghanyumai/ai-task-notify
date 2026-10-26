@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """输入清洗与脱敏回归。
 
 这里守的是两个真实事故：
@@ -15,7 +14,6 @@ from __future__ import annotations
 import pytest
 
 from wbn.sanitize import clean_obj, clean_text, redact
-
 
 # ---------------------------------------------------------------- clean_text
 

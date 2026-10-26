@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """自绘控件库。
 
 Tkinter 原生控件做不出圆角、投影和克制的交互反馈，所以这里用 Canvas
@@ -14,10 +13,10 @@ Tkinter 原生控件做不出圆角、投影和克制的交互反馈，所以这
 from __future__ import annotations
 
 import tkinter as tk
-from typing import Callable
+from collections.abc import Callable
 
 from . import anim, theme
-from .theme import RADIUS_MD, RADIUS_PILL, RADIUS_SM, S
+from .theme import RADIUS_LG, RADIUS_MD, RADIUS_PILL, RADIUS_SM, S
 
 # 列表行圆角比卡片小一档，单独给个名字，免得和 RADIUS_XL 混淆
 RADIUS_LG_ROW = 10
@@ -770,7 +769,7 @@ class Segmented(tk.Canvas):
         round_rect(self, x1, S(2), x2, self.h - S(2), S(RADIUS_SM),
                    fill=thumb, outline=p.border, width=S(1))
 
-        for i, (key, label) in enumerate(self.options):
+        for i, (_key, label) in enumerate(self.options):
             a, b = self._seg_bounds(i)
             selected = i == self._idx
             color = p.text if selected else (
@@ -809,7 +808,7 @@ class Segmented(tk.Canvas):
         self._set_hover(idx)
 
     def _on_click(self, e):
-        for i, (key, _) in enumerate(self.options):
+        for i, (_key, _) in enumerate(self.options):
             a, b = self._seg_bounds(i)
             if a <= e.x <= b:
                 self._step(i - self._idx)
@@ -1737,7 +1736,7 @@ class NavRail(tk.Canvas):
             else:
                 self.create_line(cx, y0, cx, y1, fill=self.pal.rail, width=S(1))
 
-        for (cy, _gap), (item, _g) in zip(pts, self._entries):
+        for (cy, _gap), (item, _g) in zip(pts, self._entries, strict=False):
             sel = bool(getattr(item, "selected", False))
             if sel:
                 self.create_oval(cx - S(9), cy - S(9), cx + S(9), cy + S(9),
@@ -1851,7 +1850,7 @@ class Timeline(tk.Frame):
         for w in self._rows:
             w.destroy()
         self._rows = []
-        for i, r in enumerate(rows):
+        for _i, r in enumerate(rows):
             cv = tk.Canvas(self, height=S(self.ROW_H), bg=self._bg,
                            highlightthickness=0, bd=0)
             cv.pack(fill="x")

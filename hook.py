@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """hook 入口 —— 由 WorkBuddy / CodeBuddy 在生命周期事件上调用。
 
 铁律：

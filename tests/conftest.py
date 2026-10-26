@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """pytest 公共装置：路径隔离。
 
 铁律：任何测试都不得碰真实的 config.json / state/ / logs/。

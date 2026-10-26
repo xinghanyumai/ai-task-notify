@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """审查脚本：可访问性 / 交互 / 动画 / 响应式。
 
 不是单元测试，是「用程序把这几条人工很难穷举的东西验一遍」：
@@ -17,8 +16,8 @@ import tkinter as tk
 
 sys.path.insert(0, ".")
 
-from wbn import anim, theme                  # noqa: E402
-from wbn import widgets as W                   # noqa: E402
+from wbn import anim, theme  # noqa: E402
+from wbn import widgets as W  # noqa: E402
 
 FAIL: list[str] = []
 WARN: list[str] = []
@@ -38,6 +37,46 @@ def warn(cond: bool, label: str, detail: str = "") -> None:
     else:
         print(f"  ! {label}  {detail}")
         WARN.append(label)
+
+
+# ---------------------------------------------------------------- 控件树遍历
+#
+# 这三个遍历器刻意放在模块层，而不是写成循环里的嵌套函数：
+# 嵌套函数会闭包捕获循环变量（B023），虽然当前都是「定义完立刻调用」不会出错，
+# 但只要有人把调用挪到循环外，捕获的就全是最后一轮的容器了。
+
+
+def _collect_focusable(widget, out: list) -> None:
+    """收集能用 Tab 到达的控件。"""
+    for child in widget.winfo_children():
+        try:
+            tf = str(child.cget("takefocus") or "")
+            if isinstance(child, (tk.Entry, tk.Text)) or tf not in ("", "0"):
+                out.append(child)
+        except Exception:
+            pass
+        _collect_focusable(child, out)
+
+
+def _collect_primary_buttons(widget, out: list) -> None:
+    """收集 variant=primary 的按钮文案（一页只该有一个主按钮）。"""
+    for child in widget.winfo_children():
+        if isinstance(child, W.Button) and getattr(child, "variant", "") == "primary":
+            out.append(getattr(child, "text", ""))
+        _collect_primary_buttons(child, out)
+
+
+def _collect_overflow(container, out: list) -> None:
+    """收集比父容器还宽的子控件（横向溢出）。"""
+    cw = container.winfo_width()
+    for child in container.winfo_children():
+        try:
+            if child.winfo_ismapped():
+                if child.winfo_width() > cw + theme.S(2) and cw > 1:
+                    out.append(f"{child.__class__.__name__}({child.winfo_width()}>{cw})")
+        except Exception:
+            pass
+        _collect_overflow(child, out)
 
 
 # ---------------------------------------------------------------- A 可访问性
@@ -65,7 +104,7 @@ def audit_contrast() -> None:
                for lbl, a, b, need in pairs
                if theme.contrast(a, b) < need]
         ok(not bad, f"{name} 全部 {len(pairs)} 项达标",
-           "不达标：" + "，".join(f"{l}={c}" for l, c in bad))
+           "不达标：" + "，".join(f"{lbl}={c}" for lbl, c in bad))
 
     # 品牌填充色绝不能被当成文字色用
     c = theme.contrast(theme.LIGHT.brand, theme.LIGHT.bg_app)
@@ -77,19 +116,8 @@ def audit_keyboard(app) -> None:
     for key in ("channels", "triggers", "template", "status", "guide"):
         app._show_page(key)
         app.root.update_idletasks()
-        focusable = []
-
-        def walk(w):
-            for c in w.winfo_children():
-                try:
-                    tf = str(c.cget("takefocus") or "")
-                    if isinstance(c, (tk.Entry, tk.Text)) or tf not in ("", "0"):
-                        focusable.append(c)
-                except Exception:
-                    pass
-                walk(c)
-
-        walk(app.content)
+        focusable: list = []
+        _collect_focusable(app.content, focusable)
         # status / guide 是只读页，没有可操作控件是可接受的
         need = 0 if key in ("status", "guide") else 3
         warn(len(focusable) >= need,
@@ -136,15 +164,8 @@ def audit_interaction(app) -> None:
     for key in ("channels", "triggers", "template", "status", "guide"):
         app._show_page(key)
         app.root.update_idletasks()
-        prim = []
-
-        def walk(w):
-            for c in w.winfo_children():
-                if isinstance(c, W.Button) and getattr(c, "variant", "") == "primary":
-                    prim.append(getattr(c, "text", ""))
-                walk(c)
-
-        walk(app.root)
+        prim: list = []
+        _collect_primary_buttons(app.root, prim)
         warn(len(prim) <= 1, f"{key} 页 primary 按钮 {len(prim)} 个 {prim}")
 
     print("\n[B2] 渐进披露（长说明默认收起）")
@@ -217,24 +238,12 @@ def audit_responsive(app) -> None:
         app.root.geometry(f"{theme.S(w)}x{theme.S(700)}")
         app.root.update_idletasks()
         app.root.update()
-        bad = []
-
-        def walk(container):
-            cw = container.winfo_width()
-            for c in container.winfo_children():
-                try:
-                    if not c.winfo_ismapped():
-                        continue
-                    if c.winfo_width() > cw + theme.S(2) and cw > 1:
-                        bad.append(f"{c.__class__.__name__}({c.winfo_width()}>{cw})")
-                except Exception:
-                    pass
-                walk(c)
+        bad: list = []
 
         for page in ("channels", "triggers", "template", "status", "guide"):
             app._show_page(page)
             app.root.update_idletasks()
-            walk(app.content)
+            _collect_overflow(app.content, bad)
         warn(not bad, f"{w}px 宽：{len(bad)} 处子控件超出父容器",
              "，".join(bad[:4]))
 

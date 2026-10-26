@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """系统托盘常驻程序（可选组件）。
 
 作用：
@@ -21,7 +20,7 @@ ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from wbn import channels as ch_mod  # noqa: E402
-from wbn import config, pipeline, store  # noqa: E402
+from wbn import config, pipeline  # noqa: E402
 
 try:
     import pystray
@@ -36,7 +35,7 @@ def pythonw() -> str:
     return str(cand) if cand.exists() else str(exe)
 
 
-def make_image() -> "Image.Image":
+def make_image() -> Image.Image:
     """托盘图标：直接复用 assets/icon.ico，和窗口、桌面快捷方式保持一致。"""
     ico = ROOT / "assets" / "icon.ico"
     try:
@@ -83,7 +82,7 @@ def open_ui() -> None:
     )
 
 
-def run(icon: "pystray.Icon") -> None:  # pragma: no cover - GUI 回调
+def run(icon: pystray.Icon) -> None:  # pragma: no cover - GUI 回调
     def on_open(_i=None, _it=None):
         open_ui()
 

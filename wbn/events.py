@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """把 hook 的原始事件翻译成「人话语义」。
 
 CodeBuddy / WorkBuddy 的 hooks 与 Claude Code 同构，共 27+ 个事件，

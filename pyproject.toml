@@ -37,9 +37,10 @@ ignore = [
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-# GUI 与真实网络请求默认跳过：CI 里跑不了窗口，也不该在测试里发通知
-addopts = "-q -m 'not gui and not network'"
+# 只默认跳过 network。gui 类用例不在这里排除——它们靠 pytest.mark.skipif
+# 按 sys.platform 自己跳过，这样 Windows 上仍然是全量。
+addopts = "-m 'not network' --tb=short -ra"
 markers = [
-    "gui: 需要真实窗口/Tk 环境",
-    "network: 会发起真实网络请求（含发通知）",
+    "gui: 需要真实窗口 / 图形栈的用例，非 Windows 或无声环境自动 skip",
+    "network: 会发起真实网络请求（含发通知），默认跳过，-m network 显式跑",
 ]

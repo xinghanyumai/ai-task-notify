@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """自检 / 联调工具。
 
 用途：
@@ -21,8 +20,16 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
-from wbn import __version__  # noqa: E402
-from wbn import channels, config, events, filters, pipeline, render, store  # noqa: E402
+from wbn import (  # noqa: E402
+    __version__,  # noqa: E402
+    channels,
+    config,
+    events,
+    filters,
+    pipeline,
+    render,
+    store,
+)
 from wbn.sanitize import clean_text  # noqa: E402
 
 CWD = str(config.ROOT)

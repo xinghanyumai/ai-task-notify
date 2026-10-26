@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """通知流水线：事件 -> 语义 -> 过滤 -> 渲染 -> 去重 -> 多通道发送。
 
 hook.py 落盘后由 dispatch.py 调用 process()；

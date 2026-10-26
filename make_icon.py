@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """生成多尺寸应用图标 assets/icon.ico。
 
 设计：WorkBuddy 品牌青绿圆角方块 + 纯白铃铛。
@@ -131,7 +130,7 @@ def main() -> None:
     h = max(SIZES) * scale + pad * 2
     sheet = Image.new("RGBA", (w, h), (242, 242, 242, 255))
     x = pad
-    for s, f in zip(SIZES, frames):
+    for s, f in zip(SIZES, frames, strict=False):
         sheet.alpha_composite(f.resize((s * scale, s * scale), Image.NEAREST),
                               (x, (h - s * scale) // 2))
         x += s * scale + pad

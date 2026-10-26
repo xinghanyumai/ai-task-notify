@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """安装器：把 hooks 写进宿主配置，并创建桌面 / 开机自启快捷方式。
 
 用法：
@@ -133,7 +132,9 @@ def read_json(path: Path) -> dict:
         data = json.loads(path.read_text(encoding="utf-8"))
         return data if isinstance(data, dict) else {}
     except Exception as e:
-        raise SystemExit(f"✘ 无法解析 {path}：{e}\n  请先手动修好该文件再重试。")
+        # from None：这是给用户看的 CLI 提示，不需要 Python 再把 JSON 解析器的
+        # 原始 traceback 挂在后面
+        raise SystemExit(f"✘ 无法解析 {path}：{e}\n  请先手动修好该文件再重试。") from None
 
 
 def write_json(path: Path, data: dict) -> None:

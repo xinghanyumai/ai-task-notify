@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """开发用截图脚本：启动界面 → 等渲染 → 截窗口 → 退出。
 
 用法：
@@ -26,7 +25,7 @@ ctypes.windll.shcore.SetProcessDpiAwareness(2)
 
 sys.path.insert(0, ".")
 
-from wbn import config                     # noqa: E402
+from wbn import config  # noqa: E402
 
 if os.environ.get("WBN_SCRUB") == "1":
     # 假值保持和真值一样的长度，这样输入框里的视觉宽度不变，截图版式一致。
@@ -48,8 +47,8 @@ if os.environ.get("WBN_SCRUB") == "1":
 
     config.load = _scrubbed_load             # ui.App 构造时走的就是这个
 
-import ui                                    # noqa: E402
-from wbn import theme                        # noqa: E402
+import ui  # noqa: E402
+from wbn import theme  # noqa: E402
 
 out = sys.argv[1] if len(sys.argv) > 1 else "assets/_shot.png"
 page = sys.argv[2] if len(sys.argv) > 2 else "channels"

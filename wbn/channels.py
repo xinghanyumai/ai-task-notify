@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """推送通道实现。
 
 统一接口：
@@ -1218,7 +1217,7 @@ def _send_dingtalk(c: dict, title: str, content: str, timeout: int) -> tuple[boo
     secret = (c.get("secret") or "").strip()
     if secret:
         ts = str(round(time.time() * 1000))
-        sign_raw = f"{ts}\n{secret}".encode("utf-8")
+        sign_raw = f"{ts}\n{secret}".encode()
         digest = hmac.new(secret.encode("utf-8"), sign_raw, hashlib.sha256).digest()
         sign = urllib.parse.quote_plus(base64.b64encode(digest))
         sep = "&" if "?" in hook else "?"

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """模板渲染。
 
 占位符用 {name} 形式，正则替换而不是 str.format，

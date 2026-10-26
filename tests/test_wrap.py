@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """详情折行 / 卡片宽度回归。
 
 背景：微信模板消息的字段值在卡片里是**定宽一行**，微信不会替我们折行，
@@ -213,7 +212,7 @@ def test_multislot_split_fills_slots_in_order():
     nonempty = [s for s in segs if s]
     assert len(nonempty) >= 3, f"53 个字应占满 3 个以上槽位，实际 {nonempty!r}"
     # 相邻槽位不得重复同一段内容
-    for a, b in zip(nonempty, nonempty[1:]):
+    for a, b in zip(nonempty, nonempty[1:], strict=False):
         assert not b.startswith(a[-6:]), f"槽位内容重复：{a[-6:]!r} 出现在两个槽位里"
 
 

@@ -1,4 +1,3 @@
-# -*- coding: utf-8 -*-
 """事件语义收敛：27+ 个宿主事件 -> 用户真正在意的五种。
 
 关键规则都来自实测噪音：
@@ -12,7 +11,6 @@ from __future__ import annotations
 import pytest
 
 from wbn import config, events, pipeline
-
 
 # ---------------------------------------------------------------- classify
 
