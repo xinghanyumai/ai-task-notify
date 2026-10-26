@@ -189,6 +189,69 @@ audit.py                          全部通过，含新增的「EmptyState 接�
 下一步应该是提示词 2（把 `selftest.py` 的手工检查改成 pytest），
 有了测试再回头做第 3/4/5 项。
 
+---
+
+## 一之六、测试体系（提示词 2 执行结果）
+
+`selftest.py` 的 547 行手工检查已改造成 pytest 套件。**139 用例，4.8 秒跑完，全绿。**
+
+| 文件 | 用例 | 覆盖 |
+|---|---|---|
+| `tests/test_wrap.py` | 45 | `_char_w` / `_take_width` / `_wrap_detail` + 多槽位切分 |
+| `tests/test_sanitize.py` | 25 | `clean_text` / `clean_obj` / `redact` |
+| `tests/test_events.py` | 33 | `classify` / `ends_with_question` / 问句改判链路 |
+| `tests/test_filters.py` | 36 | 静默时段 / 黑白名单 / 关键词 / 时长 / 去重 / 限流 |
+| `tests/conftest.py` | — | 路径隔离 + 断网装置 |
+
+`selftest.py` 保留 —— `--status` / `--adopt` / `--dry` 实发验证这些 pytest 不适合接管。
+两条防线分工：**CI 跑 `pytest -q`，手工排查跑 `selftest.py`。**
+
+### 测试抓到一个真 bug
+
+`redact()` 原本 `replace("\r"," ").replace("\n"," ")`，CRLF 被替换两次 →
+两个空格，落进日志每行多一格。改成 `re.sub(r"[\r\n]+", " ")`。独立提交 `6ba67f7`。
+
+### 一个必须记住的隔离陷阱
+
+`store.RUNTIME_PATH` / `QUEUE_PATH` 是 **import 时**从 `config.STATE_DIR` 算好的模块常量。
+只 monkeypatch `config.STATE_DIR` 完全不起作用，限流/去重测试会往**真实**
+`state/runtime.json` 写数据。必须两个一起 patch：
+
+```python
+monkeypatch.setattr(config, "STATE_DIR", state)
+monkeypatch.setattr(store, "RUNTIME_PATH", state / "runtime.json")   # 少了这行就漏
+```
+
+**独立复核**（本次实跑）：跑完整套前后对 `state/` + `logs/` 全部文件做 md5 比对，
+`diff` 无输出 → 逐字节未变，隔离真实有效。
+
+### 变异验证：测试不是摆设
+
+| 变异 | 结果 |
+|---|---|
+| `_wrap_detail` 默认 `width` 改 999 | 1 例红。**只有 1 例**，因为其他用例都显式传 `width=34` |
+| 函数体内折行预算改成 999（折行真失效） | 14 例红 |
+
+第一条暴露了一个真实的测试盲区：**改默认参数能一路绿灯**。已补
+`test_default_width_fits_the_wechat_card` 专门守默认值（默认参数就是
+`_wxmp_values` 的生产路径，卡片 42 半角位减「标签：」后值区不得超过 34 格）。
+
+### 本次复核后的改进
+
+`no_network` 原本是**按需使用**（只有 2 个用例挂了它）。已改为 `autouse` ——
+断网防线的价值在于拦住**将来**误写的联网测试，按需使用等于没装。
+
+验证方式：临时写一个 `socket.connect("1.1.1.1", 80)` 的探针测试，
+pytest 报 `AssertionError: 测试中禁止联网` → 装置确实生效。探针已删除。
+改完全量 139 例仍在零网络下通过（`c48282c`）。
+
+### 依赖声明
+
+`requirements-dev.txt` 已存在（`pytest>=8.0`）。使用者装 `requirements.txt`，
+贡献者装 `requirements-dev.txt`。核心链路依然零第三方依赖 ——
+测试只 import `wbn`，而 `wbn` 只用标准库。
+
+
 
 
 
@@ -452,13 +515,13 @@ README 第五章「安全设计」写得很好，但不在 GitHub 识别的标�
 
 ### 阶段 3 · 可维护（2-3 天）
 
-| # | 动作 | 完成判据 |
-|---|---|---|
-| 10 | `tests/` + pytest，覆盖折行 / 编码 / 事件归类 | `pytest -q` 全绿，用例 ≥ 25 |
-| 11 | ruff 配置 + 修 2 处未使用 import | `ruff check .` 零 error |
-| 12 | GitHub Actions（3 OS × 3 Python） | PR 上 CI 全绿 |
-| 13 | `channels.py` 拆出 `wechat.py` | `channels.py` < 750 行，`wechat.py` 可独立测 |
-| 14 | `install.py status` 检测解释器失效 | 手动改坏 settings.json 里的路径后能报出来 |
+| # | 动作 | 完成判据 | 状态 |
+|---|---|---|---|
+| 10 | `tests/` + pytest，覆盖折行 / 编码 / 事件归类 | `pytest -q` 全绿，用例 ≥ 25 | ✅ **139 用例，全绿** |
+| 11 | ruff 配置 + 修 2 处未使用 import | `ruff check .` 零 error | 🟡 配置已就位，未装 ruff 跑过 |
+| 12 | GitHub Actions（3 OS × 3 Python） | PR 上 CI 全绿 | ❌ 待做 |
+| 13 | `channels.py` 拆出 `wechat.py` | `channels.py` < 750 行，`wechat.py` 可独立测 | ❌ 待做（测试已就位，现在可以做了） |
+| 14 | `install.py status` 检测解释器失效 | 手动改坏 settings.json 里的路径后能报出来 | ❌ 待做 |
 
 ### 阶段 4 · 可传播（按需）
 
