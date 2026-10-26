@@ -114,7 +114,9 @@ def redact(text: str, limit: int = 400) -> str:
     out = _HEX.sub(lambda m: _mask(m.group(0)), out)
     out = _LONG_PATH.sub(lambda m: f"{m.group(1)}{_mask(m.group(2))}", out)
 
-    out = out.replace("\r", " ").replace("\n", " ").strip()
+    # 换行必须压成单个空格：\r\n 逐个 replace 会留下两个空格，
+    # 落进日志后每行前面多一格，读起来像缩进错位
+    out = re.sub(r"[\r\n]+", " ", out).strip()
     if len(out) > limit:
         out = out[: limit - 1] + "…"
     return out
