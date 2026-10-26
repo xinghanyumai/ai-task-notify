@@ -1,0 +1,2 @@
+# 开发 / CI 依赖。运行时本体仍是纯标准库（托盘模块的 pystray / pillow 见 README）。
+pytest>=8.0
