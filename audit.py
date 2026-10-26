@@ -11,12 +11,13 @@
 """
 from __future__ import annotations
 
+import inspect
 import sys
 import tkinter as tk
 
 sys.path.insert(0, ".")
 
-from wbn import anim, channels, theme          # noqa: E402
+from wbn import anim, theme                  # noqa: E402
 from wbn import widgets as W                   # noqa: E402
 
 FAIL: list[str] = []
@@ -161,7 +162,12 @@ def audit_interaction(app) -> None:
     ok(len(cols) >= 1, f"通道详情有 {len(cols)} 个可折叠帮助块")
 
     print("\n[B3] 空状态有出口动作")
-    ok(hasattr(W, "EmptyState"), "EmptyState 组件存在")
+    # 真正的契约是 EmptyState 必须能接受一个 (文案, 回调) 的出口动作。
+    # 原来的 hasattr(W, "EmptyState") 是永真断言 —— 只要类还在就通过，
+    # 测不到标题承诺的任何东西。
+    params = inspect.signature(W.EmptyState.__init__).parameters
+    ok("action" in params, "EmptyState 接受 action 出口动作",
+       "构造函数里没有 action 参数，空状态会变成死胡同")
 
 
 # ---------------------------------------------------------------- C 动画

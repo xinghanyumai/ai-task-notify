@@ -175,45 +175,10 @@ def draw_icon(cv: tk.Canvas, name: str, x: float, y: float, size: float,
         cv.create_line(*P(0.50, 0.38), *P(0.50, 0.62), **opt)
         cv.create_oval(*P(0.46, 0.68), *P(0.54, 0.76), fill=color, outline=color)
 
-    elif name == "external":
-        cv.create_line(*P(0.50, 0.14), *P(0.86, 0.14), *P(0.86, 0.50), **opt)
-        cv.create_line(*P(0.86, 0.14), *P(0.44, 0.56), **opt)
-        cv.create_line(*P(0.76, 0.62), *P(0.76, 0.88), *P(0.14, 0.88),
-                       *P(0.14, 0.24), *P(0.42, 0.24), **opt)
-
-    elif name == "refresh":
-        cv.create_arc(*P(0.14, 0.14), *P(0.86, 0.86), start=40, extent=290,
-                      style="arc", outline=color, width=w)
-        cv.create_line(*P(0.80, 0.10), *P(0.86, 0.34), *P(0.62, 0.32), **opt)
-
-    elif name == "moon":
-        cv.create_arc(*P(0.14, 0.10), *P(0.90, 0.90), start=60, extent=250,
-                      style="arc", outline=color, width=w)
-
-    elif name == "sun":
-        cv.create_oval(*P(0.32, 0.32), *P(0.68, 0.68), outline=color, width=w)
-        for u, v in ((0.50, 0.06), (0.50, 0.94), (0.06, 0.50), (0.94, 0.50)):
-            cv.create_line(*P(0.50, 0.50), *P(u, v), **opt)
-
-    elif name == "monitor":
-        cv.create_line(*P(0.10, 0.18), *P(0.90, 0.18), *P(0.90, 0.68),
-                       *P(0.10, 0.68), *P(0.10, 0.18), **opt)
-        cv.create_line(*P(0.50, 0.68), *P(0.50, 0.86), **opt)
-        cv.create_line(*P(0.30, 0.86), *P(0.70, 0.86), **opt)
-
-    elif name == "play":
-        cv.create_polygon([*P(0.30, 0.14), *P(0.82, 0.50), *P(0.30, 0.86)],
-                          fill=color, outline=color, joinstyle="round")
-
     elif name == "key":
         cv.create_oval(*P(0.10, 0.34), *P(0.46, 0.70), outline=color, width=w)
         cv.create_line(*P(0.42, 0.62), *P(0.90, 0.16), **opt)
         cv.create_line(*P(0.72, 0.34), *P(0.86, 0.48), **opt)
-
-    elif name == "shield":
-        cv.create_line(*P(0.50, 0.08), *P(0.86, 0.24), *P(0.86, 0.52),
-                       *P(0.50, 0.92), *P(0.14, 0.52), *P(0.14, 0.24),
-                       *P(0.50, 0.08), **opt)
 
     elif name == "book":
         cv.create_line(*P(0.50, 0.22), *P(0.50, 0.88), **opt)
@@ -221,25 +186,6 @@ def draw_icon(cv: tk.Canvas, name: str, x: float, y: float, size: float,
                        *P(0.50, 0.88), **opt)
         cv.create_line(*P(0.50, 0.22), *P(0.86, 0.14), *P(0.86, 0.80),
                        *P(0.50, 0.88), **opt)
-
-    elif name == "clock":
-        cv.create_oval(*P(0.10, 0.10), *P(0.90, 0.90), outline=color, width=w)
-        cv.create_line(*P(0.50, 0.30), *P(0.50, 0.52), *P(0.68, 0.62), **opt)
-
-    elif name == "grid":
-        for u, v in ((0.12, 0.12), (0.56, 0.12), (0.12, 0.56), (0.56, 0.56)):
-            cv.create_line(*P(u, v), *P(u + 0.32, v), *P(u + 0.32, v + 0.32),
-                           *P(u, v + 0.32), *P(u, v), **opt)
-
-    elif name == "x":
-        cv.create_line(*P(0.24, 0.24), *P(0.76, 0.76), **opt)
-        cv.create_line(*P(0.76, 0.24), *P(0.24, 0.76), **opt)
-
-    elif name == "spark":
-        cv.create_line(*P(0.50, 0.08), *P(0.50, 0.92), **opt)
-        cv.create_line(*P(0.08, 0.50), *P(0.92, 0.50), **opt)
-        cv.create_line(*P(0.22, 0.22), *P(0.78, 0.78), **opt)
-        cv.create_line(*P(0.78, 0.22), *P(0.22, 0.78), **opt)
 
 
 def draw_badge(cv: tk.Canvas, x: float, y: float, size: float, icon: str,
@@ -514,62 +460,6 @@ class Button(tk.Canvas):
 
 
 # ---------------------------------------------------------------- 卡片
-
-
-class Card(tk.Frame):
-    """圆角卡片。子控件放进 `.body`，高度自动跟随内容。
-
-    实现要点：Canvas 用 place 铺满、不参与布局，只负责画背景和投影；
-    真正撑起尺寸的是 `.body` 这个普通 Frame。底部额外留出投影高度，
-    否则投影会被 Frame 边界裁掉，看起来就像一圈脏边。
-    """
-
-    SHADOW = 4
-
-    def __init__(self, master, pal: theme.Palette, padding: int = 18,
-                 radius: int = theme.RADIUS_XL, fill: str | None = None,
-                 outline: str | None = None, bg: str | None = None,
-                 shadow: bool = True):
-        self.pal = pal
-        self._outer_bg = bg or master.cget("bg")
-        self.padding = S(padding)
-        self.fill = fill or pal.bg_card
-        self.outline = outline if outline is not None else pal.border
-        self.radius = S(min(radius, padding - 2))
-        self.shadow = shadow
-        self._sh = S(self.SHADOW) if shadow else 0
-
-        super().__init__(master, bg=self._outer_bg)
-        self.cv = tk.Canvas(self, bg=self._outer_bg, highlightthickness=0, bd=0)
-        self.cv.place(x=0, y=0, relwidth=1, relheight=1)
-
-        self.body = tk.Frame(self, bg=self.fill)
-        self.body.pack(fill="both", expand=True,
-                       padx=self.padding,
-                       pady=(self.padding, self.padding + self._sh))
-        self.bind("<Configure>", self._redraw)
-
-    def _redraw(self, e=None):
-        w = self.winfo_width()
-        h = self.winfo_height()
-        if w <= 1 or h <= 1:
-            return
-        bottom = h - self._sh
-        self.cv.delete("cardbg")
-        if self.shadow:
-            draw_shadow(self.cv, 0, 0, w, bottom, self.radius, self.pal,
-                        depth=self._sh, tags="cardbg")
-        round_rect(self.cv, 0.5, 0.5, w - 0.5, bottom - 0.5, self.radius,
-                   fill=self.fill, outline=self.outline or self.fill,
-                   width=S(1), tags="cardbg")
-        self.cv.tag_lower("cardbg")
-
-    def set_fill(self, fill: str, outline: str | None = None) -> None:
-        self.fill = fill
-        if outline is not None:
-            self.outline = outline
-        self.body.configure(bg=fill)
-        self._redraw()
 
 
 # ---------------------------------------------------------------- 开关
@@ -1494,50 +1384,6 @@ class ListRow(tk.Canvas):
 # ---------------------------------------------------------------- 统计块
 
 
-class StatTile(tk.Frame):
-    """统计卡片：大数字 + 标签 + 可选迷你走势条。"""
-
-    def __init__(self, master, pal: theme.Palette, label: str, value: str,
-                 color: str, icon: str = "", bg: str | None = None):
-        self.pal = pal
-        self._bg = bg or master.cget("bg")
-        self.color = color
-        super().__init__(master, bg=self._bg)
-        self.cv = tk.Canvas(self, bg=self._bg, highlightthickness=0, bd=0,
-                            height=S(88))
-        self.cv.place(x=0, y=0, relwidth=1, relheight=1)
-        self.body = tk.Frame(self, bg=self._bg)
-        self.body.pack(fill="both", expand=True, padx=S(16), pady=(S(14), S(18)))
-        self.bind("<Configure>", self._redraw)
-
-        top = tk.Frame(self.body, bg=self._bg)
-        top.pack(fill="x")
-        self.value_lbl = tk.Label(top, text=value, bg=self._bg, fg=color,
-                                  font=theme.font(self, 20, "bold"))
-        self.value_lbl.pack(side="left")
-        if icon:
-            ic = tk.Canvas(top, width=S(26), height=S(26), bg=self._bg,
-                           highlightthickness=0, bd=0)
-            ic.pack(side="right")
-            draw_badge(ic, 0, S(1), S(24), icon, pal.bg_subtle, color, radius=S(7))
-        self.label_lbl = tk.Label(self.body, text=label, bg=self._bg,
-                                  fg=pal.text_tertiary, font=theme.font(self, 8))
-        self.label_lbl.pack(anchor="w", pady=(S(3), 0))
-
-    def _redraw(self, _e=None):
-        w, h = self.winfo_width(), self.winfo_height()
-        if w <= 1 or h <= 1:
-            return
-        self.cv.delete("all")
-        bottom = h - S(4)
-        draw_shadow(self.cv, 0, 0, w, bottom, S(14), self.pal, depth=S(4))
-        round_rect(self.cv, 0.5, 0.5, w - 0.5, bottom - 0.5, S(14),
-                   fill=self.pal.bg_card, outline=self.pal.border, width=S(1))
-        # 左上角一条品牌色细线，作为视觉锚点
-        round_rect(self.cv, S(16), 0, S(16) + S(22), S(2.5), S(1.2),
-                   fill=self.color, outline=self.color)
-
-
 # ---------------------------------------------------------------- 徽章 / 步骤
 
 
@@ -2113,39 +1959,3 @@ class EmptyState(tk.Frame):
             text, cmd = action
             Button(box, text, pal, cmd, variant="secondary",
                    bg=self._bg).pack(anchor="w", pady=(S(10), 0))
-
-
-class MonoRow(tk.Frame):
-    """一行「标签 + 等宽值」，用于展示 appid / webhook 这类要逐字核对的内容。
-
-    值用等宽 + 可选中，长值自动折行，右侧可选一个复制动作。
-    """
-
-    def __init__(self, master, pal: theme.Palette, label: str, value: str,
-                 bg: str | None = None, on_copy: Callable[[str], None] | None = None):
-        self.pal = pal
-        self._bg = bg or master.cget("bg")
-        super().__init__(master, bg=self._bg)
-        head = tk.Frame(self, bg=self._bg)
-        head.pack(fill="x")
-        tk.Label(head, text=label, bg=self._bg, fg=pal.text_tertiary,
-                 font=theme.font(self, theme.TS["micro"])).pack(side="left")
-        if on_copy:
-            c = tk.Label(head, text="复制", bg=self._bg, fg=pal.brand_ink,
-                         font=theme.font(self, theme.TS["micro"]), cursor="hand2")
-            c.pack(side="right")
-            c.bind("<Button-1>", lambda e: on_copy(value))
-        self.val = tk.Label(self, text=value or "—", bg=self._bg, fg=pal.text,
-                            font=theme.font(self, theme.TS["mono"], mono=True),
-                            justify="left", anchor="w", wraplength=S(240))
-        self.val.pack(fill="x")
-        self.val.bind("<Configure>", self._fit)
-
-    def _fit(self, e=None):
-        w = (getattr(e, "width", 0) or 0) if e is not None else 0
-        if w <= 1:
-            w = self.val.winfo_width()
-        if w <= 1:
-            return
-        if abs(int(self.val.cget("wraplength")) - max(S(60), w - S(2))) > 2:
-            self.val.configure(wraplength=max(S(60), w - S(2)))

@@ -808,7 +808,7 @@ def _wxmp_values(
         "date": str(f.get("date") or now[:10]),
         "host": _clip_line(str(f.get("host") or "—"), 20),
         "kind_label": label or "通知",
-        "content": _clip(_flatten(content), 200),
+        "content": _clip_line(_flatten(content), 200),
     }
 
 
@@ -1139,11 +1139,6 @@ def _send_wecom_app(c: dict, title: str, content: str, timeout: int) -> tuple[bo
         }.get(errcode, obj.get("errmsg", ""))
         return False, f"errcode={errcode} {reason}"
     return False, "发送失败"
-
-
-def _clip(text: str, limit: int) -> str:
-    text = (text or "").strip()
-    return text if len(text) <= limit else text[: limit - 1] + "…"
 
 
 # ---------------------------------------------------------------- 各通道

@@ -82,7 +82,6 @@ class Palette:
     shadow_near: str           # 投影内层
     shadow_far: str            # 投影外层
     shadow: str
-    overlay: str
     track: str
 
     # 后加的字段（带默认值，避免调用方因为新增令牌而报错）
@@ -125,7 +124,6 @@ LIGHT = Palette(
     shadow_near="#e6eae8",
     shadow_far="#edf0ef",
     shadow="#0000000f",
-    overlay="#00000040",
     track="#e3e7e5",
     brand_ink="#007a63",
     border_control="#848f89",
@@ -166,7 +164,6 @@ DARK = Palette(
     shadow_near="#101312",
     shadow_far="#141716",
     shadow="#00000040",
-    overlay="#00000080",
     track="#313634",
     brand_ink="#4cf0ce",
     border_control="#636d68",
@@ -336,12 +333,6 @@ def mix(c1: str, c2: str, ratio: float) -> str:
     g = round(g1 + (g2 - g1) * ratio)
     b = round(b1 + (b2 - b1) * ratio)
     return f"#{r:02x}{g:02x}{b:02x}"
-
-
-def with_alpha(hex_color: str, alpha: float, base: str | None = None) -> str:
-    """Tk 不支持 rgba，这里把颜色往底色方向混，模拟半透明。"""
-    ground = base or LIGHT.bg_app
-    return mix(hex_color, ground, 1 - max(0.0, min(1.0, alpha)))
 
 
 # ---------------------------------------------------------------- 对比度
