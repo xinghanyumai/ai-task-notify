@@ -29,9 +29,9 @@
 | P0-1 凭证剥离 | 🟡 **部分完成** | 仓库内零命中；**appsecret 无法自助重置，见 1.3 节** |
 | P0-2 git + .gitignore | ✅ 完成 | 37 文件入库，`git status` clean |
 | P0-3 LICENSE | ✅ 完成 | MIT，Copyright (c) 2026 XingHan |
-| P0-4 依赖声明 | 🟡 部分完成 | `requirements.txt` ✅ / `pyproject.toml` 待补 |
-| P0-5 README 从零流程 | ❌ **未做** | README 仍假设 `.venv` 已存在（L309） |
-| P0-6 README 事实错误 | ❌ **未做** | theme.py 重复、3 处绝对路径、图片重复引用 |
+| P0-4 依赖声明 | ✅ 完成 | `requirements.txt` + `pyproject.toml`（ruff / pytest 配置） |
+| P0-5 README 从零流程 | ❌ **未做** | README 仍假设 `.venv` 已存在（L309）→ 并入提示词 8 |
+| P0-6 README 事实错误 | ❌ **未做** | theme.py 重复、3 处绝对路径、图片重复引用 → 并入提示词 8 |
 
 已验证的克隆可用性（`git clone` 到临时目录后实测）：
 
@@ -373,14 +373,20 @@ README 第五章「安全设计」写得很好，但不在 GitHub 识别的标�
 
 | # | 动作 | 完成判据 | 状态 |
 |---|---|---|---|
-| 6 | `requirements.txt` + `pyproject.toml` | 全新目录 `pip install -e .` 成功 | 🟡 requirements ✅ / pyproject 待补 |
+| 6 | `requirements.txt` + `pyproject.toml` | `requirements.txt` 能装托盘依赖；`pyproject.toml` 能被 ruff / pytest 读到 | ✅ 完成 |
 | 7 | README 加「快速开始（从零）」 | 干净目录按文档走能打开设置中心 | ❌ **并入提示词 8** |
 | 8 | 修 README 3 处错误（重复 theme.py / 绝对路径 / 图片重复） | `grep -c "D:\\\\Code" README.md` = 0 | ❌ **并入提示词 8** |
-| 9 | `--version` + CHANGELOG.md | `python selftest.py --version` 输出 1.0.0 | ❌ 待做 |
+| 9 | `--version` + CHANGELOG.md | `python selftest.py --version` 输出 `wbn 1.0.0` | ✅ 完成 |
+
+> **`pyproject.toml` 刻意不含 `[build-system]` / `[project]`**，只放 ruff 与 pytest 配置。
+> 原因是 `wbn/config.py` 的 `ROOT = Path(__file__).parent.parent` 依赖目录布局，
+> 一旦 `pip install` 到 site-packages，`ROOT` 会变成 Python 安装目录，
+> 配置和日志会写到不该去的地方。本项目是「目录 + 双击运行」的便携工具，不是库，
+> 装依赖走 `requirements.txt`，跑起来直接 `python ui.py`。
 
 > 7 和 8 都要改 README，而提示词 8 会把 README 压到 200 行以内重写一遍。
 > 先单独修一遍再被重写 = 白做。**把 7、8 合并进提示词 8 一起交付。**
-> 这样阶段 2 实际只剩两件事：`pyproject.toml`、`--version` + CHANGELOG。
+> 阶段 2 至此已全部完成。
 
 ### 阶段 3 · 可维护（2-3 天）
 

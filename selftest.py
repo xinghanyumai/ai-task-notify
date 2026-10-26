@@ -21,6 +21,7 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
+from wbn import __version__  # noqa: E402
 from wbn import channels, config, events, filters, pipeline, render, store  # noqa: E402
 from wbn.sanitize import clean_text  # noqa: E402
 
@@ -517,6 +518,7 @@ def adopt_wxmp_template() -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="WorkBuddy 通知自检")
+    ap.add_argument("--version", action="version", version=f"wbn {__version__}")
     ap.add_argument("--dry", action="store_true", help="只渲染，不实际发送")
     ap.add_argument("--status", action="store_true", help="只看状态")
     ap.add_argument("--encoding", action="store_true", help="只跑编码回归检查")

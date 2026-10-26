@@ -1,0 +1,45 @@
+# 这里只放工具配置，不做打包。
+#
+# 为什么没有 [build-system] / [project]：
+# 本项目是「一个目录 + 双击运行」的便携工具，不是库。config.json / state/ / logs/
+# 全部基于 wbn/config.py 里的 ROOT = Path(__file__).parent.parent 推导，
+# 一旦 pip install 到 site-packages，ROOT 会变成 Python 安装目录，
+# 配置和日志就写到不该去的地方。所以刻意不做可安装包。
+#
+# 装依赖用 requirements.txt；跑起来直接 python ui.py。
+
+[tool.ruff]
+line-length = 100
+target-version = "py310"
+# 项目里有大量中文注释和说明性长行，E501 是噪音
+extend-exclude = [".venv", "__pycache__", "assets"]
+
+[tool.ruff.lint]
+select = [
+    "E",   # pycodestyle errors
+    "F",   # pyflakes
+    "W",   # pycodestyle warnings
+    "I",   # isort
+    "UP",  # pyupgrade
+    "B",   # flake8-bugbear
+]
+ignore = [
+    "E501",  # 行长度由 formatter 管，注释里的长句不拦
+]
+
+[tool.ruff.lint.per-file-ignores]
+# 自检与审查脚本是给人读输出的，允许 print
+"selftest.py" = ["T201"]
+"audit.py" = ["T201"]
+"install.py" = ["T201"]
+"shot.py" = ["T201"]
+"make_icon.py" = ["T201"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+# GUI 与真实网络请求默认跳过：CI 里跑不了窗口，也不该在测试里发通知
+addopts = "-q -m 'not gui and not network'"
+markers = [
+    "gui: 需要真实窗口/Tk 环境",
+    "network: 会发起真实网络请求（含发通知）",
+]
