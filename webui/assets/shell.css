@@ -1,0 +1,600 @@
+/* ============================================================================
+   壳布局 + 全站通用组件。
+   所有颜色/字号/间距/圆角一律走 tokens.css 的 var()，本文件不出现字面色值。
+
+   结构（docs/prompts/W2-设计系统与壳布局.md §2）：
+
+     ┌────────────┬──────────────────────────────────────┐
+     │  侧栏 240  │  顶栏 56：页面名 ····· 主题分段 总开关 │
+     │            ├──────────────────────────────────────┤
+     │            │  内容 padding 32 / 正文列 720 居中    │
+     └────────────┴──────────────────────────────────────┘
+   ========================================================================== */
+
+/* ---- 骨架 ---------------------------------------------------------------- */
+
+/* `grid-template-rows: minmax(0, 1fr)` 和三个 `min-height: 0` 不是凑数的。
+   少了它们，grid 的行高会按内容撑开（内容有多长行就有多高），于是
+   `.main` 比窗口高、`.content` 的 overflow 永远不触发，而 `.shell` 的
+   `overflow: hidden` 把侧栏底部和列表末尾一起截掉——表现是「页面底部
+   凭空少一块，且看不出是滚动还是丢了」。2026-10-28 实测踩过。 */
+.shell {
+  display: grid;
+  grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
+  grid-template-rows: minmax(0, 1fr);
+  height: 100vh;
+  overflow: hidden;
+}
+
+.main {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+}
+
+/* ---- 侧栏 ---------------------------------------------------------------- */
+
+.sidebar {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  min-height: 0;
+  background: var(--bg-card);
+  border-right: 1px solid var(--border);
+  user-select: none;
+}
+
+.brand {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  height: 64px;
+  padding: 0 var(--s4);
+  flex: 0 0 auto;
+}
+
+.brand-logo {
+  width: 30px;
+  height: 30px;
+  flex: 0 0 auto;
+  padding: 6px;
+  border-radius: var(--r-input);
+  background: var(--ink);
+  color: var(--on-ink);
+}
+
+.brand-text {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+}
+
+.brand-name {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+}
+
+.brand-ver {
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  color: var(--fg-subtle);
+  white-space: nowrap;
+}
+
+.nav {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  padding: var(--s2);
+  flex: 1 1 auto;
+  overflow-y: auto;
+  overflow-x: hidden;
+}
+
+.nav-item {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  height: 40px;
+  padding: 0 var(--s2);
+  border-radius: var(--r-input);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--fg-muted);
+  text-align: left;
+  transition: background var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease);
+}
+
+.nav-item:hover { background: var(--bg-hover); color: var(--fg); }
+
+.nav-item:focus-visible { box-shadow: 0 0 0 3px var(--ring); outline: none; }
+
+.nav-item.is-active {
+  background: var(--bg-subtle);
+  color: var(--fg);
+  font-weight: var(--fw-medium);
+}
+
+/* 选中态 = 底色 + 左侧 3px 品牌色竖条（比整块变色更克制，§2.1） */
+.nav-item.is-active::before {
+  content: "";
+  position: absolute;
+  left: 0;
+  top: var(--s2);
+  bottom: var(--s2);
+  width: 3px;
+  border-radius: var(--r-pill);
+  background: var(--brand);
+}
+
+.nav-icon { width: 18px; height: 18px; flex: 0 0 auto; }
+
+.nav-label { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+
+/* 侧栏底部：链路陈述一句话。绿点 = 这条链路是活的 */
+.side-foot {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s2);
+  padding: var(--s4);
+  border-top: 1px solid var(--border);
+  flex: 0 0 auto;
+  user-select: none;
+}
+
+.chain-dot {
+  width: 6px;
+  height: 6px;
+  margin-top: 7px;          /* 和 13px 首行基线对齐，不是间距，是光学补偿 */
+  border-radius: var(--r-pill);
+  flex: 0 0 auto;
+  background: var(--fg-subtle);
+}
+
+.chain-text {
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--fg-muted);
+  min-width: 0;
+}
+
+.chain[data-level="ok"] .chain-dot     { background: var(--ok); }
+.chain[data-level="ok"] .chain-text     { color: var(--ok); }
+.chain[data-level="warn"] .chain-dot   { background: var(--warn); }
+.chain[data-level="warn"] .chain-text   { color: var(--warn); }
+.chain[data-level="danger"] .chain-dot { background: var(--danger); }
+.chain[data-level="danger"] .chain-text { color: var(--danger); }
+.chain[data-level="muted"] .chain-dot  { background: var(--fg-subtle); }
+
+/* ---- 顶栏 ---------------------------------------------------------------- */
+
+.topbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: var(--s4);
+  height: var(--topbar-h);
+  flex: 0 0 auto;
+  padding: 0 var(--s6);
+  border-bottom: 1px solid var(--border);   /* 全站唯一的横线 */
+  user-select: none;
+}
+
+.topbar-title {
+  font-size: var(--fs-title);
+  line-height: var(--lh-title);
+  font-weight: var(--fw-semibold);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.topbar-right {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  flex: 0 0 auto;
+}
+
+.topbar-label {
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--fg-muted);
+  white-space: nowrap;
+}
+
+.divider {
+  width: 1px;
+  height: 20px;
+  background: var(--border);
+  flex: 0 0 auto;
+}
+
+/* 主题分段：跟随 / 浅色 / 深色 */
+.seg {
+  display: flex;
+  gap: var(--s1);
+  padding: var(--s1);
+  border-radius: var(--r-input);
+  background: var(--bg-subtle);
+}
+
+.seg-item {
+  height: 28px;
+  padding: 0 var(--s3);
+  border-radius: var(--r-input);
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  font-weight: var(--fw-medium);
+  color: var(--fg-muted);
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease);
+}
+
+.seg-item:hover { color: var(--fg); }
+
+.seg-item.is-active {
+  background: var(--bg-card);
+  color: var(--fg);
+  box-shadow: var(--shadow-sm);
+}
+
+/* 总开关 */
+.switch {
+  position: relative;
+  width: 40px;
+  height: 24px;
+  flex: 0 0 auto;
+  border-radius: var(--r-pill);
+  background: var(--track);
+  transition: background var(--dur) var(--ease);
+}
+
+/* 开启态外面套一圈 --brand-ink：品牌绿 #00c29a 对白卡只有 2.29:1，
+   控件边界本身达不到 3:1。套一圈深绿（5.16:1）之后边界达标，
+   品牌绿仍然是「活着」的信号，不用换色。暗色下 --brand-ink 就是 --brand，
+   那一侧本来就 11.45:1，这一圈等于不可见，不影响。 */
+.switch[aria-checked="true"] {
+  background: var(--brand);
+  box-shadow: inset 0 0 0 1px var(--brand-ink);
+}
+
+.switch:disabled { opacity: .5; }
+
+.switch::after {
+  content: "";
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  width: 18px;
+  height: 18px;
+  border-radius: var(--r-pill);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-sm);
+  transition: transform var(--dur) var(--ease);
+}
+
+.switch[aria-checked="true"]::after { transform: translateX(16px); }
+
+/* 顶栏里的临时错误提示。不用 alert()（§3.4 明确禁止） */
+.topbar-msg {
+  max-width: 260px;
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--danger);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ---- 内容区 -------------------------------------------------------------- */
+
+.content {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: hidden;
+  padding: var(--s6);
+}
+
+.content::-webkit-scrollbar { width: 10px; }
+.content::-webkit-scrollbar-track { background: transparent; }
+.content::-webkit-scrollbar-thumb {
+  background: var(--border-strong);
+  border: 3px solid var(--bg);
+  border-radius: var(--r-pill);
+}
+
+.col {
+  max-width: var(--col-w);
+  margin: 0 auto;
+}
+
+/* 切页：200ms 淡入上移。位移只有 4px，多了会晃 */
+.page-enter { animation: pageIn var(--dur) var(--ease); }
+
+@keyframes pageIn {
+  from { opacity: 0; transform: translateY(var(--s1)); }
+  to   { opacity: 1; transform: none; }
+}
+
+/* ---- 页面通用块 ---------------------------------------------------------- */
+
+.page-sub {
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--fg-muted);
+}
+
+.block { margin-top: var(--s6); }
+
+.block-title {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-semibold);
+  margin-bottom: var(--s2);
+}
+
+/* ---- 统计卡 -------------------------------------------------------------- */
+
+.cards {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: var(--s3);
+  margin-top: var(--s5);
+}
+
+/* 窄窗口下四列会把「2/10」挤成两行 —— 改成两列。
+   阈值按**内容列**算：四列至少需要 4×160 + 3×12 = 676，而内容列 =
+   min(720, 视口 - 侧栏 240 - 两侧 padding 64)。默认窗口的 CSS 视口是
+   973（本机 DPR 2.4，窗口 1180 逻辑像素），内容列 669 —— 刚好在 676 下面
+   一点点，所以阈值定 900 而不是 1040，否则默认窗口就会掉进两列。 */
+@media (max-width: 900px) {
+  .cards { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+
+.stat {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-md);
+  padding: var(--s4);
+  min-width: 0;
+}
+
+.stat-label {
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  font-weight: var(--fw-medium);
+  color: var(--fg-subtle);
+}
+
+.stat-value {
+  margin-top: var(--s2);
+  font-size: var(--fs-num);
+  line-height: var(--lh-num);
+  font-weight: var(--fw-semibold);
+  font-variant-numeric: tabular-nums;   /* 不加这个，数字刷新时会左右跳 */
+  color: var(--fg);
+}
+
+/* 颜色是信号，不是装饰：只有「失败 > 0」才变红 */
+.stat-value[data-tone="danger"] { color: var(--danger); }
+
+/* ---- 列表 ---------------------------------------------------------------- */
+
+.list {
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-md);
+  overflow: hidden;
+}
+
+.row {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  min-height: var(--s7);
+  padding: var(--s2) var(--s4);
+}
+
+.row + .row { border-top: 1px solid var(--border); }
+
+.row-name {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--fg);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-text {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--fg);
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.row-time {
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+}
+
+.row-meta {
+  margin-left: auto;
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--fg-subtle);
+  font-variant-numeric: tabular-nums;
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+
+/* 结果点：绿=成功，红=失败。不写「成功/失败」四个字，省一行宽度 */
+.res-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: var(--r-pill);
+  flex: 0 0 auto;
+}
+
+.res-dot[data-ok="1"] { background: var(--ok); }
+.res-dot[data-ok="0"] { background: var(--danger); }
+
+/* ---- 徽章 ---------------------------------------------------------------- */
+
+.badge {
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  font-weight: var(--fw-medium);
+  padding: 2px var(--s2);
+  border-radius: var(--r-pill);
+  white-space: nowrap;
+  flex: 0 0 auto;
+}
+
+.badge[data-level="ok"]     { background: var(--ok-soft);     color: var(--ok); }
+.badge[data-level="warn"]   { background: var(--warn-soft);   color: var(--warn); }
+.badge[data-level="danger"] { background: var(--danger-soft); color: var(--danger); }
+.badge[data-level="muted"]  { background: var(--bg-subtle);   color: var(--fg-subtle); }
+
+/* ---- 按钮 ---------------------------------------------------------------- */
+
+.btn {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  gap: var(--s2);
+  height: 32px;
+  padding: 0 var(--s4);
+  border-radius: var(--r-input);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-medium);
+  white-space: nowrap;
+  transition: background var(--dur-fast) var(--ease);
+}
+
+.btn-primary { background: var(--ink); color: var(--on-ink); }
+.btn-primary:hover { background: var(--ink-hover); }
+
+.btn-secondary {
+  background: var(--bg-card);
+  color: var(--fg);
+  border: 1px solid var(--border-strong);
+}
+.btn-secondary:hover { background: var(--bg-hover); }
+
+.btn:disabled { opacity: .5; }
+
+/* 一组并排的按钮（错误态里的「重试」等） */
+.row-actions {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  flex-wrap: wrap;
+}
+
+/* ---- 空态 ---------------------------------------------------------------- */
+
+.empty {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  text-align: center;
+  gap: var(--s2);
+  padding: var(--s7) var(--s5);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-md);
+}
+
+.empty-icon { width: 24px; height: 24px; color: var(--fg-subtle); }
+
+.empty-title {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-medium);
+  color: var(--fg);
+}
+
+.empty-hint {
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--fg-muted);
+  max-width: 40em;
+}
+
+.empty .btn { margin-top: var(--s2); }
+
+/* ---- 骨架屏（加载态） ----------------------------------------------------
+   呼吸，不转圈。转圈会让人盯着它等，呼吸只是「这里会有东西」。 */
+
+.sk {
+  background: var(--bg-subtle);
+  border-radius: var(--r-input);
+  animation: breathe 1.4s ease-in-out infinite;
+}
+
+@keyframes breathe {
+  0%, 100% { opacity: 1; }
+  50%      { opacity: .5; }
+}
+
+.sk-label { width: 56px; height: var(--lh-label); }
+.sk-value { width: 72px; height: var(--lh-num); margin-top: var(--s2); }
+.sk-row   { height: var(--lh-body); flex: 1 1 auto; }
+
+/* ---- 错误态 -------------------------------------------------------------- */
+
+.error-box {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: var(--s3);
+  padding: var(--s5);
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  box-shadow: var(--shadow-md);
+}
+
+.error-title {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-semibold);
+  color: var(--danger);
+}
+
+.error-text {
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--fg-muted);
+  word-break: break-word;
+}
+
+/* ---- 降级：减少动效 ------------------------------------------------------ */
+
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 1ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 1ms !important;
+  }
+}

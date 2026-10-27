@@ -1,0 +1,203 @@
+/* ============================================================================
+   设计 token —— 全站唯一的颜色 / 字号 / 间距 / 圆角 / 动效来源。
+
+   **硬规则：这个文件以外的任何 CSS 都不许出现字面色值。**
+   自检命令（输出必须为空）：
+
+       grep -nE '#[0-9a-fA-F]{3,8}\b|rgba?\(' \
+         webui/assets/shell.css webui/assets/theme-boot.js webui/assets/*.js \
+         webui/assets/pages/*.js
+
+   色值来源：archive/design-redesign.md 2.2 的 13 对已验色（D2 已追认），
+   本轮只补 tkinter 给不了的四样：--ring / 两层阴影 / --track / 动效。
+   为什么不全抄 shadcn 的 zinc 色板，见 docs/prompts/W2-设计系统与壳布局.md §1.1。
+   ========================================================================== */
+
+:root {
+  color-scheme: light;
+
+  /* ---- 背景层：三级，从外到内 ------------------------------------------ */
+  --bg:            #fafafa;   /* 页面底，不是纯白 */
+  --bg-card:       #ffffff;   /* 卡片、侧栏 */
+  --bg-subtle:     #f4f4f5;   /* 次级块、输入框底、骨架屏 */
+  --bg-hover:      #f1f1f3;
+
+  /* ---- 文字层：三级 ---------------------------------------------------- */
+  --fg:            #16161a;
+  --fg-muted:      #55555e;
+  --fg-subtle:     #6e6e78;
+
+  /* ---- 描边 ------------------------------------------------------------ */
+  --border:        #e6e6e9;
+  --border-strong: #d6d6db;
+
+  /* ---- 品牌：只表达「系统状态」，不表达「可操作」 ---------------------- */
+  --brand:         #00c29a;   /* 填充用：开关轨道、状态点、进度线 */
+  --brand-ink:     #00795f;   /* 文字/描边用：在 #fafafa 上 5.1:1 */
+  --brand-soft:    #e6faf4;
+
+  /* ---- 操作：主按钮用墨色，不用品牌色（§1.3） -------------------------- */
+  --ink:           #16161a;
+  --on-ink:        #fafafa;
+  --ink-hover:     #2c2c33;
+
+  /* ---- 语义 ------------------------------------------------------------ */
+  --danger:        #c8362f;
+  --danger-soft:   #fdecec;
+  --warn:          #8a5200;
+  --warn-soft:     #fff5e6;
+  --ok:            #0a7d43;
+  --ok-soft:       #e9f8f0;
+
+  /* ---- 控件轨道 --------------------------------------------------------
+     比 --border-strong 深一档。理由：开关的「关」状态如果只用 #d6d6db，
+     对白卡是 1.45:1，非文本对比度（WCAG 1.4.11 要 3:1）不达标。
+     #8e8e97 对白卡 3.25:1。--border / --border-strong 继续只做装饰分隔线，
+     它们不承担「识别控件」的职责。 */
+  --track:         #8e8e97;
+
+  /* ---- tkinter 给不了的四样 -------------------------------------------- */
+  --ring:          rgba(0, 194, 154, .35);                              /* focus 光环 */
+  --shadow-sm:     0 1px 2px rgb(0 0 0 / .04);
+  --shadow-md:     0 1px 2px rgb(0 0 0 / .04), 0 4px 12px rgb(0 0 0 / .06);
+
+  /* ---- 字体 ------------------------------------------------------------
+     Inter 的拉丁子集**没有随包**（见文末说明），所以栈里排第二的是
+     Segoe UI Variable Text —— Win11 自带的可变字体，拉丁字形比雅黑的好看。
+     Inter 只要把 Inter.var.woff2 丢进 assets/fonts/ 并放开文末的 @font-face
+     就会自动接管，不用改这里。 */
+  --font: "Inter", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI",
+          "PingFang SC", system-ui, sans-serif;
+  --mono: "JetBrains Mono", "Consolas", ui-monospace, monospace;
+
+  /* ---- 字号阶梯：只有 5 级，不许出现第 6 级（§1.4） -------------------- */
+  --fs-title: 20px;  --lh-title: 28px;   /* 页面标题 */
+  --fs-num:   28px;  --lh-num:   32px;   /* 卡片数字，配 tabular-nums */
+  --fs-body:  14px;  --lh-body:  22px;   /* 正文 / 表单 */
+  --fs-aux:   13px;  --lh-aux:   20px;   /* 辅助说明 */
+  --fs-label: 12px;  --lh-label: 16px;   /* 标签 / 徽章 */
+
+  --fw-regular:  400;
+  --fw-medium:   500;
+  --fw-semibold: 600;
+
+  /* ---- 间距：只允许这 7 个值（§1.5） ----------------------------------
+     上一轮 tkinter 版有 61 个不同的 S(n) 取值，这就是「看起来不齐」的真正
+     原因。出现 13px / 17px / 20px 就是错的。 */
+  --s1: 4px;  --s2: 8px;  --s3: 12px; --s4: 16px;
+  --s5: 24px; --s6: 32px; --s7: 48px;
+
+  /* ---- 圆角 ------------------------------------------------------------ */
+  --r-input: 8px; --r-card: 12px; --r-modal: 16px; --r-pill: 999px;
+
+  /* ---- 壳尺寸（§2） ---------------------------------------------------- */
+  --sidebar-w: 240px;   /* 上一版 208 装不下「企业微信自建应用」，会截断 */
+  --topbar-h:  56px;    /* 8 的倍数；48 太挤，64 显空 */
+  --col-w:     720px;   /* 720/14px ≈ 50 字，中文舒适区偏宽一点点 */
+
+  /* ---- 动效 ------------------------------------------------------------ */
+  --dur-fast: 120ms;
+  --dur:      200ms;
+  --ease:     cubic-bezier(.2, .7, .3, 1);
+}
+
+[data-theme="dark"] {
+  color-scheme: dark;
+
+  --bg:            #0b0b0d;
+  --bg-card:       #151518;
+  --bg-subtle:     #1b1b1f;
+  --bg-hover:      #202026;
+
+  --fg:            #f7f7f8;
+  --fg-muted:      #a6a6ae;
+  --fg-subtle:     #8c8c95;
+
+  --border:        #26262c;
+  --border-strong: #3a3a42;
+
+  --brand:         #2ee6c0;
+  --brand-ink:     #2ee6c0;
+  --brand-soft:    #12312b;
+
+  --ink:           #f7f7f8;
+  --on-ink:        #16161a;
+  --ink-hover:     #e4e4e8;
+
+  --danger:        #ff8078;
+  --danger-soft:   #3a1f1f;
+  --warn:          #ffab5c;
+  --warn-soft:     #3a2a17;
+  --ok:            #48d68d;
+  --ok-soft:       #14301f;
+
+  --track:         #6a6a74;   /* 对 --bg-card 3.40:1 */
+
+  --ring:          rgba(46, 230, 192, .40);
+  --shadow-sm:     0 1px 2px rgb(0 0 0 / .30);
+  --shadow-md:     0 1px 2px rgb(0 0 0 / .30), 0 4px 12px rgb(0 0 0 / .35);
+}
+
+/* ---- 基础重置 ------------------------------------------------------------ */
+
+*, *::before, *::after { box-sizing: border-box; }
+
+html, body { height: 100%; }
+
+body {
+  margin: 0;
+  font-family: var(--font);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-regular);
+  letter-spacing: -0.01em;          /* tkinter 做不到，web 上白拿 */
+  -webkit-font-smoothing: antialiased;
+  color: var(--fg);
+  background: var(--bg);
+  overscroll-behavior: none;
+}
+
+h1, h2, h3, p, figure { margin: 0; }
+
+button {
+  font: inherit;
+  letter-spacing: inherit;
+  color: inherit;
+  background: none;
+  border: 0;
+  padding: 0;
+  cursor: pointer;
+}
+
+button:disabled { cursor: default; }
+
+svg { display: block; }
+
+[hidden] { display: none !important; }
+
+/* 键盘焦点：光环用 --ring，描边用 --brand-ink（对两种底色都 ≥3:1） */
+:focus-visible {
+  outline: 2px solid var(--brand-ink);
+  outline-offset: 2px;
+}
+
+/* ---- 字体：Inter 拉丁子集（当前未随包，见下） ----------------------------
+ *
+ * 为什么是注释而不是生效的 @font-face：构建这个版本的机器没有外网，
+ * 拿不到 Inter.var.woff2。留一条 url() 指向不存在的文件会让 Chromium 在
+ * Console 里报 ERR_FILE_NOT_FOUND，违反「Console 干净」这条验收。
+ *
+ * 补的方式：把 @fontsource-variable/inter 的
+ * files/inter-latin-wght-normal.woff2 存成 assets/fonts/Inter.var.woff2，
+ * 然后取消下面这段注释即可，--font 栈不用改。
+ *
+ * 中文**不打包**：思源黑体精简版也有 3MB，为了一个通知工具不值（D5）。
+ *
+ * @font-face {
+ *   font-family: "Inter";
+ *   src: url("fonts/Inter.var.woff2") format("woff2-variations");
+ *   font-weight: 100 900;
+ *   font-display: swap;
+ *   unicode-range: U+0000-00FF, U+2000-206F, U+2122, U+2190-2193, U+2212;
+ * }
+ */

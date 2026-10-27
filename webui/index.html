@@ -2,49 +2,96 @@
 <html lang="zh-CN">
 <head>
 <meta charset="utf-8">
-<title>AI 任务通知</title>
 <!--
-  W1 的验证页，不是成品界面。这里只回答三个问题：
-  Python→JS 通不通、JS→Python 通不通、配置改了存不存得回去。
-  样式、布局、导航一律留到 W2，现在花时间调外观是提前消费 W2 的预算。
+  CSP 九条指令，逐条理由见 docs/prompts/W2-设计系统与壳布局.md §2.4。
+
+  为什么必须有：app.py 为了让画面能上屏给 WebView2 加了 --no-sandbox，
+  这把「一个渲染漏洞」升级成「本地代码执行」。而这一页要画不可信文本
+  （AI 任务产出的标题/正文、远端返回的报错原文），一条 <img onerror>
+  就能读到 window.pywebview.api，再 config_get() 拿到全部通道密钥。
+
+  script-src 不带 'unsafe-inline' 是总闸：废掉 <img onerror>、内联 <script>、
+  javascript: URL 三种注入。所以 theme-boot.js 是外部文件而不是内联脚本
+  （内联要么放宽这条，要么维护 sha256 白名单——后者必被遗忘）。
 -->
-<style>
-  :root { color-scheme: light dark; }
-  body { font: 14px/1.6 "Microsoft YaHei UI", "Segoe UI", sans-serif;
-         margin: 0; padding: 24px 28px; color: #18181b; background: #fafafa; }
-  h1 { font-size: 18px; margin: 0 0 4px; }
-  .sub { color: #71717a; font-size: 13px; margin: 0 0 20px; }
-  .row { display: flex; gap: 10px; align-items: center; margin: 0 0 14px; flex-wrap: wrap; }
-  button { font: inherit; padding: 6px 14px; border-radius: 6px; cursor: pointer;
-           border: 1px solid #d4d4d8; background: #fff; color: #18181b; }
-  button:hover { background: #f4f4f5; }
-  button:disabled { opacity: .5; cursor: default; }
-  #status { font-size: 13px; }
-  .ok { color: #0a7d43; }
-  .bad { color: #b42318; }
-  pre { background: #fff; border: 1px solid #e4e4e7; border-radius: 8px;
-        padding: 12px 14px; margin: 0; max-height: 420px; overflow: auto;
-        font: 12px/1.55 Consolas, "Cascadia Mono", monospace; }
-  #result { font-size: 13px; min-height: 20px; margin: 10px 0 0; }
-</style>
+<meta http-equiv="Content-Security-Policy" content="
+  default-src 'self';
+  script-src 'self';
+  style-src 'self' 'unsafe-inline';
+  img-src 'self' data:;
+  font-src 'self';
+  connect-src 'none';
+  form-action 'none';
+  base-uri 'none';
+  object-src 'none'">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>AI 任务通知</title>
+<link rel="stylesheet" href="assets/tokens.css">
+<link rel="stylesheet" href="assets/shell.css">
+<!-- 必须是同步脚本、必须在 head：放到 body 之后会闪一帧白 -->
+<script src="assets/theme-boot.js"></script>
 </head>
 <body>
-  <h1>pywebview 壳已连通</h1>
-  <p class="sub">W1 验证页 · 只验通道，不验外观</p>
 
-  <div class="row">
-    <span id="status">正在读配置…</span>
+<div class="shell">
+
+  <aside class="sidebar">
+    <div class="brand">
+      <svg class="brand-logo" viewBox="0 0 24 24" fill="none" stroke="currentColor"
+           stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"
+           aria-hidden="true">
+        <path d="M18 8a6 6 0 10-12 0c0 7-3 8-3 8h18s-3-1-3-8"></path>
+        <path d="M13.7 21a2 2 0 01-3.4 0"></path>
+      </svg>
+      <div class="brand-text">
+        <span class="brand-name">AI 任务通知</span>
+        <span class="brand-ver">个人版 v1.2</span>
+      </div>
+    </div>
+
+    <nav class="nav" id="nav" aria-label="主导航"></nav>
+
+    <div class="side-foot chain" id="chain" data-level="muted">
+      <span class="chain-dot"></span>
+      <span class="chain-text" id="chain-text">正在读取配置…</span>
+    </div>
+  </aside>
+
+  <div class="main">
+
+    <header class="topbar">
+      <h1 class="topbar-title" id="page-title">运行状态</h1>
+      <div class="topbar-right">
+        <div class="seg" role="group" aria-label="主题">
+          <button type="button" class="seg-item" data-mode="system">跟随</button>
+          <button type="button" class="seg-item" data-mode="light">浅色</button>
+          <button type="button" class="seg-item" data-mode="dark">深色</button>
+        </div>
+        <span class="divider"></span>
+        <span class="topbar-label">通知</span>
+        <button type="button" class="switch" id="master-switch" role="switch"
+                aria-checked="false" aria-label="通知总开关"></button>
+        <span class="topbar-msg" id="topbar-msg" role="status" hidden></span>
+      </div>
+    </header>
+
+    <main class="content">
+      <div class="col">
+        <!-- 五页全部预加载进 DOM，切换只做 hidden 切换。
+             每次重新渲染会丢表单状态、重置滚动位置——tkinter 版为了这个
+             专门写了 _save_view/_restore_view，web 上不销毁就没这问题。 -->
+        <section data-page="status" hidden></section>
+        <section data-page="channels" hidden></section>
+        <section data-page="triggers" hidden></section>
+        <section data-page="templates" hidden></section>
+        <section data-page="guide" hidden></section>
+      </div>
+    </main>
+
   </div>
+</div>
 
-  <div class="row">
-    <button id="save" disabled>把 enabled 改成 false 并保存</button>
-    <button id="restore" disabled>改回 true</button>
-    <button id="reload" disabled>重新读磁盘</button>
-  </div>
-
-  <p id="result"></p>
-  <pre id="json"></pre>
-
-  <script src="assets/app.js"></script>
+<script src="assets/shell.js"></script>
+<script src="assets/pages/status.js"></script>
 </body>
 </html>

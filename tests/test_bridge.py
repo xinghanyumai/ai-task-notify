@@ -13,6 +13,7 @@
 from __future__ import annotations
 
 import json
+from datetime import datetime
 
 import pytest
 
@@ -178,6 +179,122 @@ def test_save_with_empty_patch_changes_nothing(isolated_state):
     assert config.load() == before
 
 
+# ---------------------------------------------------------- 状态页三个只读方法
+
+
+def test_stats_today_matches_insight_stats(isolated_state):
+    """四张统计卡的数字必须和 `insight.stats()` 逐项相等。
+
+    这一条是 W2 验收第 3 条（「和 insight.stats() 输出逐项对照」）的机器版：
+    只要有人给 stats() 改了统计口径而忘了同步 bridge，这里立刻红。
+    """
+    from wbn import insight
+
+    want = insight.stats(config.load())
+    got = bridge.Bridge().stats_today()["data"]
+
+    assert got["today"] == want["today"]
+    assert got["ok"] == want["ok"]
+    assert got["fail"] == want["fail"]
+    assert got["enabled_channels"] == want["channels"]
+    assert got["recent"] == want["recent"]
+
+
+def test_stats_today_supplies_denominator(isolated_state):
+    """`channels` 改名成 `enabled_channels`，另给 `total_channels` 做分母。
+
+    原名和「通道总数」只差两个字，前端写 `d.channels` 迟早当成分母用，
+    「启用通道 2/2」就会冒充「2/10」。
+    """
+    got = bridge.Bridge().stats_today()["data"]
+    assert got["total_channels"] == len(config.load()["channels"]) == 10
+    assert "channels" not in got
+
+
+def test_chain_sentence_matches_insight(isolated_state):
+    from wbn import insight
+
+    want_text, want_level = insight.chain_sentence(config.load())
+    got = bridge.Bridge().chain_sentence()["data"]
+    assert got == {"text": want_text, "level": want_level}
+
+
+def test_chain_sentence_tracks_mute(isolated_state):
+    """静音之后那句话必须跟着变——侧栏说「已静音」而顶栏开关还绿着，
+    是比没有这句话更糟的体验。"""
+    bridge.Bridge().config_save({"enabled": False})
+    got = bridge.Bridge().chain_sentence()["data"]
+    assert got["level"] == "warn"
+    assert "静音" in got["text"]
+
+
+def test_channels_list_covers_every_channel(isolated_state):
+    """10 条通道一条不漏，状态文案来自 `insight.channel_state`，一字不差。"""
+    from wbn import insight
+
+    cfg = config.load()
+    rows = bridge.Bridge().channels_list()["data"]
+    assert len(rows) == 10
+
+    for row in rows:
+        want = insight.channel_state(row["type"], config.get_channel(cfg, row["type"]))
+        assert (row["state"], row["level"], row["on"]) == want
+        assert row["label"], f"{row['type']} 没有短名"
+        assert isinstance(row["last"], (str, type(None)))
+
+
+def test_channels_list_reads_last_send_from_today_log(isolated_state):
+    """「最后发送时间」取今天日志里该通道的**最后**一条，不是第一条。
+
+    三种行都要认：普通发送、测试发送（`test` 前缀让 channel= 不紧跟时间戳）、
+    以及 `event=Stop ... remote_ok=False` 那种不含 `channel=` 的汇总行（要跳过）。
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    (config.LOG_DIR / f"notify-{today}.log").write_text(
+        "[00:06:38] channel=wxmp ok=False msg=errcode=40037 模板 ID 无效\n"
+        "[00:06:39] test channel=log ok=True msg=已记录\n"
+        "[09:12:00] channel=wxmp ok=True msg=ok\n"
+        "[09:13:00] event=Stop kind=task_done sent=True remote_ok=False elapsed=1.0s\n",
+        encoding="utf-8",
+    )
+
+    by_type = {r["type"]: r for r in bridge.Bridge().channels_list()["data"]}
+    assert by_type["wxmp"]["last"] == "09:12"
+    assert by_type["log"]["last"] == "00:06"
+    assert by_type["bark"]["last"] is None
+
+
+def test_channels_list_survives_missing_log(isolated_state):
+    """今天还没有日志文件是很常见的（刚过零点）。不许因此整页报错。"""
+    rows = bridge.Bridge().channels_list()["data"]
+    assert len(rows) == 10
+    assert all(r["last"] is None for r in rows)
+
+
+def test_read_only_methods_do_not_touch_disk(isolated_state):
+    """三个方法都是只读的。写盘只允许发生在 config_save 里。"""
+    config.save_default_if_missing()
+    path = config.CONFIG_PATH
+    before = path.read_bytes()
+
+    b = bridge.Bridge()
+    b.stats_today()
+    b.chain_sentence()
+    b.channels_list()
+
+    assert path.read_bytes() == before
+
+
+def test_read_only_methods_feed_the_liveness_probe(isolated_state):
+    """状态页是首屏，靠它调通 bridge 来证明 WebView2 真的画出来了。"""
+    hits = []
+    b = bridge.Bridge(on_activity=lambda: hits.append(1))
+    b.stats_today()
+    b.chain_sentence()
+    b.channels_list()
+    assert len(hits) == 3
+
+
 # ---------------------------------------------------------- 接口面约束
 
 
@@ -185,13 +302,18 @@ def test_bridge_exposes_only_implemented_methods():
     """没有「存在但一调就报错」的空壳方法。
 
     空壳会让前端的特性检测（`if (api.channels_list)`）误判为已实现，
-    比完全没有更难查。W3 加通道页时再一起加。
+    比完全没有更难查。W3 加通道页时再一起加（channel_test / open_path /
+    app_quit）。
     """
     public = {
         n for n in dir(bridge.Bridge)
         if not n.startswith("_") and callable(getattr(bridge.Bridge, n))
     }
-    assert public == {"config_get", "config_save"}
+    assert public == {
+        "config_get", "config_save",
+        # W2 状态页要的三个只读方法
+        "stats_today", "chain_sentence", "channels_list",
+    }
 
 
 def test_bridge_does_not_import_webview():

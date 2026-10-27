@@ -173,11 +173,17 @@ Tkinter 是标准库，配置界面不用装 Qt 或 Electron，双击即开。
 ├── selftest.py        自检：模拟 4 类事件，验证到底能不能收到
 ├── config.json        你的配置，首次运行自动生成，含凭证，权限已收紧
 ├── webui/             pywebview 的页面层（W1 起）
-│   ├── index.html     页面入口，用 Path.as_uri() 加载
-│   └── assets/app.js  调 bridge 的前端逻辑，必须等 pywebviewready
+│   ├── index.html     页面入口，用 Path.as_uri() 加载；带 9 条 CSP 指令
+│   └── assets/
+│       ├── tokens.css 设计 token（颜色/字号/间距/圆角/动效），唯一色值来源
+│       ├── shell.css  壳布局 + 通用组件，不出现字面色值
+│       ├── theme-boot.js <head> 里的同步脚本，首屏定主题，防 FOUC
+│       ├── shell.js   主题 / hash 路由 / bridge / 侧栏 / 顶栏
+│       └── pages/status.js 「运行状态」页，全站样板页
 ├── tools/             开发期脚本，不参与运行
 │   ├── audit.py       审查：对比度、键盘可达、动效、三档窗口宽度
 │   ├── shot.py        开发用截图（浅色深色、任意页面、任意窗口尺寸）
+│   ├── shot_webview.py WebView2 窗口截图（WGC，ImageGrab 只能拍到黑块）
 │   ├── make_icon.py   生成多尺寸图标 assets/icon.ico
 │   ├── bench_ui.py    切页 / 启动耗时基线
 │   ├── check_style.py 尺度与令牌纪律检查
@@ -242,6 +248,71 @@ bridge，Python 侧看不出任何异常，只是画面一次都没合成过。
 - **pywebview 6.x 从非 GUI 线程调 `evaluate_js` 会死锁**（`Semaphore` 等不到
   `ContinueWith` 的 continuation），而且死锁时连 GIL 一起占住，看门狗线程都跑不了。
   自动化验收别用 `evaluate_js` 驱动，直接对真窗口发鼠标事件更可靠。
+
+## 前端：三层文件，一条铁律
+
+```
+index.html      壳的骨架 + 9 条 CSP 指令
+tokens.css      唯一色值来源（57 个变量，亮/暗各一套）
+shell.css       壳布局 + 通用组件，只写 var(--x)，不写字面色值
+theme-boot.js   <head> 里的同步脚本，首屏定 data-theme，防 FOUC
+shell.js        主题 / hash 路由 / bridge 封装 / 侧栏 / 顶栏
+pages/*.js      页面模块，挂在 window.WBN_PAGES 上
+```
+
+**铁律：`tokens.css` 之外不许出现字面色值。** 自检（输出必须为空）：
+
+```bash
+grep -rnE ':\s*(#[0-9a-fA-F]{3,8}|rgba?\()' webui/assets/shell.css webui/index.html
+```
+
+三条不能破的：
+
+1. **`script-src 'self'`，不带 `'unsafe-inline'`。** 这条总闸废掉 `<img onerror>`、
+   内联 `<script>`、`javascript:` 三种注入。所以主题脚本是外部文件而不是内联——
+   内联要么放宽这条，要么维护 sha256 白名单，后者必被遗忘。
+2. **渲染文本只走 `textContent`。** `el()` 是唯一的建节点入口。禁 `innerHTML` /
+   `insertAdjacentHTML` / `outerHTML` / `new Function` / `eval`。
+   `sanitize.redact()` 是**脱敏**（抹掉 key），不是**转义**（抹掉 `<`），不能互相替代。
+3. **每个 promise 都要 `.catch`。** 漏一个就是一条 Console 报错，
+   而「Console 干净」是验收项。
+
+**不用 ES module**：Chromium 在 `file://` 下把 module 的 origin 当 null，
+`import` 会被 CORS 拦掉。全是经典脚本 + 一个全局命名空间。
+
+## 踩过的坑：壳布局被 grid 行高撑爆（2026-10-28，已解决）
+
+**症状**：侧栏底部那句话凭空消失，内容列表在窗口底部被切断，既看不到滚动条
+也不报错，看上去像「元素根本没渲染」。
+
+**根因**：`.shell` 是 grid，只写了 `grid-template-columns`，行高是 `auto`。
+`auto` 行按内容撑开，而 `.content` 的自然高度是整页内容的高度——于是行高
+远大于 `100vh`，`.main` 比窗口高，`.content` 的 `overflow-y: auto` 永远不触发，
+最后被 `.shell` 的 `overflow: hidden` 一刀切掉。侧栏作为同一行的 grid item
+也被拉到同样的高度，`flex: 1 1 auto` 的 `.nav` 顺势吃掉全部空间，
+把 `flex: 0 0 auto` 的底部推出可视区。
+
+**解法**（三条缺一不可，见 `shell.css` 顶部注释）：
+
+```css
+.shell   { grid-template-rows: minmax(0, 1fr); height: 100vh; overflow: hidden; }
+.main    { min-height: 0; }   /* flex 纵向容器，不设就按内容长 */
+.sidebar { min-height: 0; }
+```
+
+**教训**：`overflow: hidden` + grid/flex 是「静默截断」的经典组合。
+看不见滚动条又确实有内容时，先怀疑行高被内容撑开，而不是元素没渲染。
+
+## 本机 CSS 视口是 973×621，不是 1180×780
+
+窗口按 `width=1180, height=780` 创建，但实测 `window.innerWidth = 973`、
+`devicePixelRatio = 2.4`：物理客户区 2338px 宽，DPR 2.4 → CSS 视口 973。
+
+推论（调布局时会用到）：
+
+- 内容列 `max-width: 720` 在本机永远达不到上限（973 − 侧栏 240 − 两侧 32×2 = 669）
+- 「880×600 窗口」对应的 CSS 视口是 **733**，不是 880
+- 四张统计卡的断点因此定在 `max-width: 900px`（四列需要内容列 ≥ 676）
 
 ## 运行环境
 
