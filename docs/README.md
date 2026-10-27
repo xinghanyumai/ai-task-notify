@@ -39,6 +39,7 @@
 | 文件 | 一句话 |
 |---|---|
 | [`architecture.md`](architecture.md) | 事件怎么从宿主进来、怎么收敛、怎么发出去。**UI 选型一节已作废，见 ADR-007** |
+| [`baseline-tkinter.md`](baseline-tkinter.md) | tkinter 版性能基线，W6 新旧对照用。**不可重测**，代码一删就再也测不出来 |
 | [`functional-baseline.md`](functional-baseline.md) | 12 条不能坏的行为，W6 的验收基准 |
 | [`repo-layout.md`](repo-layout.md) | 目录为什么这么摆，`tools/` 迁移记录 |
 | [`roadmap.md`](roadmap.md) | 全项目路线图：逐项去向 + 阶段划分 + 风险登记册 |

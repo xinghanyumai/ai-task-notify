@@ -21,6 +21,10 @@ P1 会推翻整个界面层。推翻的时候最容易出的事不是「新界�
 | `python tools/check_responsive.py` | 发送期间不冻结 + Tab 顺序 | 见文末「尺子自身的问题」 |
 | `python tools/bench_ui.py --runs 5` | 启动、首次进页、切页耗时 | 首次进页 < 900ms，切页 < 100ms（**当前 4 项首次进页超预算，`redesign-base` 上就超，见「删预热换来了什么」**） |
 
+**这张表里 `bench_ui.py` 一行的实测数字见 [`baseline-tkinter.md`](baseline-tkinter.md)（最终态）。**
+那份是 `tkinter-final` 这一份确定的代码上测出来的，不可重测——W5 删掉 tkinter 层后就再也测不出来了。
+本页只留预算线，不复述具体毫秒数，避免两处数字打架。
+
 前四条是自动的。下面 12 条是**用户能看见的行为**，前 11 条靠上表加手工点，
 第 12 条要真实凭证。
 
