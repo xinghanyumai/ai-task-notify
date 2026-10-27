@@ -57,7 +57,7 @@
 | 组件 | v1 | v2 |
 |---|---|---|
 | Button | 平面圆角 + hover 只变色 | 3 变体 × 4 态 + loading；primary hover 出现自上而下渐变（≤36px 高）；按下整体下移 1px |
-| Switch | 圆角矩形 + 圆形滑块，颜色写死两档 | 轨道色 `mix()` 插值 + 滑块位移 90ms `ease_out_cubic`；深色下轨道补 1px 内描边 |
+| Switch | 圆角矩形 + 圆形滑块，颜色写死两档 | 44×24 真半圆胶囊（`capsule_border`）+ 轨道色 `mix()` 插值 + 滑块 160ms `ease_out_expo`；关态轨道 `track_off` + `border_control` 描边 |
 | 输入框 | 只有聚焦/不聚焦两态 | 三态：默认（`border_control`）/ 聚焦（`border_focus` + 2px 焦点环）/ 错误（`danger` + 一行红字说明） |
 
 **结论：过。**
@@ -181,7 +181,7 @@ v2 把绿收窄到三种语义，别处一律中性色：
 |---|---|---|---|
 | `Button` | 3 变体（primary/secondary/ghost），hover 只变色 | 4 变体（+danger），4 态 + loading | primary hover 渐变；按下 `dy=S(1)`；高度硬限制 `h <= DIM.BTN_H` |
 | `Field` | 2 态 | 3 态 + `set_error()/clear_error()` | 默认态用 `border_control`（3.11:1）而不是 `border`；错误态带一行说明 |
-| `Switch` | 颜色写死两档 | 轨道 `mix()` 插值 + 滑块位移 | 深色补 1px 内描边；时长 `MOTION.quick` |
+| `Switch` | 颜色写死两档，形状是 `round_rect(r=h/2)` 磨出来的切角矩形 | 44×24 胶囊：`create_oval` 真半圆 + 矩形拼合；滑块 20px、行程 20px | 关态轨道 `track_off`（`#d4d4d9`/`#3d3d46`）+ `border_control` 描边；`MOTION.base` + `ease_out_expo`；画布四周留 4px 装焦点环 |
 | `Segmented` | 独立实现 | 与 Button 同一套描边/圆角 | 选中胶囊 = `bg_subtle` + 加粗 |
 | `NavItem` | 文字 + 左侧 2px 指示条 | 16px 图标 + 文字 + 浅底胶囊 | **删掉指示条**（1.3 要求）；行高 44 |
 | `ListRow` | 46px，带指示条 | 44px，徽章用 `ICON_BOX` | 选中靠浅底 + 文字转粗 |
@@ -204,9 +204,48 @@ v2 把绿收窄到三种语义，别处一律中性色：
 | `divider()` | 纯 Frame 的 1px 线 | 不用 Canvas（省一个 Tk 对象） |
 | `measure()` | 字体测量 | 带 `(font, text)` 缓存，上限 8192 条 |
 | `elide()` | 超宽省略 | 先测全长，超宽才二分 |
+| `capsule()` / `capsule_border()` | 真半圆胶囊（实心 / 带描边） | 只在 `r = 高度/2` 时用；`fill=""` 不许用 `capsule_border` |
+| `capsule_ring()` | 空心胶囊描边 | 焦点环专用，用 `create_arc` 半圆而不是整圆 |
 
 渐变面积闸门写成会抛错的硬限制，而不是一句「请注意不要滥用」——
 违规的写法在开发期就炸，活不到用户面前。
+
+### 3.3 开关：为什么必须换绘制方式
+
+上一版开关被评价为「方块样式」，根因不是配色，是**几何**。
+
+`round_rect()` 用 `create_polygon(..., smooth=True)` 画圆角。`smooth=True` 的
+原理是把折点按贝塞尔曲线磨圆，**顶点始终落在原矩形的边上**。当 `r = 高度/2`
+（胶囊的充要条件）时，磨出来的不是半圆，是一个「四角被斜切的矩形」——
+在小尺寸（38×22）上，斜切占比极大，看上去就是个方块。
+
+Tk 没有原生圆角，所以胶囊只能拼：**中间一个矩形 + 两端各一个整圆，圆被矩形
+盖住一半**。三段都用 `fill` 当 `outline` 描一圈，相邻图元之间才不会露 1px 底色缝。
+
+选型参考（都是同一形态，差别只在比例与描边）：
+
+| 设计体系 | 尺寸 | 比例 | 滑块 | 关态处理 |
+|---|---|---|---|---|
+| Material 3 | 52×32 | 1.63 | 24（0.75h） | `surfaceVariant` 填充 + `outline` 2px 描边 |
+| iOS / Human Interface | 51×31 | 1.65 | 27（0.87h） | `#E9E9EA` 填充，无描边 |
+| Tailwind UI | 44×24 | 1.83 | 20（0.83h） | `bg-gray-200` 填充，无描边 |
+| **本项目** | **44×24** | **1.83** | **20（0.83h）** | `track_off` 填充 + `border_control` 1px 描边 |
+
+取 Tailwind 的比例：44 宽在 52px 行高里不显拥挤，20px 行程足以让「开/关」
+一眼可辨（原 38 宽只有 16px 行程）。关态**保留描边**而不是纯填充——iOS 那种
+无描边的浅灰在 `#fafafa` 底上只有 1.4:1，不满足 WCAG 1.4.11 的 3:1 控件边界
+要求；Material 3 的描边方案恰好同时解决观感与合规。
+
+三处配套改动：
+
+1. **画布四周留 4px**：轨道内缩 4px，焦点环外扩 2px 正好装下。原来画布等于
+   轨道尺寸，焦点环会被裁掉一半——这是自绘控件「焦点看不见」的典型成因。
+2. **焦点环改 `capsule_ring`**：胶囊宽 44 高 24，两端整圆直径 24 加起来 48 > 44，
+   画整圆会在中间叠成「8」字。改用 `create_arc(style="arc")` 只画左右各半圆，
+   上下补两条直线。
+3. **缓动从 `ease_out_back` 换成 `ease_out_expo`，90ms → 160ms**：`back` 的末端
+   过冲会让滑块撞到端点再弹回来，读起来像「没对准」；开关是状态切换，不是
+   有惯性的物体。`expo` 前段快、尾段干净，160ms 内完成且无回弹。
 
 ---
 
@@ -454,7 +493,7 @@ v2 把绿收窄到三种语义，别处一律中性色：
 | 1 | 启动 | 见第五节时间轴 | `Splash` + `_boot`，实测 2.0s 交接 | ✓ |
 | 2 | 切页 | 8px 上移就位 160ms `ease_out_expo`，无逐张动画 | `_enter_anim` 滑 `page_sc` 或 `ch_form_sc`；`_collect_cards`/`_enter_card` 已删 | ✓ 切页 1.0–14.1ms（预算 100） |
 | 3 | 通道选中 | 底色 90ms + 文字转粗，无左侧指示条 | `ListRow`：`MOTION.quick` 底色过渡，选中 `bold`；指示条删除 | ✓ 灰度截图对比 |
-| 4 | 开关拨动 | 轨道色插值 + 滑块 90ms `ease_out_cubic`，不许瞬跳 | `Switch.animate` 用 `mix()` 逐帧插值 | ✓ `audit` C1/C2 |
+| 4 | 开关拨动 | 轨道色插值 + 滑块 160ms `ease_out_expo`，不许瞬跳 | `Switch.animate` 用 `mix()` 逐帧插值；形状走 `capsule_border`（真半圆） | ✓ `audit` C1/C2 |
 | 5 | 输入聚焦 | 描边 `border → border_control`，90ms | `Field` 三态；聚焦同时画 2px 焦点环 | ✓ 目视 + A2 |
 | 6 | 保存 | loading → 成功 Toast / 失败内联红字 | `Button.loading=True` 换文案；`Field.set_error()` | ✓ 手点两态 |
 | 7 | 发送测试 | loading + 禁用；期间窗口可拖动、可切页 | 后台线程 + 主线程轮询 `q_check` | ✓ 停顿 25ms（阈值 120） |
@@ -476,7 +515,8 @@ v2 把绿收窄到三种语义，别处一律中性色：
 | 场景 | 时长 | 缓动 | 代码位置 |
 |---|---|---|---|
 | 悬停 / 焦点 | `MOTION.quick` 90 | 线性 | `Button._hv` / `NavItem` / `ListRow` |
-| 按下 / 开关 / 复选框 | `MOTION.quick` 90 | `ease_out_cubic` | `Switch.animate` |
+| 按下 / 复选框 | `MOTION.quick` 90 | `ease_out_cubic` | `Button` / `Checkbox` |
+| 开关拨动 | `MOTION.base` 160 | `ease_out_expo` | `Switch.animate`（见 3.7） |
 | 切页整页就位 | `MOTION.base` 160 | `ease_out_expo` | `_enter_anim` → `slide_in` |
 | 折叠展开 | `MOTION.base` 160 | `ease_out_cubic` | `Collapsible._animate_height` |
 | Toast 滑入 | `MOTION.base` 160 | `ease_out_expo` | `Toast._place(dx)` |
