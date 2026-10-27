@@ -40,16 +40,11 @@ from __future__ import annotations
 
 import copy
 import gc
-import os
-import re
-import subprocess
 import sys
 import threading
 import tkinter as tk
-from datetime import datetime
-from pathlib import Path
 
-from wbn import anim, channels, config, events, pipeline, render, store, theme
+from wbn import anim, channels, config, events, insight, pipeline, store, theme
 from wbn import splash as splash_mod
 from wbn import widgets as W
 from wbn.theme import TS, S
@@ -83,38 +78,9 @@ _VIEW_ATTRS = (
 # 这些属性是容器，清空时给空字典而不是 None
 _DICT_VIEWS = ("ch_rows", "tr_vars", "filt_vars", "ch_vars", "stat_metrics")
 
-SAMPLE_PAYLOAD = {
-    "hook_event_name": "Stop",
-    "session_id": "preview",
-    "cwd": "D:/Code/demo-project",
-    "last_assistant_message": "重构完成：推送通道已拆成可插拔模块，新增微信测试号通道。",
-    # 预览里把耗时、工具名这些也补上，否则模板里的占位符会渲染成「—」
-    "_duration": 192,
-    "tool_name": "Bash",
-    "permission_mode": "acceptEdits",
-}
-
-# emoji 的码位区间。预览画布上的字体是微软雅黑，它没有 emoji 字形，
-# 直接画会变成「豆腐块」；所以把标题开头的 emoji 拆出来单独用
-# Segoe UI Emoji 画，剩下的文字仍用正文字体。
-_EMOJI_RANGES = (
-    (0x2190, 0x21FF), (0x2300, 0x23FF), (0x25A0, 0x27BF),
-    (0x2B00, 0x2BFF), (0xFE00, 0xFE0F), (0x1F000, 0x1FAFF),
-)
-
-
-def _split_emoji(text: str) -> tuple[str, str]:
-    """把开头连续的 emoji 与后面的文字分开。"""
-    i = 0
-    for ch in text:
-        o = ord(ch)
-        if any(a <= o <= b for a, b in _EMOJI_RANGES):
-            i += 1
-        elif ch == " " and i > 0:
-            i += 1
-        else:
-            break
-    return text[:i].strip(), text[i:].lstrip()
+# 预览样例、emoji 拆分、数字/列表转换都搬到了 `wbn/insight.py`（W0）：
+# 那些是「数据怎么来」的问题，不是「怎么画」的问题，webview 版要用同一份。
+# 这里只留 UI 文案。
 
 
 PLACEHOLDERS = [
@@ -141,17 +107,6 @@ KIND_DESC = {
     "session_start": "开始新会话",
     "session_end": "会话关闭",
 }
-
-
-def _to_int(text: str, default: int) -> int:
-    try:
-        return int(str(text).strip())
-    except (TypeError, ValueError):
-        return default
-
-
-def _split_list(text: str) -> list[str]:
-    return [x.strip() for x in re.split(r"[,，]", text or "") if x.strip()]
 
 
 class App:
@@ -245,15 +200,8 @@ class App:
         gc.set_threshold(20000, 50, 200)
 
     def _pick_channel(self) -> str:
-        """默认打开哪个通道：优先「已启用且配好」的那条，否则第一个自建通道。"""
-        for ch in self.cfg.get("channels", []):
-            t = ch.get("type")
-            if ch.get("enabled") and channels.is_ready(t, ch):
-                return t
-        for ch in self.cfg.get("channels", []):
-            if channels.is_ready(ch.get("type"), ch):
-                return ch["type"]
-        return "wxmp"
+        """默认打开哪个通道。判定在 `insight.pick_channel`，两边共用。"""
+        return insight.pick_channel(self.cfg)
 
     # ------------------------------------------------------------ 窗口
 
@@ -487,40 +435,26 @@ class App:
             self.page_title_lbl.configure(text=name)
 
     def _chain_sentence(self) -> tuple[str, str]:
-        """把当前配置翻译成一句人话：(陈述句, 状态色)。"""
+        """把当前配置翻译成一句人话：(陈述句, 语义等级)。
+
+        等级 → 颜色由 `_level_color` 映射。业务层不该知道 `brand` 是什么颜色。
+        """
+        return insight.chain_sentence(self.cfg)
+
+    def _level_color(self, level: str, ok_color: str | None = None) -> str:
+        """语义等级 → 具体颜色。**颜色只在 UI 层出现。**
+
+        `ok_color` 给调用点覆盖「ok」用哪个绿：侧栏链路陈述用 `success`
+        （正文色的绿），通道列表的状态点用 `brand`（品牌绿，更亮）。
+        这是纯视觉选择，业务层不该知道。
+        """
         p = self.pal
-        cfg = self.cfg
-        if not cfg.get("enabled", True):
-            return "已静音，任何事件都不会发出通知", p.warning
-
-        on = [c.get("type") for c in config.enabled_channels(cfg) if c.get("type")]
-        if not on:
-            return "没有可用通道，通知发不出去", p.danger
-
-        kinds = [k for k, v in (cfg.get("triggers") or {}).items() if v]
-        if not kinds:
-            return "没有勾选任何事件，不会触发通知", p.warning
-        pair = set(kinds)
-        if {"task_done", "task_failed"} <= pair:
-            when = "任务完成或失败时"
-        elif pair == {"task_done"}:
-            when = "任务完成时"
-        elif pair == {"task_failed"}:
-            when = "任务失败时"
-        else:
-            when = "、".join(events.KIND_LABELS.get(k, k) for k in kinds[:2])
-            if len(kinds) > 2:
-                when += f"等 {len(kinds)} 类事件时"
-
-        # log 通道只写本地文件，不能算「送到手机」——混进这句话就是骗人
-        remote = [t for t in on if t != "log"]
-        if not remote:
-            return "只写入本地日志，手机上收不到", p.warning
-
-        names = "、".join(channels.short_label(t) for t in remote[:2])
-        if len(remote) > 2:
-            names += f"等 {len(remote)} 条通道"
-        return f"{when}，经{names}，送到你手机", p.success
+        return {
+            insight.LEVEL_OK: ok_color or p.success,
+            insight.LEVEL_WARN: p.warning,
+            insight.LEVEL_DANGER: p.danger,
+            insight.LEVEL_MUTED: p.border_strong,
+        }.get(level, p.text_secondary)
 
     def _paint_chain(self) -> None:
         """刷新侧栏底部的链路陈述。
@@ -531,7 +465,7 @@ class App:
         """
         if self.chain_lbl is None or not self.chain_lbl.winfo_exists():
             return
-        text, color = self._chain_sentence()
+        text, level = self._chain_sentence()
         self._chain_text = text
         if self.chain_dot is not None and self.chain_dot.winfo_exists():
             dotc = self.pal.success if self._installed else self.pal.warning
@@ -540,7 +474,7 @@ class App:
                                        fill=dotc, outline=dotc)
         if str(self.chain_lbl.cget("text")) != text:
             self.chain_lbl.configure(text=text)
-        self.chain_lbl.set_fg(color)
+        self.chain_lbl.set_fg(self._level_color(level))
 
     def _paint_master(self) -> None:
         if self.master_lbl is None:
@@ -615,19 +549,8 @@ class App:
             self.dirty_lbl.configure(text="已保存", fg=p.text_tertiary)
 
     def _hooks_installed(self) -> bool:
-        try:
-            import json
-
-            for path in (Path.home() / ".workbuddy-ai" / "settings.json",
-                         Path.home() / ".codebuddy" / "settings.json"):
-                if not path.exists():
-                    continue
-                d = json.loads(path.read_text(encoding="utf-8"))
-                if "hook.py" in json.dumps(d.get("hooks", {}), ensure_ascii=False):
-                    return True
-        except Exception:
-            pass
-        return False
+        """WorkBuddy 的 hook 装了没。读宿主 settings.json，实现在 insight。"""
+        return insight.hooks_installed()
 
     # ------------------------------------------------------------ 主题与切页
 
@@ -1024,17 +947,14 @@ class App:
         self._sync_channel_rows()
 
     def _row_state(self, ctype: str) -> tuple[str, str, bool]:
-        """列表行的 (副标题, 状态点颜色, 是否点亮)。"""
-        p = self.pal
+        """列表行的 (副标题, 状态点颜色, 是否点亮)。
+
+        副标题与等级来自 `insight.channel_state`（语义），这里只把等级翻成颜色。
+        """
         ch = config.get_channel(self.cfg, ctype) or {}
-        if ch.get("enabled"):
-            return "已启用", p.brand, True
-        miss = channels.missing_keys(ctype, ch)
-        if not miss:
-            return "已配置，未启用", p.warning, False
-        label = channels.FIELD_LABELS.get(ctype, {}).get(miss[0], miss[0])
-        more = f" 等 {len(miss)} 项" if len(miss) > 1 else ""
-        return f"待配置：缺 {label}{more}", p.border_strong, False
+        subtitle, level, lit = insight.channel_state(ctype, ch)
+        # 状态点用品牌绿：它比 success 更亮，在 44px 行里更醒目
+        return subtitle, self._level_color(level, ok_color=self.pal.brand), lit
 
     def _build_channel_list(self) -> None:
         p = self.pal
@@ -1450,14 +1370,13 @@ class App:
     def _fetch_openid(self) -> None:
         cfg = self._collect()
         ch = config.get_channel(cfg, "wxmp") or {}
-        appid = (ch.get("appid") or "").strip()
-        secret = (ch.get("secret") or "").strip()
-        if not appid or not secret:
+        if not (ch.get("appid") or "").strip() or not (ch.get("secret") or "").strip():
             self.toast.show("先填 appID 和 appsecret", "warn")
             return
+        fields = {"appid": ch.get("appid"), "secret": ch.get("secret")}
 
         def work():
-            return channels.wx_followers(appid, secret)
+            return insight.fetch_openid(fields)
 
         def done(value, error):
             if error is not None:
@@ -1476,30 +1395,22 @@ class App:
 
     def _test_channel(self, ctype: str) -> None:
         cfg = self._collect()
-        ch = config.get_channel(cfg, ctype)
-        if not ch:
+        if not config.get_channel(cfg, ctype):
             return
-        was = ch.get("enabled")
-        ch["enabled"] = True
 
         def work():
-            try:
-                return pipeline.send_test(cfg, [ctype])
-            finally:
-                ch["enabled"] = was
+            # 临时置 enabled 再发送的语义在 insight.test_channel 里
+            return insight.test_channel(cfg, ctype)
 
         def done(value, error):
             if error is not None:
                 self.toast.show(f"发送异常：{error}", "error", 4200)
                 return
-            if not value:
-                self.toast.show("没有可用的目标通道", "warn")
-                return
-            r = value[0]
-            if r.get("ok"):
-                self.toast.show(f"发送成功：{r.get('msg', '')}", "ok")
+            ok, msg = value
+            if ok:
+                self.toast.show(f"发送成功：{msg}", "ok")
             else:
-                self.toast.show(f"失败：{r.get('msg', '')}", "error", 5000)
+                self.toast.show(f"失败：{msg}", "error", 5000)
 
         self._run_bg(work, done, button=self.ch_test_btn, busy="发送中…")
 
@@ -1696,17 +1607,12 @@ class App:
         cv = self.preview_cv
         cv.delete("all")
 
-        snapshot = copy.deepcopy(self.cfg)
-        snapshot["titles"][self.tpl_kind] = self.title_field.get()
-        snapshot["templates"][self.tpl_kind] = self.content_field.get()
-        try:
-            title, content, _ = render.render_message(
-                SAMPLE_PAYLOAD, self.tpl_kind, snapshot,
-                snapshot.get("app_name", "WorkBuddy"))
-        except Exception:
-            title, content = "（模板有误）", ""
-        # 微信模板消息是纯文本，发出去前会去掉 markdown 记号，预览也要一致
-        content = channels.plain_text("", content)
+        # 渲染（模板 → 标题/正文、剥 markdown、占位符分析）在 insight 里，
+        # 和 webview 版共用一份；这里只管把结果画到手机框里。
+        rendered = insight.preview(
+            self.cfg, self.tpl_kind,
+            self.title_field.get(), self.content_field.get())
+        title, content = rendered["title"], rendered["body"]
 
         dark = p.name == "dark"
         # 手机预览要跟界面同一个明暗，否则深色界面里嵌一块白屏，
@@ -1759,7 +1665,7 @@ class App:
         pad = S(12)
         top = S(82)
         inner_w = x1 - x0 - pad * 2
-        emoji, rest = _split_emoji(title)
+        emoji, rest = insight.split_emoji(title)
         title_x = x0 + pad
         title_w = inner_w
         first_text = None
@@ -1941,65 +1847,11 @@ class App:
             self.timeline.reveal()
 
     def _stats(self) -> dict:
-        today = datetime.now().strftime("%Y-%m-%d")
-        sent, ok, fail = 0, 0, 0
-        rows: list[dict] = []
+        """今日统计 + 最近 8 条。解析逻辑在 `insight.stats`，两边共用。
 
-        np = config.LOG_DIR / "notifications.log"
-        if np.exists():
-            try:
-                for line in np.read_text(encoding="utf-8",
-                                         errors="replace").splitlines():
-                    m = re.match(
-                        r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) \[([^\]]+)\] (\S+) \| (.*)$",
-                        line)
-                    if not m:
-                        continue
-                    if m.group(1) == today:
-                        sent += 1
-                    kind = m.group(4)
-                    # 日志行格式是「时间 [宿主] 事件类型 | 标题」。
-                    # 标题本身已经渲染了宿主名和类型，再拼一遍就是重复信息，
-                    # 所以这一行只显示时间 + 结果点 + 标题。
-                    # 标题开头通常是 ✅ / ⚠️ 这类 emoji，而 Canvas 的
-                    # 正文画布用的是界面字体，没有 emoji 字形，直接画出来
-                    # 是豆腐块。这里把开头的 emoji 拆掉——成功/失败已经由
-                    # 左侧圆点的颜色表达，emoji 是重复信号。
-                    _emoji, plain = _split_emoji(m.group(5))
-                    rows.append({
-                        "time": m.group(2),
-                        "channel": "",
-                        "summary": (plain or m.group(5))[:52],
-                        "ok": kind not in ("task_failed", "tool_failed"),
-                    })
-            except Exception:
-                pass
-
-        lp = config.LOG_DIR / f"notify-{today}.log"
-        if lp.exists():
-            try:
-                for line in lp.read_text(encoding="utf-8",
-                                         errors="replace").splitlines():
-                    # 只数「通道级」的行（`channel=xxx ok=...`）。
-                    # 每个事件在通道行之后还有一行汇总：
-                    #   event=Stop kind=task_done sent=True remote_ok=False ...
-                    # 那一行里的 `remote_ok=False` 会被 "ok=False" 命中，
-                    # 于是失败数直接翻倍——19 次真实失败显示成 38，
-                    # 而「今日通知」只有 19，三个数字自相矛盾。
-                    if "channel=" not in line:
-                        continue
-                    if "ok=True" in line:
-                        ok += 1
-                    elif "ok=False" in line:
-                        fail += 1
-            except Exception:
-                pass
-
-        return {
-            "today": sent, "ok": ok, "fail": fail,
-            "channels": len(config.enabled_channels(self.cfg)),
-            "recent": list(reversed(rows[-8:])),
-        }
+        两处过滤（只数 `channel=` 行、剥标题 emoji）都在那边，别在这里重写。
+        """
+        return insight.stats(self.cfg)
 
     # ------------------------------------------------------------ 页：使用教程
 
@@ -2163,15 +2015,11 @@ class App:
         if getattr(self, "q_check", None) is not None:
             cfg.setdefault("filters", {})["question_as_need_input"] = bool(self.q_check.value)
 
-        for key, fld in (getattr(self, "filt_vars", None) or {}).items():
-            raw = fld.get().strip()
-            if key in ("projects_include", "projects_exclude", "keywords_include"):
-                cfg["filters"][key] = _split_list(raw)
-            elif key == "quiet_hours":
-                cfg["filters"][key] = raw
-            else:
-                default = config.DEFAULT_CONFIG["filters"].get(key, 0)
-                cfg["filters"][key] = _to_int(raw, default)
+        # 表单字符串 → config 类型（逗号切列表、数值转 int、布尔化）。
+        # 转换规则在 `insight.normalize_filters`，webview 版要用同一套。
+        if self.filt_vars:
+            raw = {k: fld.get().strip() for k, fld in self.filt_vars.items()}
+            cfg.setdefault("filters", {}).update(insight.normalize_filters(raw))
 
         if getattr(self, "title_field", None) is not None:
             cfg["titles"][self.tpl_kind] = self.title_field.get()
@@ -2189,11 +2037,18 @@ class App:
     # ------------------------------------------------------------ 动作
 
     def on_save(self) -> None:
-        cfg = self._collect()
-        # 保存时再按完整度维护一次：用户可能刚把凭证填齐
-        turned_on, turned_off = channels.auto_enable(cfg)
-        config.save(cfg)
-        self.cfg = cfg
+        """保存：**读-改-写**，不是「拿内存覆盖磁盘」。
+
+        UI 打开期间 hook 进程可能改过 config（比如自动启用某个通道），
+        整份覆盖会把那些改动抹掉。`insight.merge_save` 先 load 再逐字段
+        合并，两边行为一致。
+        """
+        res = insight.merge_save(self._collect())
+        if not res.get("ok"):
+            self.toast.show(f"保存失败：{res.get('error', '')}", "error", 4200)
+            return
+        self.cfg = res["cfg"]
+        turned_on = res.get("turned_on") or []
         self._sync_channel_rows()
         self._dirty = False
         self._paint_dirty()
@@ -2201,7 +2056,7 @@ class App:
 
         if turned_on:
             self.toast.show("已保存，自动启用 " + "、".join(turned_on), "ok", 3200)
-        elif not config.enabled_channels(cfg):
+        elif not config.enabled_channels(self.cfg):
             self.toast.show("已保存，但还没有启用任何通道", "warn", 3200)
         else:
             self.toast.show("配置已保存", "ok")
@@ -2267,13 +2122,9 @@ class App:
         self._open(str(config.ROOT))
 
     def _open(self, target: str) -> None:
-        try:
-            if sys.platform == "win32":
-                os.startfile(target)  # noqa: S606
-            else:
-                subprocess.Popen(["xdg-open", target])
-        except Exception as e:
-            self.toast.show(f"打开失败：{e}", "error")
+        ok, err = insight.open_path(target)
+        if not ok:
+            self.toast.show(f"打开失败：{err}", "error")
 
     # ------------------------------------------------------------ 启动提示
 
@@ -2290,7 +2141,7 @@ class App:
                                 "warn", 4200)
 
 
-def _boot(root: tk.Tk, app: "App", splash) -> None:
+def _boot(root: tk.Tk, app: App, splash) -> None:
     """T1：逐页预热，进度线按页推进（P1 5.2）。
 
     三条不能破的规矩：

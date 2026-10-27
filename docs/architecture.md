@@ -187,6 +187,7 @@ Tkinter 是标准库，配置界面不用装 Qt 或 Electron，双击即开。
 │   ├── sanitize.py    日志脱敏、URL 协议校验、邮件头防注入
 │   ├── store.py       去重、限流计数、会话计时、失败队列
 │   ├── pipeline.py    流水线编排 + 测试发送
+│   ├── insight.py     config/日志 → 前端可直接渲染的数据（零 UI 依赖，两套界面共用）
 │   ├── theme.py       设计令牌（配色 / 圆角 / 字体 / DPI / 对比度计算）
 │   ├── widgets.py     自绘控件（按钮/开关/竖脊导航/分节/时间轴/手机预览）
 │   └── anim.py        补间动画，支持减弱动效
