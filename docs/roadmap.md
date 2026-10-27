@@ -188,14 +188,14 @@ tkinter UI 那部分（10-27 的三条）**只保留实测数据**，代码随 W
 
 | # | 问题 | 推荐 |
 |---|---|---|
-| D1 | 保留 tkinter 版做降级？ | 全删，退路靠 git tag |
-| D2 | 自绘窗口边框？ | 先不做，W5 实验 |
-| D3 | Tailwind 产物入库 vs 手写 CSS？ | 手写 CSS |
+| D1 | 保留 tkinter 版做降级？ | ✅ **已裁定：全删**，退路靠 `git tag tkinter-final` |
+| D2 | 自绘窗口边框？ | ✅ **已裁定：不做**，永久原生边框（原「W5 实验」已取消） |
+| D3 | Tailwind 产物入库 vs 手写 CSS？ | ✅ **已裁定：手写 CSS**（单 exe、离线、无构建链） |
 | D4 | 深色默认 | 跟随系统 |
 | D5 | 字体 | 打包 Inter 拉丁子集 |
 | D6 | 何时删旧文件 | W5，回归通过后 |
-| D7 | 作废提示词删不删 | 归档不删 |
-| **D8** | ~~pip 安装包~~ → **已改判：做单 exe** | 单 exe，绿色便携 |
+| D7 | 作废提示词删不删 | ✅ **已裁定：归档不删**，`git mv` 到 `docs/archive/prompts-tkinter/` |
+| **D8** | ~~pip 安装包~~ → **已改判：做单 exe** | ✅ 单 exe，绿色便携 |
 | D9 | 通知链路回归 | 每阶段 `selftest.py` + 真发一条 |
 | **D10** | onefile 还是 onedir？ | **待实测**：onefile 慢 1–2s，onedir 不是一个文件 |
 | **D11** | 数据放 exe 旁还是 `%LOCALAPPDATA%`？ | 优先 exe 旁，不可写回落 |

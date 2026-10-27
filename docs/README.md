@@ -51,7 +51,7 @@
 |---|---|
 | [`adr/`](adr/) | 7 条决策记录（[索引](adr/README.md)）。ADR-006 已被 007 取代，正文都保留 |
 | [`channels/`](channels/) | 10 个通道的配置步骤与各自的坑（[索引](channels/README.md)） |
-| [`prompts/`](prompts/) | 现行提示词 C0.1 + W0–W8 + P5，以及决策表（[索引](prompts/README.md)） |
+| [`prompts/`](prompts/) | 现行提示词 C0、C0.1、W0–W8、P5，以及决策表（[索引](prompts/README.md)） |
 | [`reviews/`](reviews/) | 01–04、07 审查快照（[索引](reviews/README.md)）。历史记录，不改 |
 | [`archive/`](archive/) | tkinter 时代的文档：`design.md`、`design-redesign.md`、`perf.md`、外来方案原文、旧提示词 P0–P4。**顶部有归档横幅，读到就先看横幅** |
 
@@ -67,3 +67,5 @@
    [`prompts/C0-清场与旧资产归档.md`](prompts/C0-清场与旧资产归档.md) §5 第 3 条。
    必须 0 条。
 5. **不在这里摘抄别的文档的内容。** 索引只负责指路。重复一份就是下一个「说反话」的信源。
+6. **文档里不写界面位置**（「右下角」「右上角」）。写稳定的导航路径：哪一页 → 哪个通道 → 哪个按钮。
+   写位置的文档会绑死在某一版布局上，改版即失效。
