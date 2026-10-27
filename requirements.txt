@@ -10,3 +10,12 @@
 
 pystray>=0.19,<0.20
 Pillow>=10.0
+
+# UI 需要（pywebview + 系统 WebView2）。它只影响界面，不影响通知链路：
+# 没装、装坏了、或者机器上缺 WebView2 运行时，app.py 都会自动降级到
+# tkinter 版（ui.py），hook / dispatch 照常发通知。
+#
+# 下界 6.2 是实测过的版本（6.2.1）。6.x 已经删掉了 webview.__version__，
+# 取版本号要用 importlib.metadata.version("pywebview")。
+# 上限 <7 是因为 7.x 大概率还会动 API，别让 pip 自己升上去。
+pywebview>=6.2,<7

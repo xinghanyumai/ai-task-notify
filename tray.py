@@ -72,8 +72,10 @@ def status_text() -> str:
 
 
 def open_ui() -> None:
+    # 走 app.py 而不是 ui.py：app.py 带单实例锁，点两次托盘不会再开出两个
+    # 各存一份配置的窗口。app.py 自己会在 WebView2 缺失时降级回 ui.py。
     subprocess.Popen(
-        [pythonw(), str(ROOT / "ui.py")],
+        [pythonw(), str(ROOT / "app.py")],
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,

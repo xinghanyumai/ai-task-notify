@@ -164,13 +164,17 @@ Tkinter 是标准库，配置界面不用装 Qt 或 Electron，双击即开。
 
 ```
 .
+├── app.py             唯一入口：ui（默认）/ tray / hook / dispatch / install / selftest
 ├── hook.py            宿主调用的入口，约 70ms 返回
 ├── dispatch.py        异步派发进程
-├── ui.py              设置中心（竖脊导航 + 分节内容区，自绘控件）
+├── ui.py              设置中心（tkinter 版，W5 下线，退路靠 tag tkinter-final）
 ├── tray.py            托盘常驻（可选）
 ├── install.py         安装器：写 hooks、建快捷方式
 ├── selftest.py        自检：模拟 4 类事件，验证到底能不能收到
 ├── config.json        你的配置，首次运行自动生成，含凭证，权限已收紧
+├── webui/             pywebview 的页面层（W1 起）
+│   ├── index.html     页面入口，用 Path.as_uri() 加载
+│   └── assets/app.js  调 bridge 的前端逻辑，必须等 pywebviewready
 ├── tools/             开发期脚本，不参与运行
 │   ├── audit.py       审查：对比度、键盘可达、动效、三档窗口宽度
 │   ├── shot.py        开发用截图（浅色深色、任意页面、任意窗口尺寸）
@@ -188,6 +192,7 @@ Tkinter 是标准库，配置界面不用装 Qt 或 Electron，双击即开。
 │   ├── store.py       去重、限流计数、会话计时、失败队列
 │   ├── pipeline.py    流水线编排 + 测试发送
 │   ├── insight.py     config/日志 → 前端可直接渲染的数据（零 UI 依赖，两套界面共用）
+│   ├── bridge.py      暴露给 JS 的 API（config_get / config_save），返回值统一 {ok,data,error}
 │   ├── theme.py       设计令牌（配色 / 圆角 / 字体 / DPI / 对比度计算）
 │   ├── widgets.py     自绘控件（按钮/开关/竖脊导航/分节/时间轴/手机预览）
 │   └── anim.py        补间动画，支持减弱动效
@@ -201,6 +206,36 @@ Tkinter 是标准库，配置界面不用装 Qt 或 Electron，双击即开。
 `ROOT = Path(__file__).parent.parent` 推导。所以这个项目刻意不做成可安装包：
 一旦 `pip install` 到 site-packages，`ROOT` 会变成 Python 安装目录，
 配置和日志就写到不该去的地方。解压到哪里就在哪里跑。
+
+## 已知问题：本机 WebView2 不合成画面（2026-10-27 实测）
+
+**症状**：`python app.py` 开出窗口，原生边框、标题、尺寸、最小尺寸全对，
+但内容区是一整块黑（`background_color` 设成浅色时是一整块浅色）。
+
+**已排除**：不是截图方式的问题（BitBlt / PrintWindow / Windows Graphics Capture
+三种都拍，内容区都是纯色）；不是 pywebview 版本（6.2.1 与 5.4 一样）；
+不是我们的页面（`html="<h1>hi</h1>"` 一样黑）；不是 DPI（强制 200% / 100%
+awareness 都一样）；不是沙箱（关掉沙箱一样）。
+
+**关键证据：功能链是通的，只有像素没上屏。**
+
+| 观察 | 结果 |
+|---|---|
+| `on_webview_ready` 回调 | `IsSuccess = True` |
+| `location.href` | 正确的 `file:///D:/Code/Work%20buddy%20%E9%80%9A%E7%9F%A5/webui/index.html` |
+| 前端调 `config_get` | 收到了，`path` / 通道数 / triggers 全对（中文路径正确） |
+| 5 秒后再读 `CoreWebView2` | `None` —— 控制器已失效 |
+| `msedgewebview2.exe` 子进程 | 我们的进程一个都没起（只有 SearchHost 的） |
+| 同一份代码换 `gui="mshtml"` | **正常渲染**，文字清晰可见 |
+
+所以结论是 EdgeChromium 后端在这台机器上初始化回调报成功、但浏览器进程随后
+消失，画面一次都没合成过。MSHTML 后端能画，说明 pywebview 的 WinForms 外壳
+没问题，坏的是 WebView2 那一层。
+
+**当前处置**：`app.py` 有一个存活探针——窗口开出 10 秒内前端必须调通一次
+bridge，否则落日志并降级到 tkinter 版。注意本机这个探针**不会**触发，因为
+bridge 确实是通的（只是看不见），也就是说用户会对着一个黑窗口。
+**W2 之前必须解决**：W2 全部工作都是视觉，画不出来等于没做。
 
 ## 运行环境
 

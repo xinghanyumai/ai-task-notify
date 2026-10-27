@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>AI 任务通知</title>
+<!--
+  W1 的验证页，不是成品界面。这里只回答三个问题：
+  Python→JS 通不通、JS→Python 通不通、配置改了存不存得回去。
+  样式、布局、导航一律留到 W2，现在花时间调外观是提前消费 W2 的预算。
+-->
+<style>
+  :root { color-scheme: light dark; }
+  body { font: 14px/1.6 "Microsoft YaHei UI", "Segoe UI", sans-serif;
+         margin: 0; padding: 24px 28px; color: #18181b; background: #fafafa; }
+  h1 { font-size: 18px; margin: 0 0 4px; }
+  .sub { color: #71717a; font-size: 13px; margin: 0 0 20px; }
+  .row { display: flex; gap: 10px; align-items: center; margin: 0 0 14px; flex-wrap: wrap; }
+  button { font: inherit; padding: 6px 14px; border-radius: 6px; cursor: pointer;
+           border: 1px solid #d4d4d8; background: #fff; color: #18181b; }
+  button:hover { background: #f4f4f5; }
+  button:disabled { opacity: .5; cursor: default; }
+  #status { font-size: 13px; }
+  .ok { color: #0a7d43; }
+  .bad { color: #b42318; }
+  pre { background: #fff; border: 1px solid #e4e4e7; border-radius: 8px;
+        padding: 12px 14px; margin: 0; max-height: 420px; overflow: auto;
+        font: 12px/1.55 Consolas, "Cascadia Mono", monospace; }
+  #result { font-size: 13px; min-height: 20px; margin: 10px 0 0; }
+</style>
+</head>
+<body>
+  <h1>pywebview 壳已连通</h1>
+  <p class="sub">W1 验证页 · 只验通道，不验外观</p>
+
+  <div class="row">
+    <span id="status">正在读配置…</span>
+  </div>
+
+  <div class="row">
+    <button id="save" disabled>把 enabled 改成 false 并保存</button>
+    <button id="restore" disabled>改回 true</button>
+    <button id="reload" disabled>重新读磁盘</button>
+  </div>
+
+  <p id="result"></p>
+  <pre id="json"></pre>
+
+  <script src="assets/app.js"></script>
+</body>
+</html>
