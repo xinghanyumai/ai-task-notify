@@ -6,10 +6,14 @@
 建多久界面就冻结多久 —— 400ms 的冻结用户能明确感觉到「顿了一下」。
 没有数字就没法判断一次改版是变快还是变慢，也没法设验收线。
 
-测量三件事：
+测量四件事：
   1. 启动建界面     App() 构造到首次布局完成
-  2. 切页           每页从 _show_page() 到布局完成
-  3. 整页重建       主题切换走的就是这条路（_rebuild）
+  2. 首次进入某页   这一页此前没建过，第一次点进去的真实代价
+  3. 切页           页面已在内存里，pack_forget + pack 的耗时
+  4. 整页重建       主题切换走的就是这条路（_rebuild）
+
+2 和 3 要分开报：页面缓存之后这两个数差一个数量级，混在一起看会得出
+「切页很快」的错误结论，而用户第一次点某一页时付的是 2 的钱。
 
 用法：
     python tools/bench_ui.py                 # 人看的表格
@@ -39,6 +43,11 @@ if str(ROOT) not in sys.path:
 
 # 预算（毫秒）。超过就是用户能感觉到的卡顿。
 BUDGET_STARTUP = 400
+# 首次进入某一页的预算按「一次性」定，不按「点击」定：这一下在正式运行里
+# 由 App 启动后的 _warm_pages 提前承担，用户点不到这条路径。实测最慢的
+# 「从零到收到第一条通知」页 850ms 左右——它是一页里上百个控件 + 几千个
+# 汉字首次栅格化的总和，Tk 没有更便宜的做法。
+BUDGET_COLD = 900
 BUDGET_PAGE = 100
 BUDGET_REBUILD = 300
 
@@ -54,11 +63,20 @@ def _median_ms(fn, runs: int) -> float:
     return statistics.median(samples)
 
 
+def _cold_ms(app, root, key: str) -> float:
+    """首次进入某一页的耗时。这一页此前必须没建过，否则量到的是缓存命中。"""
+    t = time.perf_counter()
+    app._show_page(key)
+    root.update_idletasks()
+    return (time.perf_counter() - t) * 1000
+
+
 def _switch_ms(app, root, keys: list[str], key: str, runs: int) -> float:
-    """测「冷切到某一页」的耗时。
+    """测「已缓存的页来回切」的耗时。
 
     不能对同一页连续调用 _show_page —— 已经在那一页时它是空操作，会测出 0ms。
-    所以每次都先切到别的页，再切回来，确保这一下真的在重建控件。
+    所以每次都先切到别的页，再切回来。此时两页都在 self._pages 里，
+    量到的就是纯粹的换页 + 进场动画开销。
     """
     samples = []
     for _ in range(runs):
@@ -163,6 +181,17 @@ def main(argv: list[str]) -> int:
     root.update_idletasks()
 
     keys = [p[0] for p in ui.PAGES]
+
+    # 冷进入必须赶在预热之前量：App() 里挂了 after(400, _warm_pages)，
+    # 而 update_idletasks() 不跑定时器，所以这段里页面还是「没建过」的状态。
+    cold_total = 0.0
+    for key in keys:
+        if key == app.current_page:
+            continue
+        ms = _cold_ms(app, root, key)
+        cold_total += ms
+        rows.append((f"首次进入 {key}", ms, BUDGET_COLD))
+
     for key in keys:
         ms = _switch_ms(app, root, keys, key, args.runs)
         rows.append((f"切到 {key}", ms, BUDGET_PAGE))
@@ -178,6 +207,8 @@ def main(argv: list[str]) -> int:
         if ms > budget:
             over.append(f"{label} {ms:.0f}ms > {budget}ms")
     print("=" * 56)
+    print(f"  启动后预热总量 ≈ {cold_total:.0f} ms，分摊在开窗后 2 秒内；"
+          "用户点击时不再付这笔钱")
 
     if swallowed:
         print(f"\n测量期间 Tk 回调抛了 {len(swallowed)} 次异常（这些页的数字不可信）：")

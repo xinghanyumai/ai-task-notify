@@ -2,22 +2,35 @@
 
 设计说明
 --------
-这个产品真正的内容不是「一堆设置项」，而是一条链路：
+这一版是对上一版的整体重做，不是微调。上一版的视觉语言直接沿用宿主
+（品牌绿铺满按钮和选中态、去卡片化、左侧一根「竖脊」串起五个节点），
+读起来像一个消费级 App 的设置页：到处是彩色，反而没有重点；一屏没有
+边界的长表单，扫读成本高；所有动效统一 180ms 三次缓出，中段速度不够，
+看起来像「被推到位」。
 
-    事件 → 过滤 → 渲染 → 通道 → 手机
+这一版换了四条基本判断：
 
-所以整套界面的语汇都围绕这条链路建立，而不是围绕表单：
+1. **中性色画布 + 墨色主操作 + 品牌绿作信号色。**
+   主按钮是墨色（近黑 / 深色下近白），品牌绿只出现在「系统状态」上：
+   开关打开、连接正常、发送成功。彩色实心按钮是消费级最强的信号，
+   墨色按钮 + 克制的彩色状态点读起来才是专业工具。
 
-- **左侧导航是一根竖脊**，五个页面是脊上的节点。切换页面时有一个
-  点沿着脊滑过去——这是全界面唯一「讲故事」的动效，其余一律克制。
-  教程页不在链路上，用一段虚线隔开。
-- **通道是链路上的出口**，每一行带一个通 / 堵状态点。
-- **运行状态是一根时间轴**，记录这条链路上真实发生过的事。
-- **顶栏不是页面标题，而是一句陈述**：你现在这套配置的实际后果是什么。
-  这句话在任何页面都可见，因为它才是用户始终关心的那个问题。
+2. **内容重新装进卡片。**
+   卡片边界靠 1px 描边，不靠投影和底色差。每张卡片是一个语义分组，
+   卡片内的设置行共用「标题 / 说明 / 控件」三栏基线，行与行之间一条
+   细线。参差的行是廉价感的主要来源。
 
-结构上刻意「去卡片化」：主内容直接铺在页面底色上，用分节标题 + 一条
-向右延伸的细线区分层级。只有设备预览、日志这类真有边界的东西才用卡片。
+3. **每页有页头。**
+   上一版刻意不做页面标题，靠左侧高亮表达「你在哪」。但导航只有文字，
+   页面滚起来之后就没有参照物了。这一版每页开头是「标题 + 一句说明」，
+   顶部栏则保留那句关于当前配置的陈述——两者分工不同：
+   页头回答「这是什么」，顶栏回答「我现在到底会不会收到通知」。
+
+4. **切页不重建，进场错开。**
+   上一版每次切页销毁整页再重建（一页 105~110 个控件、约 457 次 Tcl 调用），
+   实测 117~153ms，超过 100ms 的「即时」阈值。这一版把每个页面建一次
+   留着，切页只是 pack_forget + pack，进场时卡片依次从下方 10px 升到位，
+   用 ease_out_expo（前 100ms 走完八成位移），而不是统一次缓出。
 """
 
 from __future__ import annotations
@@ -29,6 +42,7 @@ import re
 import subprocess
 import sys
 import threading
+import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -51,6 +65,20 @@ PAGES = [
 ]
 
 THEME_OPTIONS = [("auto", "跟随"), ("light", "浅色"), ("dark", "深色")]
+
+# 切页时要存/取的视图引用。
+#
+# 页面缓存之后，控件不会随切页销毁，但「当前页是哪个」这件事由这些属性
+# 表达。切走时存一份、切回来时取一份，就不会出现「回到通道页但
+# self.ch_rows 是 None」这种状态错位。
+_VIEW_ATTRS = (
+    "page_sc", "ch_list_inner", "ch_list_sc", "ch_form_host", "ch_form_sc",
+    "ch_rows", "ch_count_pill", "left_col", "title_field", "content_field",
+    "preview_cv", "q_check", "ch_test_btn", "ch_openid_btn", "ch_why_lbl",
+    "tr_vars", "filt_vars", "ch_vars", "timeline", "stat_metrics",
+)
+# 这些属性是容器，清空时给空字典而不是 None
+_DICT_VIEWS = ("ch_rows", "tr_vars", "filt_vars", "ch_vars", "stat_metrics")
 
 SAMPLE_PAYLOAD = {
     "hook_event_name": "Stop",
@@ -165,10 +193,17 @@ class App:
         self.ch_count_pill = None
         self.left_col = None
 
+        # 页面缓存：key -> 该页的根 Frame，只建一次
+        self._pages: dict = {}
+        self._view: dict = {}
+        self.timeline = None
+        self.stat_metrics: dict = {}
+        self._warm_job = None
+        self._last_input = 0.0
+
         # 骨架引用
         self.page_sc = None
         self.nav_items: dict = {}
-        self.nav_rail = None
         self.content = None
         self.chain_dot = None
         self.chain_lbl = None
@@ -300,15 +335,22 @@ class App:
         self.main = tk.Frame(self.root, bg=p.bg_app)
         self.main.pack(side="left", fill="both", expand=True)
         self._build_topbar()
+
+        # 内容区：每页建一次留着，切页只换 pack，不重建（见模块说明第 4 条）
         self.content = tk.Frame(self.main, bg=p.bg_app)
         self.content.pack(fill="both", expand=True)
         self.content.bind("<Configure>", self._on_content_conf)
-        self._build_footer()
 
+        self._build_footer()
         self.toast = W.Toast(self.root, p)
         self._show_page(self.current_page)
         self.root.after_idle(self._apply_titlebar)
         self.root.after(120, self._apply_titlebar)
+        # 启动后把还没建过的页面补建出来（见 _warm_pages）
+        self._warm_job = None  # TEMP off
+        # 预热要给用户让路，所以得知道他刚才有没有在动
+        for seq in ("<Button-1>", "<Key>", "<MouseWheel>"):
+            self.root.bind(seq, self._mark_input, add="+")
 
     def _build_sidebar(self) -> None:
         p = self.pal
@@ -320,44 +362,49 @@ class App:
 
         # -- 品牌区
         brand = tk.Frame(side, bg=p.sidebar)
-        brand.pack(fill="x", padx=SP.lg, pady=(SP.lg, SP.lg))
+        brand.pack(fill="x", padx=SP.lg, pady=(SP.xl, SP.lg))
         mark = tk.Canvas(brand, width=DIM.LOGO, height=DIM.LOGO, bg=p.sidebar,
                          highlightthickness=0, bd=0)
         mark.pack(side="left")
-        W.round_rect_grad(mark, 0, 0, DIM.LOGO, DIM.LOGO, S(10),
+        W.round_rect_grad(mark, 0, 0, DIM.LOGO, DIM.LOGO, S(9),
                           p.brand_top, p.brand_bottom)
-        W.draw_icon(mark, "bell", SP.sm, SP.sm, DIM.ICON, p.on_brand, STK.icon)
+        W.draw_icon(mark, "bell", SP.sm - S(1), SP.sm - S(1), DIM.ICON - S(1),
+                    p.on_brand, STK.icon)
 
         titles = tk.Frame(brand, bg=p.sidebar)
-        titles.pack(side="left", padx=(SP.sm, 0))
+        titles.pack(side="left", padx=(SP.md, 0))
         tk.Label(titles, text=APP_TITLE, bg=p.sidebar, fg=p.text,
                  font=theme.font(self.root, TS["section"], "bold")).pack(anchor="w")
         tk.Label(titles, text=APP_VER, bg=p.sidebar, fg=p.text_tertiary,
                  font=theme.font(self.root, TS["micro"])).pack(
             anchor="w", pady=(SP.xxs, 0))
 
-        tk.Frame(side, bg=p.border, height=STK.rule).pack(fill="x", padx=SP.lg)
+        # -- 导航：分组标签 + 项目列表
+        nav = tk.Frame(side, bg=p.sidebar)
+        nav.pack(fill="x", padx=SP.sm)
+        # 分组标签固定占 NAV_GROUP_H 高、文字贴底：字号或字体一换，
+        # 下面第一项的起始位置不会跟着漂。
+        grp = tk.Frame(nav, bg=p.sidebar, height=S(DIM.NAV_GROUP_H))
+        grp.pack(fill="x", padx=SP.sm, pady=(0, SP.xs))
+        grp.pack_propagate(False)
+        tk.Label(grp, text="设置", bg=p.sidebar, fg=p.text_tertiary, anchor="w",
+                 font=theme.font(self.root, TS["micro"], "bold")).pack(
+            side="bottom", fill="x")
 
-        # -- 导航：竖脊 + 节点
-        navwrap = tk.Frame(side, bg=p.sidebar)
-        navwrap.pack(fill="x", pady=(SP.sm, 0))
-        self.nav_rail = W.NavRail(navwrap, p, bg=p.sidebar, width=DIM.NAV_RAIL_W)
-        self.nav_rail.pack(side="left", fill="y")
-
-        nav = tk.Frame(navwrap, bg=p.sidebar)
-        nav.pack(side="left", fill="both", expand=True, padx=(0, SP.sm))
         for key, label, icon, _desc, gap in PAGES:
+            if gap:
+                tk.Frame(nav, bg=p.sidebar, height=SP.sm).pack(fill="x")
+                tk.Frame(nav, bg=p.border, height=STK.rule).pack(
+                    fill="x", padx=SP.sm, pady=(0, SP.sm))
             item = W.NavItem(nav, p, key, label, icon, self._show_page,
                              bg=p.sidebar, height=DIM.NAV_ITEM_H)
             item.pack(fill="x", pady=SP.xxs)
             self.nav_items[key] = item
-            self.nav_rail.add(item, gap_before=gap)
-        anim.later(side, 40, self.nav_rail.repaint)
 
         # -- 底部：接入状态
         foot = tk.Frame(side, bg=p.sidebar)
         foot.pack(side="bottom", fill="x", padx=SP.lg, pady=(0, SP.lg))
-        tk.Frame(foot, bg=p.border, height=STK.rule).pack(fill="x", pady=(0, SP.sm))
+        tk.Frame(foot, bg=p.border, height=STK.rule).pack(fill="x", pady=(0, SP.md))
 
         installed = self._hooks_installed()
         state = tk.Frame(foot, bg=p.sidebar)
@@ -366,11 +413,11 @@ class App:
                         highlightthickness=0, bd=0)
         dot.pack(side="left")
         color = p.success if installed else p.warning
-        dot.create_oval(S(1), S(4), S(7), S(10), fill=color, outline=color)
+        dot.create_oval(S(1), S(5), S(7), S(11), fill=color, outline=color)
         tk.Label(state, text="已接入宿主" if installed else "未接入宿主",
                  bg=p.sidebar, fg=p.text_secondary,
                  font=theme.font(self.root, TS["small"])).pack(
-            side="left", padx=(SP.xxs, 0))
+            side="left", padx=(SP.xs, 0))
 
         tip = ("任务结束时自动推送" if installed
                else "运行 install.py 完成接入")
@@ -379,10 +426,10 @@ class App:
             anchor="w", pady=(SP.xs, 0))
 
     def _build_topbar(self) -> None:
-        """顶栏 = 一句关于当前配置的陈述句，不是页面标题。
+        """顶栏 = 一句关于当前配置的陈述句 + 全局开关。
 
         用户在任何页面都想知道「我现在到底会不会收到通知」，所以这一行
-        放全局状态；页面自身的身份由左侧高亮的节点和页面第一个分节说明。
+        放全局状态；页面自身的身份由左侧高亮和页头表达。
         """
         p = self.pal
         bar = tk.Frame(self.main, bg=p.bg_app, height=DIM.TOPBAR_H)
@@ -396,8 +443,7 @@ class App:
                     height=DIM.SEG_H, font_size=TS["micro"]).pack(side="left")
 
         tk.Frame(right, bg=p.border, width=STK.rule,
-                 height=DIM.DIVIDER_V_H).pack(
-            side="left", padx=SP.lg)
+                 height=DIM.DIVIDER_V_H).pack(side="left", padx=SP.lg)
         self.master_switch = W.Switch(right, p, bool(self.cfg.get("enabled", True)),
                                       command=self._on_master, bg=p.bg_app)
         self.master_switch.pack(side="right")
@@ -416,7 +462,7 @@ class App:
         self.chain_lbl = tk.Label(left, text="", bg=p.bg_app, fg=p.text,
                                   font=theme.font(self.root, TS["body"]),
                                   anchor="w", justify="left")
-        self.chain_lbl.pack(side="left", padx=(SP.xxs, 0))
+        self.chain_lbl.pack(side="left", padx=(SP.xs, 0))
         left.bind("<Configure>", self._fit_chain)
 
         self._paint_master()
@@ -596,22 +642,11 @@ class App:
         `include_shell=False` 时保留侧栏 / 顶栏 / 底栏的引用——切页时这些
         骨架并没有重建，把它们置空会让后续刷新摸到 None。
         """
-        self.ch_vars, self.tr_vars, self.filt_vars = {}, {}, {}
-        self.title_field = None
-        self.content_field = None
-        self.preview_cv = None
-        self.q_check = None
-        self.ch_list_inner = None
-        self.ch_list_sc = None
-        self.ch_form_host = None
-        self.ch_form_sc = None
-        self.ch_rows = {}
-        self.ch_count_pill = None
-        self.left_col = None
-        self.page_sc = None
+        for name in _VIEW_ATTRS:
+            setattr(self, name, {} if name in _DICT_VIEWS else None)
+        self._preview_w = DIM.PREVIEW_W
         if include_shell:
             self.nav_items = {}
-            self.nav_rail = None
             self.content = None
             self.chain_dot = None
             self.chain_lbl = None
@@ -619,52 +654,177 @@ class App:
             self.dirty_dot = None
             self.dirty_lbl = None
 
-    def _show_page(self, key: str) -> None:
-        if self.content is None:
-            return
-        if key == self.current_page and self.content.winfo_children():
-            # 已经在当前页：只刷新高亮，不重建（避免无谓的重绘）
-            for k, item in self.nav_items.items():
-                item.set_selected(k == key)
-            return
+    def _save_view(self, key: str) -> None:
+        """把当前页的控件引用存起来，切回来时能接着用。"""
+        self._view[key] = {n: getattr(self, n, None) for n in _VIEW_ATTRS}
+        self._view[key]["_preview_w"] = self._preview_w
 
-        self.cfg = self._collect()
-        self.current_page = key
-        for w in self.content.winfo_children():
-            w.destroy()
-        self._reset_view_state()
-        self.current_page = key
+    def _restore_view(self, key: str) -> None:
+        saved = self._view.get(key) or {}
+        for name in _VIEW_ATTRS:
+            setattr(self, name, saved.get(name))
+        self._preview_w = saved.get("_preview_w", DIM.PREVIEW_W)
 
-        builder = {
+    def _builders(self) -> dict:
+        return {
             "channels": self._page_channels,
             "triggers": self._page_triggers,
             "template": self._page_template,
             "status": self._page_status,
             "guide": self._page_guide,
-        }.get(key, self._page_channels)
-        builder(self.content)
+        }
+
+    def _show_page(self, key: str) -> None:
+        """切换页面。
+
+        每页只建一次，之后切页就是 pack_forget + pack。上一版每次销毁整页
+        再重建，一页 105~110 个控件、约 457 次 Tcl 调用，实测 117~153ms，
+        超过 100ms 的「即时」阈值；现在只剩换页和进场动画。
+        """
+        if self.content is None:
+            return
+        builders = self._builders()
+        if key not in builders:
+            key = "channels"
+        if key == self.current_page and key in self._pages:
+            for k, item in self.nav_items.items():
+                item.set_selected(k == key)
+            return
+
+        # 先把当前页上的编辑读进 cfg，否则换页会丢掉未保存的输入
+        self.cfg = self._collect()
+        prev = self.current_page
+        if prev in self._pages:
+            self._save_view(prev)
+
+        self.current_page = key
+        frame = self._pages.get(key)
+        if frame is None or not frame.winfo_exists():
+            frame = tk.Frame(self.content, bg=self.pal.bg_app)
+            builders[key](frame)
+            self._pages[key] = frame
+            self._save_view(key)
+        else:
+            self._restore_view(key)
+            self._refresh_page(key)
+
+        for k, f in self._pages.items():
+            if k != key and f.winfo_exists() and f.winfo_ismapped():
+                f.pack_forget()
+        frame.pack(fill="both", expand=True)
 
         for k, item in self.nav_items.items():
             item.set_selected(k == key)
-        if self.nav_rail is not None:
-            anim.later(self.nav_rail, 16, lambda: self.nav_rail.set_selected(key))
 
         self._paint_chain()
-        self._enter_anim()
+        self._enter_anim(frame)
 
-    def _enter_anim(self) -> None:
-        """页面进场：内容从下方轻推到位。
+    def _mark_input(self, _e=None) -> None:
+        self._last_input = time.monotonic()
 
-        幅度很小（8px / 180ms）——它的作用是让人知道「换了个地方」，
-        不是表演。大幅 fade-and-slide 是模板感最强的信号之一。
+    def _warm_pages(self) -> None:
+        """启动后把还没建过的页面逐个补建，用户第一次点过去就不会顿一下。
+
+        为什么值得单独做：一页第一次建出来要 260~790ms（Tk 建控件 + 文本
+        排版 + 首轮布局，实测见 tools/bench_ui.py 的「首次进入」一行），
+        而建好之后切回来只要 1~9ms。差别太大，不能留给「点一下」去承担。
+
+        为什么不一次建完：四页一次性建出来，启动会从 240ms 涨到 2.3s 以上，
+        等于把「切页卡」换成「打开卡」。切成每 260ms 建一页，每建完一页就
+        把事件循环让出去。
+
+        为什么还要看用户在不在动：预热本身是同步建控件，一次最长会冻结
+        790ms。如果用户已经开窗就开始点，那这笔钱就不该在这时候花——他
+        点哪一页就现建哪一页，剩下的等他停下来再说。预热是为了让他后面
+        不卡，不能反过来卡他。
+
+        发送测试正在飞的时候也不建：那条链路的承诺是「网络走后台，主线程
+        不冻结」，而建一页会实打实冻结几百毫秒。预热自己破坏这条承诺，
+        比「第一次切页慢一点」严重得多。
+
+        建好的页先不 pack，所以它不进布局、不影响当前页，也不会被 audit 的
+        可见性过滤当成「同时在显示的两页」。
         """
-        if self.current_page == "channels":
-            if self.ch_list_sc is not None:
-                self.ch_list_sc.slide_in(dy=SP.sm, duration=MOTION.base)
-            if self.ch_form_sc is not None:
-                self.ch_form_sc.slide_in(dx=SP.md, dy=SP.xxs, duration=MOTION.base)
-        elif self.page_sc is not None:
-            self.page_sc.slide_in(dy=SP.sm, duration=MOTION.base)
+        self._warm_job = None
+        if self.content is None:
+            return
+        # 1.2 秒内有过点击 / 按键 / 滚轮，就先让路，400ms 后再看
+        if time.monotonic() - self._last_input < 1.2 or self._bg_busy:
+            self._warm_job = None  # TEMP off
+            return
+        pending = [k for k in self._builders() if k not in self._pages]
+        if not pending:
+            return
+        key = pending[0]
+        try:
+            frame = tk.Frame(self.content, bg=self.pal.bg_app)
+            self._builders()[key](frame)
+            self._pages[key] = frame
+            self._save_view(key)
+        except Exception:
+            # 预热失败不该影响用户：下次点进去会走正常构建路径再试一遍
+            pass
+        self._warm_job = self.root.after(260, self._warm_pages)
+
+    def _refresh_page(self, key: str) -> None:
+        """页面已经在内存里，只补那些会过期的内容。
+
+        控件和输入值都还活着，所以这里不做重建；只有「随时间或外部状态
+        变化」的部分需要重新算一遍。
+        """
+        try:
+            if key == "channels":
+                self._sync_channel_rows()
+            elif key == "status":
+                self._refresh_status()
+            elif key == "template":
+                self._update_preview()
+        except Exception:
+            return
+
+    def _enter_anim(self, frame) -> None:
+        """进场：卡片依次从下方 10px 升到位。
+
+        用 ease_out_expo 而不是 ease_out_cubic：它前 100ms 走完约八成位移，
+        观感是「弹到位」；三次缓出中段速度不够，看起来像被推着走。
+
+        错开间隔 24ms，最多 6 张。再多就成了表演，而用户切页是为了看内容。
+        """
+        if anim.reduced():
+            return
+        cards = self._collect_cards(frame)
+        if not cards:
+            if self.page_sc is not None:
+                self.page_sc.slide_in(dy=SP.sm, duration=MOTION.base)
+            return
+
+        for i, card in enumerate(cards[:6]):
+            if i == 0:
+                self._enter_card(card)
+            else:
+                anim.later(frame, i * MOTION.stagger,
+                           lambda c=card: self._enter_card(c))
+
+    @staticmethod
+    def _enter_card(card) -> None:
+        def frame(t):
+            card.set_offset(S(10) * (1 - t))
+
+        anim.tween(card, "enter", MOTION.base, frame, anim.ease_out_expo,
+                   interval=MOTION.interval)
+
+    @staticmethod
+    def _collect_cards(root) -> list:
+        out = []
+
+        def walk(w):
+            for c in w.winfo_children():
+                if isinstance(c, W.Card):
+                    out.append(c)
+                walk(c)
+
+        walk(root)
+        return out
 
     def _on_content_conf(self, e) -> None:
         """窄窗口下的尺寸适配。桌面程序没有断点，只有「别撑破」。"""
@@ -687,23 +847,58 @@ class App:
     # ------------------------------------------------------------ 通用小组件
 
     def _scroll_area(self, parent) -> tk.Frame:
+        """可滚动的正文区，返回一个居中的定宽列。
+
+        窗口拉到 1360 之后如果正文跟着铺满，一行字会横跨 1100px，
+        眼睛要在两端来回跳。Linear / Stripe 的做法是正文列封顶、多出来的
+        宽度全部变成两侧留白——窗口变宽只影响留白，不影响行宽。
+        """
         sc = W.ScrollFrame(parent, self.pal, bg=self.pal.bg_app)
         sc.pack(fill="both", expand=True)
         self.page_sc = sc
-        return sc.inner
 
-    def _section(self, parent, text: str, bg: str) -> None:
-        """分节内部的小标题：文字 + 一条向右延伸的细线。
+        col = tk.Frame(sc.inner, bg=self.pal.bg_app)
+        col.pack(fill="x")
+        maxw = S(DIM.CONTENT_MAX)
+        col._pad = -1
 
-        比 W.Section 轻一档，用来在同一个分节里再分小组。
+        def _fit(e):
+            # 只调 padx，不改 inner 宽度，所以不会反过来再触发一次 <Configure>
+            pad = max(0, (e.width - maxw) // 2)
+            if pad != col._pad:
+                col._pad = pad
+                col.pack_configure(padx=(pad, pad))
+
+        sc.inner.bind("<Configure>", _fit, add="+")
+        return col
+
+    def _page_head(self, parent, title: str, desc: str = "",
+                   padx: int | None = None) -> tk.Frame:
+        """页头：标题 + 一句说明。
+
+        上一版刻意不做页面标题，靠左侧高亮表达「你在哪」。但导航只有文字，
+        页面一滚就没有参照物了。主流设置界面（Stripe / Linear / Vercel）
+        都是「页标题 + 一句话说明」开头，这不是模板化，是方位感。
         """
         p = self.pal
-        row = tk.Frame(parent, bg=bg)
-        row.pack(fill="x", pady=(SP.sm, SP.sm))
-        tk.Label(row, text=text, bg=bg, fg=p.text_tertiary,
-                 font=theme.font(self.root, TS["micro"])).pack(side="left")
-        tk.Frame(row, bg=p.border, height=STK.rule).pack(
-            side="left", fill="x", expand=True, padx=(SP.sm, 0))
+        outer = tk.Frame(parent, bg=p.bg_app)
+        outer.pack(fill="x", padx=padx if padx is not None else 0,
+                   pady=(SP.xl, SP.lg))
+        tk.Label(outer, text=title, bg=p.bg_app, fg=p.text, anchor="w",
+                 font=theme.font(self.root, TS["title"], "bold")).pack(fill="x")
+        if desc:
+            tk.Label(outer, text=desc, bg=p.bg_app, fg=p.text_tertiary, anchor="w",
+                     justify="left", wraplength=S(620),
+                     font=theme.font(self.root, TS["small"])).pack(
+                fill="x", pady=(SP.xs, 0))
+        return outer
+
+    def _section(self, parent, text: str, bg: str) -> None:
+        """卡片内的小标题。比卡片标题轻一档，用来在卡片里再分小组。"""
+        p = self.pal
+        tk.Label(parent, text=text, bg=bg, fg=p.text_tertiary, anchor="w",
+                 font=theme.font(self.root, TS["micro"], "bold")).pack(
+            fill="x", pady=(SP.md, SP.sm))
 
     def _para(self, parent, text: str, bg: str, fg: str, size: int | None = None,
               weight: str = "normal", pady: int = 0, mono: bool = False):
@@ -757,6 +952,12 @@ class App:
 
     def _page_channels(self, parent) -> None:
         p = self.pal
+        self._page_head(
+            parent, "推送通道",
+            "选一条把消息送到手机的路。凭证填齐后开关会自动打开，"
+            "没有可用通道时，任务结束不会有任何提醒。",
+            padx=SP.xl)
+
         wrap = tk.Frame(parent, bg=p.bg_app)
         wrap.pack(fill="both", expand=True, padx=SP.xl, pady=(0, SP.md))
 
@@ -1273,6 +1474,10 @@ class App:
     def _page_triggers(self, parent) -> None:
         p = self.pal
         inner = self._scroll_area(parent)
+        self._page_head(
+            inner, "触发条件",
+            "决定什么情况下才打扰你。选得越多越吵，多数人只需要前两项。",
+            padx=SP.xl)
 
         sec = W.Section(inner, p, "通知哪些事件",
                         "勾选后才会推送对应类型的消息。不确定就只留前两项。",
@@ -1362,6 +1567,10 @@ class App:
     def _page_template(self, parent) -> None:
         p = self.pal
         inner = self._scroll_area(parent)
+        self._page_head(
+            inner, "消息模板",
+            "手机上看到的那条消息长什么样。左边改，右边立刻预览。",
+            padx=SP.xl)
 
         bar = tk.Frame(inner, bg=p.bg_app)
         bar.pack(fill="x", padx=SP.xl, pady=(SP.xs, SP.lg))
@@ -1560,6 +1769,10 @@ class App:
     def _page_status(self, parent) -> None:
         p = self.pal
         inner = self._scroll_area(parent)
+        self._page_head(
+            inner, "运行状态",
+            "这条链路上真实发生过什么。收不到通知时，先看这里。",
+            padx=SP.xl)
         stats = self._stats()
 
         # -- 指标：数字 + 标签，竖线分隔。不做卡片。
@@ -1573,11 +1786,14 @@ class App:
             ("启用通道", f'{stats["channels"]}/{len(channels.CHANNEL_META)}',
              p.brand_ink),
         ]
+        self.stat_metrics = {}
         for i, (label, value, color) in enumerate(metrics):
             if i:
                 tk.Frame(mrow, bg=p.border, width=STK.rule).pack(
                     side="left", fill="y", padx=SP.xl)
-            W.Metric(mrow, p, label, value, color, bg=p.bg_app).pack(side="left")
+            m = W.Metric(mrow, p, label, value, color, bg=p.bg_app)
+            m.pack(side="left")
+            self.stat_metrics[label] = m
 
         # -- 通道状态：只列已启用的。
         # 把 10 条全列出来会把下面的「最近通知」挤到屏幕外，而且未启用的
@@ -1628,6 +1844,7 @@ class App:
             tl = W.Timeline(sec2.body, p, bg=p.bg_app)
             tl.pack(fill="x")
             tl.set_rows(recent)
+            self.timeline = tl
 
         # -- 运行日志
         sec3 = W.Section(inner, p, "运行日志",
@@ -1638,6 +1855,30 @@ class App:
         W.Paragraph(box3, p, store.tail_log(12) or "（暂无）", p.bg_subtle,
                     p.text_secondary, size=TS["micro"], mono=True).pack(
             fill="x", padx=SP.md, pady=SP.sm)
+
+    def _refresh_status(self) -> None:
+        """重进运行状态页时刷新数字与时间轴，不重建控件。
+
+        这一页的内容全部来自日志文件，会随时间变化；控件和布局不变，
+        所以只需要把值写回去。
+        """
+        stats = self._stats()
+        p = self.pal
+        values = {
+            "今日通知": (str(stats["today"]), p.text),
+            "送达成功": (str(stats["ok"]), p.success),
+            "发送失败": (str(stats["fail"]),
+                     p.danger if stats["fail"] else p.text_tertiary),
+            "启用通道": (f'{stats["channels"]}/{len(channels.CHANNEL_META)}',
+                     p.brand_ink),
+        }
+        for label, (value, color) in values.items():
+            m = self.stat_metrics.get(label)
+            if m is not None and m.winfo_exists():
+                m.set_value(value, color)
+        if self.timeline is not None and self.timeline.winfo_exists():
+            self.timeline.set_rows(stats["recent"])
+            self.timeline.reveal()
 
     def _stats(self) -> dict:
         today = datetime.now().strftime("%Y-%m-%d")
@@ -1693,23 +1934,12 @@ class App:
         p = self.pal
         inner = self._scroll_area(parent)
 
-        # -- 开场：一句话说清目标与代价。不用渐变横幅，用排版。
-        head = tk.Frame(inner, bg=p.bg_app)
-        head.pack(fill="x", padx=SP.xl, pady=(SP.sm, SP.xl))
-        tk.Label(head, text="从零到收到第一条通知", bg=p.bg_app, fg=p.text,
-                 font=theme.font(self.root, TS["display"], "bold")).pack(anchor="w")
-        # 拆成两句而不是一整段：一句是承诺，一句是推荐路线的理由。
-        # 一整段时长句会在中间的空格处折得很丑。
-        W.Paragraph(
-            head, p, "四步走完，全程免费，第一次配置大约三分钟。",
-            p.bg_app, p.text, size=TS["body"], spacing=SP.xxs,
-        ).pack(fill="x", pady=(SP.sm, 0))
-        W.Paragraph(
-            head, p,
-            "推荐路线是微信测试号：微信官方的开发者测试号，扫码即得凭证，"
-            "不用实名、不用付费、不限条数。",
-            p.bg_app, p.text_secondary, size=TS["small"], spacing=SP.xxs,
-        ).pack(fill="x", pady=(SP.xs, 0))
+        # -- 开场：页头 + 一段承诺
+        self._page_head(
+            inner, "从零到收到第一条通知",
+            "四步走完，全程免费，第一次配置大约三分钟。推荐路线是微信测试号："
+            "微信官方的开发者测试号，扫码即得凭证，不用实名、不用付费、不限条数。",
+            padx=SP.xl)
 
         # -- 四步
         sec = W.Section(inner, p, "四步走通", bg=p.bg_app)
