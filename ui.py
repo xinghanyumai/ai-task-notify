@@ -368,7 +368,7 @@ class App:
         tk.Label(titles, text=APP_TITLE, bg=p.sidebar, fg=p.text,
                  font=theme.font(self.root, TS["section"], "bold")).pack(anchor="w")
         tk.Label(titles, text=APP_VER, bg=p.sidebar, fg=p.text_tertiary,
-                 font=theme.font(self.root, TS["micro"])).pack(
+                 font=theme.font(self.root, TS["small"])).pack(
             anchor="w", pady=(SP.xxs, 0))
 
         # -- 导航：分组标签 + 项目列表
@@ -380,7 +380,7 @@ class App:
         grp.pack(fill="x", padx=SP.sm, pady=(0, SP.xs))
         grp.pack_propagate(False)
         tk.Label(grp, text="设置", bg=p.sidebar, fg=p.text_tertiary, anchor="w",
-                 font=theme.font(self.root, TS["micro"], "bold")).pack(
+                 font=theme.font(self.root, TS["small"], "bold")).pack(
             side="bottom", fill="x")
 
         for key, label, icon, _desc, gap in PAGES:
@@ -414,7 +414,7 @@ class App:
         tip = ("任务结束时自动推送" if installed
                else "运行 install.py 完成接入")
         tk.Label(foot, text=tip, bg=p.sidebar, fg=p.text_tertiary,
-                 font=theme.font(self.root, TS["micro"])).pack(
+                 font=theme.font(self.root, TS["small"])).pack(
             anchor="w", pady=(SP.xs, 0))
 
     def _build_topbar(self) -> None:
@@ -432,7 +432,7 @@ class App:
         right.pack(side="right", padx=(0, SP.xl))
         W.Segmented(right, p, THEME_OPTIONS, self.theme_mode,
                     command=self._switch_theme, bg=p.bg_app,
-                    height=DIM.SEG_H, font_size=TS["micro"]).pack(side="left")
+                    height=DIM.SEG_H, font_size=TS["small"]).pack(side="left")
 
         tk.Frame(right, bg=p.border, width=STK.rule,
                  height=DIM.DIVIDER_V_H).pack(side="left", padx=SP.lg)
@@ -842,7 +842,7 @@ class App:
         """卡片内的小标题。比卡片标题轻一档，用来在卡片里再分小组。"""
         p = self.pal
         tk.Label(parent, text=text, bg=bg, fg=p.text_tertiary, anchor="w",
-                 font=theme.font(self.root, TS["micro"], "bold")).pack(
+                 font=theme.font(self.root, TS["small"], "bold")).pack(
             fill="x", pady=(SP.md, SP.sm))
 
     def _para(self, parent, text: str, bg: str, fg: str, size: int | None = None,
@@ -888,7 +888,7 @@ class App:
         fld.bind_change(self._mark_dirty)
         if hint:
             tk.Label(cell, text=hint, bg=ground, fg=p.text_tertiary,
-                     font=theme.font(self.root, TS["micro"]),
+                     font=theme.font(self.root, TS["small"]),
                      justify="left", anchor="w",
                      wraplength=DIM.HINT_WRAP).pack(anchor="w", pady=(SP.xs, 0))
         return fld
@@ -916,7 +916,7 @@ class App:
         head.pack(fill="x", pady=(SP.xxs, SP.sm))
         tk.Label(head, text="全部通道", bg=p.bg_app, fg=p.text,
                  font=theme.font(self.root, TS["section"], "bold")).pack(side="left")
-        self.ch_count_pill = W.Pill(head, p, "", bg=p.bg_app, size=TS["micro"])
+        self.ch_count_pill = W.Pill(head, p, "", bg=p.bg_app, size=TS["small"])
         self.ch_count_pill.pack(side="right")
 
         sc = W.ScrollFrame(left, p, bg=p.bg_app)
@@ -960,7 +960,7 @@ class App:
             row = tk.Frame(host, bg=p.bg_app)
             row.pack(fill="x", padx=SP.xs, pady=(SP.sm, SP.xs))
             tk.Label(row, text=group, bg=p.bg_app, fg=p.text_tertiary,
-                     font=theme.font(self.root, TS["micro"])).pack(side="left")
+                     font=theme.font(self.root, TS["small"])).pack(side="left")
             tk.Frame(row, bg=p.border, height=STK.rule).pack(
                 side="left", fill="x", expand=True, padx=(SP.sm, 0))
             for ctype in types:
@@ -1087,10 +1087,10 @@ class App:
         else:
             state, fg, fill = "未启用", p.text_tertiary, p.bg_subtle
         W.Pill(title_row, p, state, fg=fg, fill=fill, bg=p.bg_app,
-               size=TS["micro"]).pack(side="left", padx=(SP.sm, 0))
+               size=TS["small"]).pack(side="left", padx=(SP.sm, 0))
         if ctype == "wxmp":
             W.Pill(title_row, p, "推荐", bg=p.bg_app,
-                   size=TS["micro"]).pack(side="left", padx=(SP.xs, 0))
+                   size=TS["small"]).pack(side="left", padx=(SP.xs, 0))
 
         W.Paragraph(info, p, meta["summary"], p.bg_app, p.text_tertiary,
                     size=TS["small"], spacing=SP.xxs).pack(fill="x", pady=(SP.xs, 0))
@@ -1110,7 +1110,7 @@ class App:
                 font=theme.font(self.root, TS["small"])).pack(anchor="w")
             tk.Label(inner, text="填齐后开关会自动打开，不用手动拨。",
                      bg=p.warning_soft, fg=p.warning,
-                     font=theme.font(self.root, TS["micro"])).pack(
+                     font=theme.font(self.root, TS["small"])).pack(
                 anchor="w", pady=(SP.xxs, 0))
 
         # -- 配置
@@ -1144,7 +1144,7 @@ class App:
                         anchor="w", pady=(SP.xs, 0))
                     if hint:
                         tk.Label(cell, text=hint, bg=p.bg_app, fg=p.text_tertiary,
-                                 font=theme.font(self.root, TS["micro"])).pack(
+                                 font=theme.font(self.root, TS["small"])).pack(
                             anchor="w", pady=(SP.xxs, 0))
                     self.ch_vars.setdefault(ctype, {})[key] = var
                     row, col = row + 1, 0
@@ -1178,7 +1178,7 @@ class App:
         # 原因说明紧跟在按钮后面：禁用的按钮必须当场说明为什么灰着，
         # 让人去猜、或者靠弹一条会消失的提示，都是把成本推给用户。
         self.ch_why_lbl = tk.Label(ops, text="", bg=p.bg_app, fg=p.text_tertiary,
-                                   font=theme.font(self.root, TS["micro"]))
+                                   font=theme.font(self.root, TS["small"]))
         self.ch_why_lbl.pack(side="left", padx=(SP.sm, 0))
         if ctype == "wxmp":
             self.ch_openid_btn = W.Button(ops, "自动获取 openid", p,
@@ -1447,7 +1447,7 @@ class App:
             cb.pack(anchor="w")
             tk.Label(cell, text=KIND_DESC.get(kind, ""), bg=p.bg_app,
                      fg=p.text_tertiary,
-                     font=theme.font(self.root, TS["micro"])).pack(
+                     font=theme.font(self.root, TS["small"])).pack(
                 anchor="w", padx=SP.xxl)
             self.tr_vars[kind] = cb
 
@@ -1524,7 +1524,7 @@ class App:
                           "tool_failed", "test")]
         W.Segmented(bar, p, opts, self.tpl_kind, command=self._on_tpl_kind,
                     bg=p.bg_app, height=DIM.SEG_H,
-                    font_size=TS["micro"]).pack(side="left")
+                    font_size=TS["small"]).pack(side="left")
 
         cols = tk.Frame(inner, bg=p.bg_app)
         cols.pack(fill="both", expand=True, padx=SP.xl, pady=(0, SP.lg))
@@ -1566,10 +1566,10 @@ class App:
             chip.grid(row=i // 3, column=i % 3, sticky="w",
                       padx=(0, SP.sm), pady=SP.xs)
             tk.Label(chip, text=token, bg=p.bg_subtle, fg=p.brand_ink,
-                     font=theme.font(self.root, TS["micro"], mono=True)).pack(
+                     font=theme.font(self.root, TS["small"], mono=True)).pack(
                 side="left", padx=(SP.sm, SP.xs), pady=SP.xs)
             tk.Label(chip, text=desc, bg=p.bg_subtle, fg=p.text_tertiary,
-                     font=theme.font(self.root, TS["micro"])).pack(
+                     font=theme.font(self.root, TS["small"])).pack(
                 side="left", padx=(0, SP.sm), pady=SP.xs)
 
         prev = tk.Frame(cols, bg=p.bg_app)
@@ -1637,7 +1637,7 @@ class App:
 
         # 状态栏
         cv.create_text(S(24), S(21), anchor="w", text="9:41", fill=ink,
-                       font=theme.font(self.root, TS["micro"], "bold"))
+                       font=theme.font(self.root, TS["small"], "bold"))
         for i in range(4):
             bh = S(3) + i * S(1.4)
             cv.create_rectangle(W_ - S(50) + i * S(3.4), S(23) - bh,
@@ -1686,7 +1686,7 @@ class App:
         c = cv.create_text(x0 + pad, body_top, anchor="nw",
                            text=content or "（正文为空）",
                            width=inner_w, fill=ink,
-                           font=theme.font(self.root, TS["micro"]))
+                           font=theme.font(self.root, TS["small"]))
         cb = cv.bbox(c)
         bottom = (cb[3] if cb else body_top) + pad
         bottom = max(bottom, body_top + S(26))
@@ -1703,7 +1703,7 @@ class App:
         W.round_rect(cv, S(14), iy, W_ - S(14), iy + S(28), S(9),
                      fill=card_bg, outline=card_bg)
         cv.create_text(S(26), iy + S(14), anchor="w", text="输入消息",
-                       fill=sub, font=theme.font(self.root, TS["micro"]))
+                       fill=sub, font=theme.font(self.root, TS["small"]))
         for i in range(3):
             cx = W_ - S(40) + i * S(8)
             cv.create_oval(cx, iy + S(11), cx + S(6), iy + S(17),
@@ -1769,7 +1769,7 @@ class App:
                 sec.body, p,
                 f"另有 {idle} 条通道未启用，它们不在这条链路上，"
                 "需要时去「推送通道」打开。",
-                p.bg_app, p.text_tertiary, size=TS["micro"],
+                p.bg_app, p.text_tertiary, size=TS["small"],
             ).pack(fill="x", pady=(SP.sm, 0))
 
         # -- 最近通知：时间轴
@@ -1798,7 +1798,7 @@ class App:
         box3 = tk.Frame(sec3.body, bg=p.bg_subtle)
         box3.pack(fill="x")
         W.Paragraph(box3, p, store.tail_log(12) or "（暂无）", p.bg_subtle,
-                    p.text_secondary, size=TS["micro"], mono=True).pack(
+                    p.text_secondary, size=TS["small"], mono=True).pack(
             fill="x", padx=SP.md, pady=SP.sm)
 
     def _refresh_status(self) -> None:
@@ -1986,7 +1986,7 @@ class App:
             W.round_rect(num, 0, S(1), S(16), S(17), S(5),
                          fill=p.bg_subtle, outline=p.bg_subtle)
             num.create_text(S(8), S(9), text=str(i + 1), fill=p.text_secondary,
-                            font=theme.font(self.root, TS["micro"], "bold"))
+                            font=theme.font(self.root, TS["small"], "bold"))
             cell = tk.Frame(row, bg=p.bg_app)
             cell.pack(side="left", fill="x", expand=True, padx=(SP.sm, 0))
             tk.Label(cell, text=title, bg=p.bg_app, fg=p.text,

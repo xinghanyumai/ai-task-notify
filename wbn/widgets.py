@@ -842,14 +842,14 @@ class NavItem(tk.Canvas):
                        (self.h + bar_h) / 2, S(1), fill=p.ink, outline=p.ink)
 
         if self.badge:
-            bw = max(S(20), measure(self, theme.font(self, theme.TS["micro"]), self.badge)
+            bw = max(S(20), measure(self, theme.font(self, theme.TS["small"]), self.badge)
                      + SP.sm)
             round_rect(self, w - SP.md - bw, self.h / 2 - S(9),
                        w - SP.md, self.h / 2 + S(9), S(RADIUS_PILL),
                        fill=p.brand, outline=p.brand)
             self.create_text(w - SP.md - bw / 2, self.h / 2, text=self.badge,
                              fill=p.on_brand,
-                             font=theme.font(self, theme.TS["micro"], "bold"))
+                             font=theme.font(self, theme.TS["small"], "bold"))
 
         if has_focus(self):
             draw_focus_ring(self, x1 + S(1), y1, x2 - S(1), y2, S(RADIUS_MD), p)
@@ -896,7 +896,7 @@ class Segmented(tk.Canvas):
         self._bg = bg or master.cget("bg")
         self.h = S(height if height is not None else DIM.SEG_H)
         self.font_size = (font_size if font_size is not None
-                          else theme.TS["micro"])
+                          else theme.TS["small"])
         f = theme.font(master, self.font_size)
         widths = [measure(master, f, label) + SP.xl for _, label in options]
         self.seg_w = widths
@@ -1678,7 +1678,7 @@ class ListRow(tk.Canvas):
         dot_w = SP.md if self.dot_color else 0
         avail = w - tx - SP.md - dot_w
         ft = theme.font(self, theme.TS["body"], "bold" if self.active else "normal")
-        fs = theme.font(self, theme.TS["micro"])
+        fs = theme.font(self, theme.TS["small"])
         fg = p.text if self.active else theme.mix(p.text_secondary, p.text, self._hv)
         cy = self.h / 2
         if self.subtitle:
@@ -1751,7 +1751,7 @@ class Pill(tk.Canvas):
         self.fg = fg
         self.fill = fill
         self._bg = bg or master.cget("bg")
-        self.font_size = font_size or size or theme.TS["micro"]
+        self.font_size = font_size or size or theme.TS["small"]
         f = theme.font(master, self.font_size, "bold")
         self.w = measure(master, f, text) + SP.lg
         self.h = S(20)
@@ -1810,7 +1810,7 @@ class Step(tk.Frame):
         round_rect(self.mark, 0.5, 0.5, S(23.5), S(23.5), S(12),
                    fill=p.bg_subtle, outline=p.border, width=STK.control)
         self.mark.create_text(S(12), S(12), text=str(index), fill=p.text_secondary,
-                              font=theme.font(self, theme.TS["micro"], "bold"))
+                              font=theme.font(self, theme.TS["small"], "bold"))
 
         right = tk.Frame(self, bg=self._bg)
         right.pack(side="left", fill="both", expand=True)
@@ -2096,7 +2096,7 @@ class Metric(tk.Frame):
                             font=theme.font(self, theme.TS["title"], "bold"))
         self.val.pack(fill="x")
         tk.Label(self, text=label, bg=self._bg, fg=pal.text_tertiary, anchor="w",
-                 font=theme.font(self, theme.TS["micro"])).pack(
+                 font=theme.font(self, theme.TS["small"])).pack(
             fill="x", pady=(SP.xxs, 0))
 
     def set_value(self, value: str, color: str | None = None) -> None:
@@ -2152,7 +2152,7 @@ class Timeline(tk.Frame):
                            fill=color, outline=color)
             cv.create_text(lx + S(14), y, anchor="w", text=r.get("time", ""),
                            fill=p.text_tertiary,
-                           font=theme.font(self, theme.TS["micro"], mono=True))
+                           font=theme.font(self, theme.TS["small"], mono=True))
             tx = lx + S(62)
             chan = r.get("channel") or ""
             if chan:
