@@ -7,10 +7,15 @@
 没有数字就没法判断一次改版是变快还是变慢，也没法设验收线。
 
 测量四件事：
-  1. 启动建界面     App() 构造到首次布局完成
-  2. 首次进入某页   这一页此前没建过，第一次点进去的真实代价
-  3. 切页           页面已在内存里，pack_forget + pack 的耗时
-  4. 整页重建       主题切换走的就是这条路（_rebuild）
+  1. 启动建界面     App() 构造到首次布局完成        ← 冷启动路径，跨进程 median
+  2. 首次进入某页   这一页此前没建过，第一次点进去    ← 冷启动路径，跨进程 median
+  3. 切页           页面已在内存里，pack_forget+pack  ← 稳态路径，同进程 median
+  4. 整页重建       主题切换走的就是这条路（_rebuild）← 稳态路径，同进程 median
+
+1 和 2 是「冷启动路径」：每个样本一个全新进程，字体未缓存、画布未复用，
+跟用户双击图标后的真实体验一致。3 和 4 是「稳态路径」：界面已经开着，
+本来就在同一进程里发生，放进子进程反而是错的。
+两类数字不可直接比较——冷路径天然比稳态慢一个数量级。
 
 2 和 3 要分开报：页面缓存之后这两个数差一个数量级，混在一起看会得出
 「切页很快」的错误结论，而用户第一次点某一页时付的是 2 的钱。
@@ -66,12 +71,47 @@ def _median_ms(fn, runs: int) -> float:
     return statistics.median(samples)
 
 
-def _cold_ms(app, root, key: str) -> float:
-    """首次进入某一页的耗时。这一页此前必须没建过，否则量到的是缓存命中。"""
-    t = time.perf_counter()
-    app._show_page(key)
-    root.update_idletasks()
-    return (time.perf_counter() - t) * 1000
+def _cold_ms(key: str, runs: int) -> float:
+    """首次进入某一页的耗时：**冷启动路径**，每个样本一个全新进程，取中位数。
+
+    为什么必须跨进程：
+      1. 同一进程里一页只能「冷」一次——建完就进 `_pages` 了，第二次量到的是
+         缓存命中（2~10ms），和首次进入差两个数量级。
+      2. 就算强行从缓存里踢掉重建，字体已经栅格化过、画布已经复用，量到的是
+         稳态重建，不是用户双击图标后第一次点进去要付的钱。
+
+    和 `_startup_ms` 用同一种隔离方式，两个数字才可比。
+    单次采样不可信：P0 实测同一份代码两次跑能差 2 倍（triggers 485 → 1370）。
+    本轮再测更夸张——同一页 5 次：1195 / 128 / 101 / 147 / 85ms，10 倍差距，
+    头一次跑要付操作系统读 .py、加载字体文件的冷缓存钱。所以先跑一个样本
+    丢掉，再取 runs 个的中位数（和 `_median_ms` 同一个做法）。
+    """
+    import subprocess
+
+    probe = _COLD_PROBE.format(root=str(ROOT), key=key)
+    samples: list[float] = []
+
+    def once() -> float | None:
+        proc = subprocess.run(
+            [sys.executable, "-c", probe],
+            capture_output=True, text=True, encoding="utf-8", timeout=120,
+        )
+        lines = (proc.stdout or "").strip().splitlines()
+        if proc.returncode != 0 or not lines:
+            return None
+        try:
+            return float(lines[-1])
+        except ValueError:
+            return None
+
+    once()                       # 预热：丢掉，只为了让 OS 缓存热起来
+    for _ in range(runs):
+        value = once()
+        if value is not None:
+            samples.append(value)
+    if not samples:
+        return -1.0
+    return statistics.median(samples)
 
 
 def _switch_ms(app, root, keys: list[str], key: str, runs: int) -> float:
@@ -110,6 +150,29 @@ root.withdraw()
 import ui
 t = time.perf_counter()
 app = ui.App(root)
+root.update_idletasks()
+print((time.perf_counter() - t) * 1000)
+root.destroy()
+"""
+
+
+# 冷进入同样要独立进程，理由见 `_cold_ms` 的 docstring。
+# 注意：探针里必须先 `App()`（它会建首屏 channels），再切到目标页，
+# 这样目标页才是真正「没建过」的状态。
+_COLD_PROBE = """
+import sys, time
+sys.path.insert(0, {root!r})
+import tkinter as tk
+from wbn import config, theme
+theme.enable_dpi_awareness()
+config.save_default_if_missing()
+root = tk.Tk()
+root.withdraw()
+import ui
+app = ui.App(root)
+root.update_idletasks()
+t = time.perf_counter()
+app._show_page({key!r})
 root.update_idletasks()
 print((time.perf_counter() - t) * 1000)
 root.destroy()
@@ -185,13 +248,16 @@ def main(argv: list[str]) -> int:
 
     keys = [p[0] for p in ui.PAGES]
 
-    # 冷进入只 update_idletasks()、不跑 update()：这样页面还是「没建过」的
-    # 状态，量到的才是用户第一次点进去要付的建页钱。
+    # 冷进入是**冷启动路径**：每个样本一个全新进程（字体未缓存、画布未复用），
+    # 跟用户双击图标后第一次点进这一页付的钱一致。首屏 channels 不算在内——
+    # 它的建页成本已经含在「启动建界面」那一行里。
     cold_total = 0.0
-    for key in keys:
-        if key == app.current_page:
-            continue
-        ms = _cold_ms(app, root, key)
+    cold_keys = [k for k in keys if k != app.current_page]
+    for key in cold_keys:
+        ms = _cold_ms(key, args.runs)
+        if ms < 0:
+            print(f"冷进入 {key} 测量失败（子进程没返回数字）")
+            return 2
         cold_total += ms
         rows.append((f"首次进入 {key}", ms, BUDGET_COLD))
 
