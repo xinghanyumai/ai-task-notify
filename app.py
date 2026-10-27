@@ -159,6 +159,17 @@ def run_ui() -> int:
     # 任务栏按 AppUserModelID 分组，不设的话按钮上是 Python 的图标
     set_app_user_model_id()
 
+    # **Chromium 的沙箱在本机起不来**：浏览器进程静默退出，窗口开出来是一整块
+    # 黑，而 pywebview 的初始化回调照样报 IsSuccess=True、前端也照样能调通
+    # bridge——所以 Python 侧看不出任何异常（排查过程见 architecture.md 的
+    # 「已知问题」）。加 --no-sandbox 才能画出来。
+    #
+    # 关沙箱的代价：这个窗口只加载本地 webui/index.html，不加载任何远端页面，
+    # 实际暴露面很小。**一旦以后要在这个窗口里打开外部网页，必须重新评估**。
+    # 想恢复沙箱：设环境变量 WBN_WEBVIEW_SANDBOX=1。
+    if os.environ.get("WBN_WEBVIEW_SANDBOX") != "1":
+        os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--no-sandbox")
+
     alive = threading.Event()
     index = (ROOT / "webui" / "index.html").as_uri()   # 中文/空格会被 percent-encode
     win = webview.create_window(

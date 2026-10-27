@@ -207,35 +207,41 @@ Tkinter 是标准库，配置界面不用装 Qt 或 Electron，双击即开。
 一旦 `pip install` 到 site-packages，`ROOT` 会变成 Python 安装目录，
 配置和日志就写到不该去的地方。解压到哪里就在哪里跑。
 
-## 已知问题：本机 WebView2 不合成画面（2026-10-27 实测）
+## 踩过的坑：本机 WebView2 曾经一片黑（2026-10-27，已解决）
 
 **症状**：`python app.py` 开出窗口，原生边框、标题、尺寸、最小尺寸全对，
 但内容区是一整块黑（`background_color` 设成浅色时是一整块浅色）。
 
-**已排除**：不是截图方式的问题（BitBlt / PrintWindow / Windows Graphics Capture
-三种都拍，内容区都是纯色）；不是 pywebview 版本（6.2.1 与 5.4 一样）；
-不是我们的页面（`html="<h1>hi</h1>"` 一样黑）；不是 DPI（强制 200% / 100%
-awareness 都一样）；不是沙箱（关掉沙箱一样）。
+**根因：Chromium 的渲染进程沙箱在这台机器上起不来，浏览器进程起来后立刻退出。**
+pywebview 完全没有察觉——初始化回调报 `IsSuccess=True`，前端照样能调通
+bridge，Python 侧看不出任何异常，只是画面一次都没合成过。
 
-**关键证据：功能链是通的，只有像素没上屏。**
+**解法**：给 WebView2 加 `--no-sandbox`（`app.py` 里通过
+`WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 注入）。这个窗口只加载本地
+`webui/index.html`，不加载任何远端页面，关沙箱的实际暴露面很小。
+**一旦以后要在这个窗口里打开外部网页，必须重新评估。**
+想恢复沙箱：设环境变量 `WBN_WEBVIEW_SANDBOX=1`。
 
-| 观察 | 结果 |
-|---|---|
-| `on_webview_ready` 回调 | `IsSuccess = True` |
-| `location.href` | 正确的 `file:///D:/Code/Work%20buddy%20%E9%80%9A%E7%9F%A5/webui/index.html` |
-| 前端调 `config_get` | 收到了，`path` / 通道数 / triggers 全对（中文路径正确） |
-| 5 秒后再读 `CoreWebView2` | `None` —— 控制器已失效 |
-| `msedgewebview2.exe` 子进程 | 我们的进程一个都没起（只有 SearchHost 的） |
-| 同一份代码换 `gui="mshtml"` | **正常渲染**，文字清晰可见 |
+排查时排除过的方向（都验过，别重复走）：
 
-所以结论是 EdgeChromium 后端在这台机器上初始化回调报成功、但浏览器进程随后
-消失，画面一次都没合成过。MSHTML 后端能画，说明 pywebview 的 WinForms 外壳
-没问题，坏的是 WebView2 那一层。
+| 怀疑 | 验证 | 结果 |
+|---|---|---|
+| 截图方式不对 | BitBlt / PrintWindow / Windows Graphics Capture 三种都拍 | 内容区都是纯色，不是截图问题 |
+| pywebview 版本 | 6.2.1 与 5.4 各装一份 | 一样黑 |
+| 我们的页面/JS 有问题 | 换成 `html="<h1>hi</h1>"` | 一样黑 |
+| 中文路径 | 换成纯 ASCII 路径 | 一样黑 |
+| DPI 200% | 强制 `SetProcessDpiAwareness(0)` | 一样黑 |
+| 沙箱环境 | 关掉外层沙箱重跑 | 一样黑 |
+| pywebview 外壳坏了 | 同一份代码换 `gui="mshtml"` | **正常渲染** → 外壳没问题，坏的是 WebView2 那一层 |
 
-**当前处置**：`app.py` 有一个存活探针——窗口开出 10 秒内前端必须调通一次
-bridge，否则落日志并降级到 tkinter 版。注意本机这个探针**不会**触发，因为
-bridge 确实是通的（只是看不见），也就是说用户会对着一个黑窗口。
-**W2 之前必须解决**：W2 全部工作都是视觉，画不出来等于没做。
+顺带记两条会反复踩的：
+
+- **WebView2 是 DirectComposition 硬件合成，`BitBlt`/`ImageGrab` 拍到的是一整块黑**，
+  `PrintWindow` 只能拍到 WinForms 父窗口的背景色。要截 WebView2 的内容必须用
+  Windows Graphics Capture（`pip install windows-capture`）。
+- **pywebview 6.x 从非 GUI 线程调 `evaluate_js` 会死锁**（`Semaphore` 等不到
+  `ContinueWith` 的 continuation），而且死锁时连 GIL 一起占住，看门狗线程都跑不了。
+  自动化验收别用 `evaluate_js` 驱动，直接对真窗口发鼠标事件更可靠。
 
 ## 运行环境
 
