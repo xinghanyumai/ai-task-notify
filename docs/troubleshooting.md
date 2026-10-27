@@ -89,9 +89,9 @@ UnicodeEncodeError: 'utf-8' codec can't encode character '\udca2'
    想测权限类通知，需把会话权限模式切回「询问」。
 5. hooks 事件名以宿主版本为准。升级后不触发了，先用 `selftest.py --status`
    确认挂载状态，再对照宿主最新文档核对事件名。
-6. 任务栏图标是品牌青绿色铃铛，由 `make_icon.py` 生成 9 档尺寸。程序启动时会设置
+6. 任务栏图标是品牌青绿色铃铛，由 `tools/make_icon.py` 生成 9 档尺寸。程序启动时会设置
    独立的 AppUserModelID，否则 Windows 会把窗口归到 Python 名下，任务栏显示的就是
-   Python 图标。想换图标改完跑一次 `python make_icon.py`。
+   Python 图标。想换图标改完跑一次 `python tools/make_icon.py`。
 7. 微信测试号的昵称和头像是固定的，改不了。它没有独立后台，昵称
    `wxd_xxxx的接口测试号` 由 appid 派生，头像也不可设置。想要好看的名称和头像只能
    注册订阅号（个人可注册，但用不了模板消息）、注册服务号并做微信认证

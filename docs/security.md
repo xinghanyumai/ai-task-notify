@@ -57,10 +57,10 @@ hook 只调 `subprocess.Popen` 拉起自己的 `dispatch.py`，不执行任何�
 ## 截图里的凭证
 
 `assets/` 下的界面截图是给文档用的，里面的 appID、模板 ID、openid 全是假值，
-不是真凭证。生成方式是让 `shot.py` 在渲染前把微信通道的四个字段替换成等长假值：
+不是真凭证。生成方式是让 `tools/shot.py` 在渲染前把微信通道的四个字段替换成等长假值：
 
 ```bash
-WBN_SCRUB=1 python shot.py assets/ui_channels_light.png channels wxmp light 1080x748
+WBN_SCRUB=1 python tools/shot.py assets/ui_channels_light.png channels wxmp light 1080x748
 ```
 
 假值保持和真值一样的字符长度，所以输入框的视觉宽度不变，截图版式和真实界面一致。

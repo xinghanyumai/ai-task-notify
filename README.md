@@ -142,7 +142,7 @@ WorkBuddy 点窗口关闭按钮只是隐藏到托盘，要右键托盘图标选�
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 症状对照表、日志位置、编码事故完整复盘 |
 | [docs/channels/](docs/channels/) | 10 个通道各一页，申请步骤与坑 |
 | [docs/adr/](docs/adr/) | 6 条决策记录，写的是为什么这样选 |
-| [docs/reviews/](docs/reviews/) | 2026-10-26 的开源就绪审查报告，八部分 |
+| [docs/reviews/](docs/reviews/) | 2026-10-26 的开源就绪审查报告（01–04、07） |
 | [SECURITY.md](SECURITY.md) | 怎么报安全问题、凭证泄露后的处置 |
 | [CHANGELOG.md](CHANGELOG.md) | 变更历史 |
 

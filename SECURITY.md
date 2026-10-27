@@ -37,7 +37,7 @@
 ## 本仓库不含凭证
 
 `config.json`、`state/`、`logs/` 都在 `.gitignore` 里。仓库里只有
-`config.example.json`，凭证字段全为空。`assets/` 下的界面截图用 `shot.py` 的
+`config.example.json`，凭证字段全为空。`assets/` 下的界面截图用 `tools/shot.py` 的
 `WBN_SCRUB=1` 模式生成，里面的 appID、模板 ID、openid 都是等长假值。
 
 安全设计的完整说明见 [docs/security.md](docs/security.md)。

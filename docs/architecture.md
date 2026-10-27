@@ -162,10 +162,14 @@ Tkinter 是标准库，配置界面不用装 Qt 或 Electron，双击即开。
 ├── tray.py            托盘常驻（可选）
 ├── install.py         安装器：写 hooks、建快捷方式
 ├── selftest.py        自检：模拟 4 类事件，验证到底能不能收到
-├── audit.py           审查：对比度、键盘可达、动效、三档窗口宽度
-├── shot.py            开发用截图（浅色深色、任意页面、任意窗口尺寸）
-├── make_icon.py       生成多尺寸图标 assets/icon.ico
 ├── config.json        你的配置，首次运行自动生成，含凭证，权限已收紧
+├── tools/             开发期脚本，不参与运行
+│   ├── audit.py       审查：对比度、键盘可达、动效、三档窗口宽度
+│   ├── shot.py        开发用截图（浅色深色、任意页面、任意窗口尺寸）
+│   ├── make_icon.py   生成多尺寸图标 assets/icon.ico
+│   ├── bench_ui.py    切页 / 启动耗时基线
+│   ├── check_style.py 尺度与令牌纪律检查
+│   └── check_responsive.py 发送期间停顿、Tab 顺序检查
 ├── wbn/               核心引擎
 │   ├── config.py      默认值、深合并、原子读写、文件权限收紧
 │   ├── events.py      事件归类 + transcript 摘要提取
