@@ -50,6 +50,7 @@ from datetime import datetime
 from pathlib import Path
 
 from wbn import anim, channels, config, events, pipeline, render, store, theme
+from wbn import splash as splash_mod
 from wbn import widgets as W
 from wbn.theme import TS, S
 from wbn.tokens import DIM, MOTION, SP, STK
@@ -297,13 +298,22 @@ class App:
         时机很关键：窗口还没被映射（mapped）时 wm_frame() 拿不到真正的
         外层句柄，DwmSetWindowAttribute 会「成功返回但什么也没改」，
         表现就是标题栏一直保持系统强调色。所以必须等窗口真的出现后再设。
+
+        **这里不能调 `update_idletasks()`。** 原来有这一句（想让窗口先被
+        realized），但它在「定时回调里再跑一轮 idle」这件事上会死循环：
+        P1 的启动层把 5 页全部预建好再一次性 deiconify，一屏的 `<Configure>`
+        → `pack_configure` → 又一轮 `<Configure>` 全挤在 idle 队列里，
+        `update_idletasks()` 永远排不空，整个事件循环卡死（实测交接后
+        界面完全无响应）。改成「窗口没映射就直接放弃」，等 `reveal()` 之后
+        那次调用再设——那一次窗口已经映射，`wm_frame()` 本来就是有效的。
         """
         if sys.platform != "win32":
             return
         try:
             import ctypes
 
-            self.root.update_idletasks()
+            if not self.root.winfo_ismapped():
+                return
             hwnd = int(self.root.wm_frame(), 16)
             if not hwnd:
                 hwnd = ctypes.windll.user32.GetParent(self.root.winfo_id())
@@ -777,6 +787,50 @@ class App:
                 frame.destroy()
             except tk.TclError:
                 pass
+
+    def prebuild(self, key: str) -> None:
+        """启动层 T1 预热一页：**只建，不显示**。
+
+        故意绕开 `_show_page`。那条路会读当前页的编辑、存视图、切导航选中、
+        跑进场动画——预热期间这些副作用一件都不该发生：用户还没看到主窗口，
+        当前页也不该变。这里只做一件事：把 frame 建出来塞进缓存，让用户
+        真点进去时走「缓存命中」那条 2~10ms 的路。
+
+        建完立刻 `_save_view`：页面里的控件引用要跟着 frame 一起存下来，
+        否则之后 `_show_page` 走 `_restore_view` 时拿到的是一堆指向别的页的
+        旧引用。
+        """
+        if self.content is None:
+            return
+        if key in self._pages and self._pages[key].winfo_exists():
+            return
+        build = self._builders().get(key)
+        if build is None:
+            return
+        frame = tk.Frame(self.content, bg=self.pal.bg_app)
+        build(frame)
+        self._pages[key] = frame
+        self._save_view(key)
+
+    def reveal(self) -> None:
+        """T2：主窗口露面。
+
+        三件事按顺序做：把视图引用拨回当前页（预热期间 `self.*` 被最后
+        建的那一页改写过）、deiconify、再跑一次首屏进场动画。标题栏的
+        DWM 属性必须在**映射之后**设，否则系统静默忽略。
+        """
+        self._restore_view(self.current_page)
+        self.root.deiconify()
+        try:
+            self.root.lift()
+            self.root.focus_force()
+        except tk.TclError:
+            pass
+        frame = self._pages.get(self.current_page)
+        if frame is not None and frame.winfo_exists():
+            self._enter_anim(frame)
+        self.root.after_idle(self._apply_titlebar)
+        self.root.after(120, self._apply_titlebar)
 
     def _enter_anim(self, frame) -> None:
         """切页进场：整页 8px 上移就位，160ms `ease_out_expo`。
@@ -2205,6 +2259,48 @@ class App:
                                 "warn", 4200)
 
 
+def _boot(root: tk.Tk, app: "App", splash) -> None:
+    """T1：逐页预热，进度线按页推进（P1 5.2）。
+
+    三条不能破的规矩：
+
+    - **每建一页让出一次事件循环**（`after(60)`）。不让出的话进度线在整个
+      T1 期间一帧都画不出来，用户看到的是「启动层卡住了」。
+    - **每次回调先查 `splash.alive`**。交接一旦开始，后面的预热必须立刻停：
+      这就是 5.3 第 6 条「预热绝不越过 T2」，也是 `check_responsive` 里那个
+      「发送期间停顿 390ms」的根治办法。
+    - **用户一有输入就放弃剩余预热**（5.3 第 5 条）。他要开始操作了，
+      再抢主线程建页就是跟他抢机器。
+    """
+    keys = ("triggers", "template", "status", "guide")
+    state = {"i": 0, "stop": False}
+
+    def step() -> None:
+        if not splash.alive:
+            return
+        if state["stop"] or state["i"] >= len(keys):
+            splash.finish()
+            return
+        try:
+            app.prebuild(keys[state["i"]])
+        except Exception:
+            # 预热失败不是致命错误：用户点进去时 `_show_page` 会现建。
+            pass
+        state["i"] += 1
+        splash.animate_to(splash_mod.progress_for(state["i"], len(keys)))
+        root.after(60, step)
+
+    def cancel() -> None:
+        state["stop"] = True
+
+    splash.on_user_input(cancel)
+    # 等淡入走到「视觉上已经到位」再开始建页：`MOTION.base`(160ms) 时整层
+    # alpha 已经到 0.98，再等下去只是让用户多盯一会儿静止的进度线。
+    # 建页期间事件循环不转，所以淡入的最后几十毫秒会丢帧——这也是为什么
+    # 不把第一页排在 0ms：那样淡入会被 25ms 的建页切成两段。
+    root.after(MOTION.base, step)
+
+
 def main() -> None:
     theme.enable_dpi_awareness()
     theme.set_app_user_model_id()      # 必须在建窗口之前，否则任务栏认不到我们的图标
@@ -2213,10 +2309,36 @@ def main() -> None:
     # pythonw.exe 下 stderr 是 None，Tk 回调里的异常会彻底消失。
     # 装上钩子后至少能在 logs/notify-*.log 里查到。
     theme.install_tk_exception_hook(root)
+    # 启动层要先用 S() 算尺寸，标定必须在它之前。主窗口全程 withdraw，
+    # 由启动层独占屏幕，交接时才 deiconify——主窗口不 withdrawn 的话，
+    # 用户会看到「空窗口 + 启动层」叠在一起。
+    root.withdraw()
+    theme.S.calibrate(root)
+
+    pal = theme.resolve((config.load().get("ui") or {}).get("theme", "auto"))
+    holder: dict = {}
+
+    def handoff() -> None:
+        app = holder.get("app")
+        if app is not None:
+            app.reveal()
+
+    splash = splash_mod.Splash(root, pal, APP_TITLE, handoff)
+    splash.show()
+    # 先把启动层真正画到屏幕上再建主窗口：接下来那 200 多毫秒是同步建壳，
+    # 期间事件循环不转，启动层只能是静止的。先画出来，用户看到的是
+    # 「启动层出现 → 停一下 → 开始动」，而不是「什么都没有 → 突然出现」。
+    root.update()
+
     app = App(root)
+    holder["app"] = app
+    splash.fade_in()
+    _boot(root, app, splash)
+
     root.bind("<Control-s>", lambda e: app.on_save())
     root.bind("<Control-t>", lambda e: app.on_test())
     root.mainloop()
+
 
 
 if __name__ == "__main__":
