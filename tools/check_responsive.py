@@ -171,7 +171,11 @@ def main() -> None:
     root.after(TICK_MS, tick)
 
     def switch_pages(keys: list[str] | None = None) -> None:
-        todo_now = list(keys or ["triggers", "status", "template", "channels"])
+        # 递归调用传进来的是「剩下的页」。必须按 None 判断而不是按假值判断：
+        # 剩下 0 页时 list 是空的，用 `keys or [...]` 会重新播种回默认的 4 页，
+        # 链条永不结束，主循环再也排不空。
+        todo_now = list(keys) if keys is not None else [
+            "triggers", "status", "template", "channels"]
         if not todo_now:
             return
         key = todo_now.pop(0)
@@ -244,19 +248,42 @@ def main() -> None:
     # 判据：桌面布局不存在「一条 y 序列」。通道页是「左列表 / 右表单」两列，
     # 合理的顺序是「同一块内自上而下，块与块整块访问」。
     #
-    # 块 = 最外层的分栏容器：沿祖先往上找，直到父容器是页面根或主区。
+    # 块 = **一栏**，不是分栏容器。先沿祖先往上找到「父容器是页面根或主区」的
+    # 那一层，再看它是不是并排多栏：是的话，块要再下沉到 w 所在的那一栏。
+    # 不下沉的话，两栏会被算成同一块，「同一块内自上而下」就要求左列走完再回
+    # 右列顶部时 y 不许变小——这条判据对两栏布局不可能成立。
     # 不能按 x 坐标猜分栏——内容栏里的列表行在 x 上和侧栏有重叠区。
     page_kids = app.content.winfo_children()
     page_root = page_kids[0] if page_kids else None
 
     def block_of(w):
         p = w
+        outer = None
         while p is not None:
             m = p.master
             if m is page_root or m is app.main:
-                return p
+                outer = p
+                break
             p = m
-        return None
+        if outer is None:
+            return None
+        # 并排多栏的判据：子控件 x 各不相同（不是纵向堆叠），且每个都近乎
+        # 撑满容器高度（是「栏」而不是底栏里并排的几个按钮）。
+        kids = [k for k in outer.winfo_children() if k.winfo_ismapped()]
+        try:
+            oh = outer.winfo_height()
+        except tk.TclError:
+            return outer
+        if len(kids) > 1 and oh > 0:
+            xs = [k.winfo_rootx() for k in kids]
+            hs = [k.winfo_height() for k in kids]
+            if len(set(xs)) == len(xs) and min(hs) > oh * 0.5:
+                q = w
+                while q is not None and q.master is not outer:
+                    q = q.master
+                if q is not None:
+                    return q
+        return outer
 
     blocks_w = [block_of(w) for _n, w, _y in order]
     names = [f"{b.winfo_name() if b is not None else '?'}" for b in blocks_w]

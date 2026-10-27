@@ -42,7 +42,6 @@ import re
 import subprocess
 import sys
 import threading
-import time
 import tkinter as tk
 from datetime import datetime
 from pathlib import Path
@@ -198,8 +197,6 @@ class App:
         self._view: dict = {}
         self.timeline = None
         self.stat_metrics: dict = {}
-        self._warm_job = None
-        self._last_input = 0.0
 
         # 骨架引用
         self.page_sc = None
@@ -346,11 +343,6 @@ class App:
         self._show_page(self.current_page)
         self.root.after_idle(self._apply_titlebar)
         self.root.after(120, self._apply_titlebar)
-        # 启动后把还没建过的页面补建出来（见 _warm_pages）
-        self._warm_job = None  # TEMP off
-        # 预热要给用户让路，所以得知道他刚才有没有在动
-        for seq in ("<Button-1>", "<Key>", "<MouseWheel>"):
-            self.root.bind(seq, self._mark_input, add="+")
 
     def _build_sidebar(self) -> None:
         p = self.pal
@@ -718,53 +710,6 @@ class App:
 
         self._paint_chain()
         self._enter_anim(frame)
-
-    def _mark_input(self, _e=None) -> None:
-        self._last_input = time.monotonic()
-
-    def _warm_pages(self) -> None:
-        """启动后把还没建过的页面逐个补建，用户第一次点过去就不会顿一下。
-
-        为什么值得单独做：一页第一次建出来要 260~790ms（Tk 建控件 + 文本
-        排版 + 首轮布局，实测见 tools/bench_ui.py 的「首次进入」一行），
-        而建好之后切回来只要 1~9ms。差别太大，不能留给「点一下」去承担。
-
-        为什么不一次建完：四页一次性建出来，启动会从 240ms 涨到 2.3s 以上，
-        等于把「切页卡」换成「打开卡」。切成每 260ms 建一页，每建完一页就
-        把事件循环让出去。
-
-        为什么还要看用户在不在动：预热本身是同步建控件，一次最长会冻结
-        790ms。如果用户已经开窗就开始点，那这笔钱就不该在这时候花——他
-        点哪一页就现建哪一页，剩下的等他停下来再说。预热是为了让他后面
-        不卡，不能反过来卡他。
-
-        发送测试正在飞的时候也不建：那条链路的承诺是「网络走后台，主线程
-        不冻结」，而建一页会实打实冻结几百毫秒。预热自己破坏这条承诺，
-        比「第一次切页慢一点」严重得多。
-
-        建好的页先不 pack，所以它不进布局、不影响当前页，也不会被 audit 的
-        可见性过滤当成「同时在显示的两页」。
-        """
-        self._warm_job = None
-        if self.content is None:
-            return
-        # 1.2 秒内有过点击 / 按键 / 滚轮，就先让路，400ms 后再看
-        if time.monotonic() - self._last_input < 1.2 or self._bg_busy:
-            self._warm_job = None  # TEMP off
-            return
-        pending = [k for k in self._builders() if k not in self._pages]
-        if not pending:
-            return
-        key = pending[0]
-        try:
-            frame = tk.Frame(self.content, bg=self.pal.bg_app)
-            self._builders()[key](frame)
-            self._pages[key] = frame
-            self._save_view(key)
-        except Exception:
-            # 预热失败不该影响用户：下次点进去会走正常构建路径再试一遍
-            pass
-        self._warm_job = self.root.after(260, self._warm_pages)
 
     def _refresh_page(self, key: str) -> None:
         """页面已经在内存里，只补那些会过期的内容。

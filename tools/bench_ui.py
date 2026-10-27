@@ -43,10 +43,13 @@ if str(ROOT) not in sys.path:
 
 # 预算（毫秒）。超过就是用户能感觉到的卡顿。
 BUDGET_STARTUP = 400
-# 首次进入某一页的预算按「一次性」定，不按「点击」定：这一下在正式运行里
-# 由 App 启动后的 _warm_pages 提前承担，用户点不到这条路径。实测最慢的
-# 「从零到收到第一条通知」页 850ms 左右——它是一页里上百个控件 + 几千个
-# 汉字首次栅格化的总和，Tk 没有更便宜的做法。
+# 首次进入某一页的预算按「一次性」定，不按「点击」定：这一下是用户第一次
+# 点进某页时付的建页钱。实测最慢的「从零到收到第一条通知」页 850ms 左右——
+# 它是一页里上百个控件 + 几千个汉字首次栅格化的总和，Tk 没有更便宜的做法。
+#
+# 旧版有个「开窗后后台建页」的预热机制替用户先垫了这笔钱，P0 把它删了
+# （它同步建页、一次冻住主线程 790ms，和「发送期间不冻结」冲突）。所以现在
+# 这几个数字是**真要用户付**的，超预算就是超预算，不许再拿「反正有预热」解释。
 BUDGET_COLD = 900
 BUDGET_PAGE = 100
 BUDGET_REBUILD = 300
@@ -182,8 +185,8 @@ def main(argv: list[str]) -> int:
 
     keys = [p[0] for p in ui.PAGES]
 
-    # 冷进入必须赶在预热之前量：App() 里挂了 after(400, _warm_pages)，
-    # 而 update_idletasks() 不跑定时器，所以这段里页面还是「没建过」的状态。
+    # 冷进入只 update_idletasks()、不跑 update()：这样页面还是「没建过」的
+    # 状态，量到的才是用户第一次点进去要付的建页钱。
     cold_total = 0.0
     for key in keys:
         if key == app.current_page:
@@ -207,8 +210,8 @@ def main(argv: list[str]) -> int:
         if ms > budget:
             over.append(f"{label} {ms:.0f}ms > {budget}ms")
     print("=" * 56)
-    print(f"  启动后预热总量 ≈ {cold_total:.0f} ms，分摊在开窗后 2 秒内；"
-          "用户点击时不再付这笔钱")
+    print(f"  首次进入各页合计 ≈ {cold_total:.0f} ms，是用户逐页点开时"
+          "一笔一笔付的；背后没有预热垫付")
 
     if swallowed:
         print(f"\n测量期间 Tk 回调抛了 {len(swallowed)} 次异常（这些页的数字不可信）：")
