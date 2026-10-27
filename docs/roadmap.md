@@ -157,8 +157,8 @@ S6 分发 ────────── W8
 | 10-26 | 文档重构：40 篇 md、7 篇 ADR、5 篇审查快照 | `docs/` |
 | 10-27 | 目录整理：3 个脚本移入 `tools/`，根目录 `.py` 9→6 | `docs/repo-layout.md` |
 | 10-27 | 功能基线 12 条（9 过 / 2 红 / 1 未验） | `docs/functional-baseline.md` |
-| 10-27 | tkinter UI 全站重做：D1/D2 修复、启动层、切页 1–10ms | `docs/design-redesign.md` |
-| 10-27 | 启动卡顿根因：`<Configure>` 自激 25243 → 335（75×） | `docs/perf.md` 4.4 |
+| 10-27 | tkinter UI 全站重做：D1/D2 修复、启动层、切页 1–10ms | `docs/archive/design-redesign.md` |
+| 10-27 | 启动卡顿根因：`<Configure>` 自激 25243 → 335（75×） | `docs/archive/perf.md` 4.4 |
 | 10-27 | 开关重绘为真半圆胶囊、`Step` 圆点修正 | commit `295ad72` |
 
 **这些成果里，S0 的安全/测试/CI/文档**在 exe 阶段全部复用**，不能因为换 UI 就作废。
