@@ -255,7 +255,8 @@ bridge，Python 侧看不出任何异常，只是画面一次都没合成过。
 
 ## 测试与 CI
 
-`tests/` 下有 170 个 pytest 用例，覆盖折行、脱敏、事件归类、过滤链、平台差异。
+`tests/` 下有 234 个 pytest 用例，覆盖折行、脱敏、事件归类、过滤链、平台差异，
+以及 W0 抽取出来的 `insight` 纯函数、W1 的 bridge 返回值契约。
 默认跳过 `network` 标记的用例，`gui` 类用例靠 `sys.platform` 自己跳过，
 所以 Windows 上跑的是全量。
 

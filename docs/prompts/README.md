@@ -72,7 +72,7 @@
 | **W0** | 基线锁定 + 逻辑抽取 | 打 `tkinter-final` 标签；把 309 行业务从 `ui.py` 抽到 `wbn/insight.py` | 业务层 8 个文件一行不改；抽完 tkinter 版仍能跑 | C0.1（清完才知道哪些还在用） | 新旧 `stats()`/`chain_sentence()` 输出**逐字节相同** |
 | **W0.1** | 基线快照 | 把 W0 测的五组数字落成 `docs/baseline-tkinter.md` | 只写文档；不重测（重测引入新变量）；不改 `archive/perf.md` | W0 | 文件含环境表（必须写 DPI）；每个数字附测法；`*.py` 零改动 |
 | **W1** | 统一入口 + 桥 | `app.py` 能开窗、config 能读写、单实例生效 | 原生边框；`as_uri()`；`config_save` 读-改-写；第二实例退出 | W0（要 `insight.py`） | 中文路径不白屏；并发保存不丢字段；双开被拦 |
-| **W2** | 设计系统 + 壳 + 状态页 | token 落地、壳搭好、状态页定稿成全站样板 | 颜色只从 token 取；间距只用 8 的倍数；不引框架/CDN | W1 | 对比度实测达标；880/1180/1440 三档不崩 |
+| **W2** | 设计系统 + 壳 + 状态页 | token 落地、壳搭好、状态页定稿成全站样板、**CSP 上线** | 颜色只从 token 取；间距只用 8 的倍数；不引框架/CDN；**禁 `innerHTML`、必须带 CSP**（`--no-sandbox` 的配套） | W1 | 对比度实测达标；880/1180/1440 三档不崩；XSS 探针不执行 |
 | **W3** | 通道页 | 10 个通道 + schema 驱动表单 + 异步测试 | 表单从 `CHANNEL_META` 生成；`channel_test` 必须开线程；`evaluate_js` 防注入；**「测试此通道」文案与通道显示名不许改**（11 篇文档逐字引用） | W2（token 定稿） | 给 `CHANNEL_META` 加假字段 → 前端**自动**多出输入框；`channels/` 里 3 处位置词改完 |
 | **W4** | 其余三页 | 触发条件 / 消息模板 / 使用教程 | 预览必须调后端渲染；不许新增色值 | W3（复用表单组件） | 预览与 tkinter 版**逐字一致** |
 | **W5** | 收尾 + 旧栈下线 | 原生边框确认、删 6084 行、`tray.py` 改指向 | 删之前过 W6 清单；检查脚本删了要**换尺子**；降级改 `MessageBoxW` | W4 | 托盘能开新窗口；`grep` 无残留引用 |
@@ -342,8 +342,13 @@ repo-layout 的树不加（那棵树讲目录，文档文件归 docs/README 管�
 判据：这一页定稿后，后面三页照抄。不要"先凑合、后面统一"——凑合的那版会成为事实标准。
 
 硬约束：颜色只从 token 取；间距只用 8 的倍数；不引 React/Vue；不引 CDN。
+另加两条（W1 加了 --no-sandbox，必须配套）：
+- index.html 必须带 CSP，script-src 'self' 不许带 'unsafe-inline'
+- 渲染任何文本只用 textContent，禁 innerHTML
+- 顺手把 WGC 截图写成 tools/shot_webview.py 入库（W2 要交两套截图，别再临时写）
 
 做完停下来，给我：1) 浅色/深色截图 2) token 清单 3) 对比度实测表
+4) CSP 生效证据 + XSS 探针结果（window.__xss 必须是 undefined）
 ```
 
 ### W3 · 通道页
