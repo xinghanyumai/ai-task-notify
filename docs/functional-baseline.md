@@ -15,11 +15,17 @@ P1 会推翻整个界面层。推翻的时候最容易出的事不是「新界�
 
 | 命令 | 管什么 | 通过标准 |
 |---|---|---|
-| `python -m pytest -q` | 单元测试 | `170 passed`，条数不许减少 |
+| `python -m pytest -q` | 单元测试 | `212 passed`，条数不许减少 |
 | `python tools/audit.py` | 对比度 / 键盘 / 动画 / 降级 / 响应式 | 末行 `全部通过` |
 | `python tools/check_style.py` | 间距 / 字号 / 动效令牌 | 退出码 0 |
 | `python tools/check_responsive.py` | 发送期间不冻结 + Tab 顺序 | 见文末「尺子自身的问题」 |
-| `python tools/bench_ui.py --runs 5` | 启动、首次进页、切页耗时 | 首次进页 < 900ms，切页 < 100ms（**当前 4 项首次进页超预算，`redesign-base` 上就超，见「删预热换来了什么」**） |
+| `python tools/bench_ui.py --runs 3` | 启动、首次进页、切页耗时 | 首次进页 < 900ms，切页 < 100ms（**当前 4 项首次进页超预算，`redesign-base` 上就超，见「删预热换来了什么」**） |
+
+> **`212` 不是笔误。** 原 170 是 W0 之前的口径；W0 把 `ui.py` 的业务逻辑抽到
+> `wbn/insight.py` 时新增了 `tests/test_insight.py`（42 例），所以是 170 + 42 = 212。
+> **「条数不许减少」这条规则只有在数字是最新的时候才管用**——如果这里还写 170，
+> 那么删掉 42 个测试也不会违反规则，闸门就是空的。
+> 以后每加一批测试，这行必须同步改。
 
 **这张表里 `bench_ui.py` 一行的实测数字见 [`baseline-tkinter.md`](baseline-tkinter.md)（最终态）。**
 那份是 `tkinter-final` 这一份确定的代码上测出来的，不可重测——W5 删掉 tkinter 层后就再也测不出来了。
@@ -32,7 +38,7 @@ P1 会推翻整个界面层。推翻的时候最容易出的事不是「新界�
 
 ## 12 条
 
-结果栏的取证时间：2026-10-27，`ui.py` 已删旧预热、未提交时的工作区。
+结果栏的取证时间：2026-10-27（W0 抽取之后、tag `tkinter-final`），代码状态见 [`baseline-tkinter.md`](baseline-tkinter.md)。
 
 | # | 行为 | 怎么验 | 结果 | 依据 |
 |---|---|---|---|---|
