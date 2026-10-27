@@ -134,7 +134,7 @@ def check_stroke() -> None:
 # ---------------------------------------------------------------- 7 变体
 
 def check_variants() -> None:
-    """主按钮唯一性由 audit.py 的 B1 保证，这里只看变体有没有被用起来。"""
+    """主按钮唯一性由 tools/audit.py 的 B1 保证，这里只看变体有没有被用起来。"""
     print("\n[7] 按钮变体清单")
     src = "".join(read(n) for n in TARGETS)
     used = {}

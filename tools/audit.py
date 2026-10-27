@@ -6,15 +6,21 @@
   C 动画     —— 减弱动效开关是否真的短路、补间是否可被接管
   D 响应式   —— 最窄 / 默认 / 更宽三档下有无溢出
 
-用法：python audit.py
+用法：python tools/audit.py
 """
 from __future__ import annotations
 
 import inspect
 import sys
 import tkinter as tk
+from pathlib import Path
 
-sys.path.insert(0, ".")
+# 脚本住在 tools/，但 wbn 包在上一级。sys.path[0] 是脚本所在目录，
+# 所以要把项目根塞进去；用 __file__ 而不是 "."，否则只有在根目录下
+# 执行时才碰巧能 import 到。
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from wbn import anim, theme  # noqa: E402
 from wbn import widgets as W  # noqa: E402
@@ -46,9 +52,25 @@ def warn(cond: bool, label: str, detail: str = "") -> None:
 # 但只要有人把调用挪到循环外，捕获的就全是最后一轮的容器了。
 
 
+def _visible(child) -> bool:
+    """这个控件当前是不是真的显示着。
+
+    页面缓存之后，五个页面同时是 `app.content` 的子控件，只有当前页被
+    pack 出来。审查必须只看可见的那一份——否则「一页只有一个主按钮」
+    会被另外四页的按钮一起打破，溢出检查也会量到没显示的页面。
+    跳过未映射的子树即可：父不显示时子也不会显示。
+    """
+    try:
+        return bool(child.winfo_ismapped())
+    except Exception:
+        return False
+
+
 def _collect_focusable(widget, out: list) -> None:
     """收集能用 Tab 到达的控件。"""
     for child in widget.winfo_children():
+        if not _visible(child):
+            continue
         try:
             tf = str(child.cget("takefocus") or "")
             if isinstance(child, (tk.Entry, tk.Text)) or tf not in ("", "0"):
@@ -61,6 +83,8 @@ def _collect_focusable(widget, out: list) -> None:
 def _collect_primary_buttons(widget, out: list) -> None:
     """收集 variant=primary 的按钮文案（一页只该有一个主按钮）。"""
     for child in widget.winfo_children():
+        if not _visible(child):
+            continue
         if isinstance(child, W.Button) and getattr(child, "variant", "") == "primary":
             out.append(getattr(child, "text", ""))
         _collect_primary_buttons(child, out)
@@ -70,10 +94,11 @@ def _collect_overflow(container, out: list) -> None:
     """收集比父容器还宽的子控件（横向溢出）。"""
     cw = container.winfo_width()
     for child in container.winfo_children():
+        if not _visible(child):
+            continue
         try:
-            if child.winfo_ismapped():
-                if child.winfo_width() > cw + theme.S(2) and cw > 1:
-                    out.append(f"{child.__class__.__name__}({child.winfo_width()}>{cw})")
+            if child.winfo_width() > cw + theme.S(2) and cw > 1:
+                out.append(f"{child.__class__.__name__}({child.winfo_width()}>{cw})")
         except Exception:
             pass
         _collect_overflow(child, out)
@@ -243,6 +268,10 @@ def audit_responsive(app) -> None:
         for page in ("channels", "triggers", "template", "status", "guide"):
             app._show_page(page)
             app.root.update_idletasks()
+            # 必须 update() 而不是只 update_idletasks()：卡片钳制宽度靠的是
+            # <Configure> 回调，而 <Configure> 走事件队列，只有 update() 才派发。
+            # 只跑空闲任务量出来的是「事件还没送达」的中间态，不是用户看到的样子。
+            app.root.update()
             _collect_overflow(app.content, bad)
         warn(not bad, f"{w}px 宽：{len(bad)} 处子控件超出父容器",
              "，".join(bad[:4]))
@@ -267,6 +296,20 @@ def main() -> None:
     )
     app = ui.App(root)
     root.update_idletasks()
+    # 两次 update() 是必须的，不是保险：update_idletasks() 只跑空闲任务，
+    # 不派发 <Map>/<Configure>。不 update 的话窗口还没被映射，
+    # winfo_ismapped() 全是假，可见性过滤会把整页都判成「没显示」，
+    # A2 于是报「channels 页 0 个可聚焦控件」——那是审查脚本的错，不是界面的。
+    root.update()
+    root.update()
+    # 关掉启动后的页面预热：它会在审查过程中途建页，把每项计数搅成不确定值。
+    if getattr(app, "_warm_job", None) is not None:
+        try:
+            root.after_cancel(app._warm_job)
+            app._warm_job = None
+        except Exception:
+            pass
+    root.update()
 
     audit_contrast()
     audit_keyboard(app)

@@ -1,17 +1,17 @@
 """开发用截图脚本：启动界面 → 等渲染 → 截窗口 → 退出。
 
 用法：
-    python shot.py 输出路径 [页面] [通道] [dark|light] [宽x高（逻辑像素）]
+    python tools/shot.py 输出路径 [页面] [通道] [dark|light] [宽x高（逻辑像素）]
 
 例：
-    python shot.py assets/a.png channels wxmp dark
-    python shot.py assets/b.png triggers "" light 940x640
+    python tools/shot.py assets/a.png channels wxmp dark
+    python tools/shot.py assets/b.png triggers "" light 940x640
 
 脱敏：设环境变量 WBN_SCRUB=1 后，微信通道的 appid / secret / 模板 ID /
 openid 会被换成等长的假值再渲染。截图要进 README 时务必带上——真值一旦
 提交到公开仓库，等于把公众号接口凭证公开了。
 
-    WBN_SCRUB=1 python shot.py assets/ui_channels_light.png channels wxmp light
+    WBN_SCRUB=1 python tools/shot.py assets/ui_channels_light.png channels wxmp light
 """
 from __future__ import annotations
 
@@ -20,10 +20,14 @@ import ctypes.wintypes as wt
 import os
 import sys
 import tkinter as tk
+from pathlib import Path
 
 ctypes.windll.shcore.SetProcessDpiAwareness(2)
 
-sys.path.insert(0, ".")
+# 脚本住在 tools/，但 wbn 包和 ui.py 在上一级
+ROOT = Path(__file__).resolve().parent.parent
+if str(ROOT) not in sys.path:
+    sys.path.insert(0, str(ROOT))
 
 from wbn import config  # noqa: E402
 
@@ -50,7 +54,9 @@ if os.environ.get("WBN_SCRUB") == "1":
 import ui  # noqa: E402
 from wbn import theme  # noqa: E402
 
-out = sys.argv[1] if len(sys.argv) > 1 else "assets/_shot.png"
+# 不给路径时落到 assets/ 下。这里必须相对 ROOT 而不是 CWD：脚本挪进 tools/
+# 之后，从 tools/ 里执行会把图写进 tools/assets/。
+out = sys.argv[1] if len(sys.argv) > 1 else str(ROOT / "assets" / "_shot.png")
 page = sys.argv[2] if len(sys.argv) > 2 else "channels"
 chan = (sys.argv[3] if len(sys.argv) > 3 else "") or None
 mode = sys.argv[4] if len(sys.argv) > 4 else ""

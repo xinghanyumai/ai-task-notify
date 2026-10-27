@@ -154,13 +154,18 @@ def write_json(path: Path, data: dict) -> None:
 def ensure_icon() -> Path | None:
     """确保 assets/icon.ico 存在。
 
-    图标由 make_icon.py 统一生成（品牌青绿 + 白铃铛，9 档尺寸），
+    图标由 tools/make_icon.py 统一生成（品牌青绿 + 白铃铛，9 档尺寸），
     这里只负责在文件缺失时补生成一次，不再另画一套，
     避免「快捷方式用一套图标、窗口用另一套」的割裂。
     """
     if ICON_PATH.exists():
         return ICON_PATH
     try:
+        # make_icon 住在 tools/，不在 ROOT 上。只在这里补一次路径，
+        # 不往全局 sys.path 里塞——安装器的其它部分不需要它。
+        tools_dir = str(ROOT / "tools")
+        if tools_dir not in sys.path:
+            sys.path.insert(0, tools_dir)
         import make_icon
     except Exception:
         return None
