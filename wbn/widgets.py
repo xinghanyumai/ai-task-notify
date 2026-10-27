@@ -9,20 +9,30 @@ Tkinter 原生控件做不出圆角、层次和克制的交互反馈，所以这
 - 所有状态切换（hover / 按下 / 选中）都走 anim.tween 做过渡，
   而不是瞬间跳变——这是「手感」和「廉价感」的分界线
 
-这一版的设计取向（相对上一版）
-------------------------------
-1. **主操作是墨色，不是品牌绿。** 绿色只出现在「系统状态」上：
+P1 这一版的设计取向（相对上一版）
+--------------------------------
+1. **去卡片化。** 上一版每个区块套一张描边卡片，卡片里还套卡片，一屏下来
+   边框比内容还多。这一版把所有 `Card` 换成 `Group`：**分组标题 + 行列表 +
+   底部 1px 分隔线，不用边框**。分组靠留白和分隔线，不靠盒子。
+   判据是全站卡片数量 = 0（启动层除外）。
+
+2. **主操作是墨色，hover 才出现渐变。** 绿色只出现在「系统状态」上：
    开关打开、连接正常、发送成功。凡是「点一下执行」，一律墨色。
-2. **重新引入卡片。** 上一版为了避开模板感，把所有内容铺在底色上，
-   结果是一屏没有边界的长表单，扫读成本很高。这一版用「细边框卡片 +
-   卡片内细分隔线」组织设置项：边界靠 1px 线，不靠投影和底色差。
-3. **进场动效改成指数缓出 + 依次错开。** 上一版所有东西统一 180ms
-   三次缓出，中段速度不够，读起来像「被推到位」。这一版用 ease_out_expo，
-   前 100ms 走完八成位移，剩下的慢慢收尾。
+   墨色按钮的 hover 态允许加一层自上而下的线性渐变（≤36px 高，在 P1 1.4
+   的装饰配额内），因为小面积的渐变是「精致」，大面积就是「卡」和「脏」。
+
+3. **字号只有四级。** 17 页面名 / 13 区块标题 / 10 正文 / 9 辅助。
+   上一版 11/10/9/8 挤在 4pt 内，等于没有层级。
+
+4. **装饰是有配额的，不是禁令。** 渐变、光晕、装饰图标都允许，但必须过
+   「减法 / 焦点 / 面积」三个测试。`linear_gradient()` 在面积超过
+   320×200 时**直接抛错**，就是为了让「渐变铺满背景」这种写法在开发期
+   就撞墙，而不是等到用户看见卡顿。
 """
 
 from __future__ import annotations
 
+import math
 import tkinter as tk
 from collections.abc import Callable
 
@@ -38,6 +48,16 @@ from .tokens import DIM, MOTION, SP, STK
 # 在 __init__ 里 `tk.Canvas(master, width=1, height=1)` → 测量 → destroy，
 # 一页二十几个控件就是二十几次画布创建与销毁，这是切页慢的隐形大头之一。
 _probes: dict[int, tk.Canvas] = {}
+
+# 测量结果缓存。(字体元组, 文本) → 像素宽度。
+#
+# 为什么要缓存：`elide()` 对每个超长字符串要做 log2(n) 次测量，一页几十行
+# 就是几百次 `font measure`。每次都是一趟 Tcl 调用，单独看 0.07ms 不算什么，
+# 乘以几百次就是几十毫秒——profile 里 status 页的 elide 占到 50%。
+# 缓存键是 (font, text)：同一个字体的同一段文字，在任何 DPI、任何控件上
+# 宽度都一样，跨页复用完全安全。
+_mcache: dict[tuple, int] = {}
+_MCACHE_MAX = 8192
 
 
 def _probe(widget) -> tk.Canvas | None:
@@ -65,13 +85,26 @@ def measure(widget, font, text: str) -> int:
     """字体测量。拿不到 Tk 就按字符数粗估，绝不抛异常。"""
     if not text:
         return 0
+    key = (font, text)
+    hit = _mcache.get(key)
+    if hit is not None:
+        return hit
     cv = _probe(widget)
     if cv is None:
         return len(text) * 7
     try:
-        return int(cv.tk.call("font", "measure", font, text))
+        value = int(cv.tk.call("font", "measure", font, text))
     except Exception:
-        return len(text) * 7
+        value = len(text) * 7
+    if len(_mcache) > _MCACHE_MAX:
+        _mcache.clear()
+    _mcache[key] = value
+    return value
+
+
+def measure_cache_clear() -> None:
+    """DPI 变了之后要清一次——同一段文字在 150% 缩放下宽度不一样。"""
+    _mcache.clear()
 
 
 # ---------------------------------------------------------------- 绘制工具
@@ -88,39 +121,74 @@ def round_rect(cv: tk.Canvas, x1, y1, x2, y2, r, **kw):
     return cv.create_polygon(pts, smooth=True, **kw)
 
 
+# 渐变单块的面积上限（逻辑像素）。320×200 是 P1 1.4 给的配额。
+#
+# 为什么要有这个闸门：Tkinter 的渐变是逐线绘制的，320×200 约 200 条线、
+# 2ms 可以接受；铺满 1200×780 要 780 条线，而且 resize 时每次重画都会卡。
+# 写成一个会抛错的硬限制，比写一句「请注意不要滥用」有用得多——
+# 违规的写法在开发期就炸，不会活到用户面前。
+GRAD_MAX_W = 320
+GRAD_MAX_H = 200
+
+
+def linear_gradient(cv: tk.Canvas, box, c1: str, c2: str,
+                    steps: int | None = None, tags: str = "",
+                    horizontal: bool = False, radius: float = 0):
+    """在 box=(x1,y1,x2,y2) 里画一块线性渐变。
+
+    面积超过 320×200（逻辑像素）直接抛 `ValueError`——见 `GRAD_MAX_W` 的说明。
+    `radius > 0` 时按圆角矩形裁剪（逐行算出该行的左右边界，圆角段用弦长收缩）。
+
+    只给三个地方用：启动层背景、主按钮 hover、强调块。
+    """
+    x1, y1, x2, y2 = box
+    w, h = abs(x2 - x1), abs(y2 - y1)
+    if w * h > S(GRAD_MAX_W) * S(GRAD_MAX_H):
+        raise ValueError(
+            f"渐变面积 {int(w)}×{int(h)} 超过配额 {GRAD_MAX_W}×{GRAD_MAX_H}："
+            "大面积渐变在 Tkinter 上既慢又脏，请改用纯色或降低尺寸"
+        )
+    if w <= 0 or h <= 0:
+        return
+    span = h if not horizontal else w
+    n = steps if steps is not None else max(2, int(span))
+    n = max(2, min(n, int(span) + 1))
+    r = max(0, min(radius, w / 2, h / 2)) if radius else 0
+
+    for i in range(n):
+        col = theme.mix(c1, c2, i / (n - 1))
+        if horizontal:
+            x = x1 + i * w / n
+            cv.create_line(x + w / (2 * n), y1, x + w / (2 * n), y2,
+                           fill=col, width=max(1, int(round(w / n)) + 1),
+                           tags=tags or ())
+            continue
+        y = y1 + i * h / n
+        inset = 0.0
+        if r:
+            if y < y1 + r:
+                d = r - (y - y1)
+                inset = r - max(0.0, r * r - d * d) ** 0.5
+            elif y > y2 - r:
+                d = r - (y2 - y)
+                inset = r - max(0.0, r * r - d * d) ** 0.5
+        cv.create_line(x1 + inset, y + h / (2 * n), x2 - inset, y + h / (2 * n),
+                       fill=col, width=max(1, int(round(h / n)) + 1),
+                       tags=tags or ())
+
+
 def round_rect_grad(cv: tk.Canvas, x1, y1, x2, y2, r, c_top: str, c_bottom: str,
                     tags: str = ""):
-    """圆角矩形 + 垂直渐变。
-
-    Tk 的 create_polygon 不支持渐变填充，这里按行扫描：每一行先算出
-    该 y 处的左右边界（圆角段用圆的弦长收缩），再画一条 1px 细线。
-    30px 高的图形只有 30 次绘制，开销可以忽略，但观感比纯色高级很多。
-    """
-    r = max(0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
-    h = max(1.0, y2 - y1)
-    steps = max(2, int(h))
-    dy = h / steps
-    for i in range(steps):
-        y = y1 + i * dy
-        inset = 0.0
-        if y < y1 + r:
-            d = r - (y - y1)
-            inset = r - max(0.0, r * r - d * d) ** 0.5
-        elif y > y2 - r:
-            d = r - (y2 - y)
-            inset = r - max(0.0, r * r - d * d) ** 0.5
-        col = theme.mix(c_top, c_bottom, i / max(1, steps - 1))
-        cv.create_line(x1 + inset, y + dy / 2, x2 - inset, y + dy / 2,
-                       fill=col, width=max(1, int(round(dy)) + 1),
-                       tags=tags or ())
+    """圆角矩形 + 垂直渐变。`linear_gradient` 的圆角版本。"""
+    linear_gradient(cv, (x1, y1, x2, y2), c_top, c_bottom, tags=tags, radius=r)
 
 
 def draw_shadow(cv: tk.Canvas, x1, y1, x2, y2, r, pal: theme.Palette,
                 depth: int | None = None, tags: str = ""):
     """两层偏移圆角矩形模拟柔和投影（Tk 没有高斯模糊）。
 
-    只在真的浮起来的东西上用：Toast、分段控件的滑块、下拉。
-    卡片不用投影——卡片的边界靠 1px 描边表达，加了投影反而显脏。
+    **常规组件里只有 Toast 用它。** 正文区一律无阴影：卡片已经去掉了，
+    再加阴影等于把「盒子」用另一种方式装回来。启动层是例外，那里允许。
     """
     d = depth if depth is not None else S(3)
     for i, col in ((2, pal.shadow_far), (1, pal.shadow_near)):
@@ -134,6 +202,30 @@ def hairline(cv: tk.Canvas, x1, y, x2, color: str, tags: str = ""):
     高 DPI 下矩形的描边会被渲染成两档，线不会。"""
     return cv.create_line(x1, y, x2, y, fill=color, width=STK.rule,
                           tags=tags or ())
+
+
+def divider(parent, color: str) -> tk.Frame:
+    """不占画布的 1px 分隔线。
+
+    `Group` 的底部分隔线用它而不是 Canvas：一个 Canvas 就是一个 Tk 窗口，
+    一页十个分组就是十个多余的重绘面。纯 Frame + 1px 背景几乎零成本。
+    """
+    return tk.Frame(parent, height=STK.rule, bg=color)
+
+
+def glow(cv: tk.Canvas, cx: float, cy: float, r: float, pal: theme.Palette,
+         color: str | None = None, layers: int = 4, tags: str = ""):
+    """光晕：同心圆递减色阶（Tk 没有 alpha，只能靠混色近似）。
+
+    只给启动层和「连接成功」这类品牌色状态强调用，每页 ≤2 处。
+    边缘一定会有色带——这是 Tkinter 的能力边界，接受它，别硬做。
+    """
+    base = color or pal.brand
+    for i in range(layers, 0, -1):
+        rr = r * i / layers
+        col = theme.mix(pal.bg_app, base, 0.05 + 0.04 * (layers - i))
+        cv.create_oval(cx - rr, cy - rr, cx + rr, cy + rr,
+                       fill=col, outline=col, tags=tags or ())
 
 
 # ---------------------------------------------------------------- 图标
@@ -348,9 +440,14 @@ def elide(cv: tk.Canvas, font, text: str, max_w: int) -> str:
 class Button(tk.Canvas):
     """圆角按钮。variant: primary / secondary / ghost / danger。
 
-    primary 是墨色实心（不是品牌绿）。理由见模块 docstring 第 1 条：
-    彩色实心按钮是「消费级」最强的信号，墨色按钮读起来是专业工具。
-    品牌绿留给开关、状态点这些「系统状态」。
+    - **primary** 墨色实心，hover 时出现自上而下的线性渐变（≤36px 高）。
+      不是品牌绿。理由见模块 docstring 第 2 条：彩色实心按钮是「消费级」
+      最强的信号，墨色按钮读起来是专业工具。
+    - **secondary** 描边，用于「测试」「重新检测」这类并列动作。
+    - **danger** 浅红底 + 红字，用于破坏性操作。
+    - **ghost** 无底无框，只在 hover 时浮出底色，用于行内轻量动作。
+
+    按下时整体下移 1px。Tk 没有真正的 scale 缩放，位移是唯一的替代方案。
     """
 
     def __init__(
@@ -460,9 +557,28 @@ class Button(tk.Canvas):
             fg = self._colors["fg"]
             outline = self._colors["outline"]
 
-        round_rect(self, S(0.5), S(0.5) + dy, w - S(0.5), h - S(0.5) + dy, r,
-                   fill=fill, outline=outline or fill,
-                   width=STK.control if outline else 0)
+        # 主按钮：hover 时铺一层自上而下的渐变（上亮下暗，光源在上方）。
+        # 两端色按 _hv 从 ink 混过去，所以「渐变的出现」本身就是那 90ms
+        # 过渡的一部分，不需要单独做透明度动画（Tk 也没有逐控件 alpha）。
+        # 高度必须 ≤ BTN_H(36)：这是 P1 1.4 给按钮渐变的配额上限。
+        grad = (self.variant == "primary" and self._enabled
+                and not self._loading and self._hv > 0.02
+                and h <= S(DIM.BTN_H))
+        if grad:
+            c1 = theme.mix(p.ink, p.ink_top, self._hv)
+            c2 = theme.mix(p.ink, p.ink_bottom, self._hv)
+            if self._press:
+                c1 = theme.mix(c1, p.ink_active, 0.6)
+                c2 = theme.mix(c2, p.ink_active, 0.6)
+            if c1 == c2:
+                grad = False
+            else:
+                round_rect_grad(self, S(0.5), S(0.5) + dy, w - S(0.5),
+                                h - S(0.5) + dy, r, c1, c2)
+        if not grad:
+            round_rect(self, S(0.5), S(0.5) + dy, w - S(0.5), h - S(0.5) + dy, r,
+                       fill=fill, outline=outline or fill,
+                       width=STK.control if outline else 0)
 
         f = theme.font(self, self.font_size, "bold" if self.bold else "normal")
         cx = w / 2
@@ -474,7 +590,8 @@ class Button(tk.Canvas):
             tw = measure(self, f, self.text)
             total = icon_w + SP.sm + tw
             left = cx - total / 2
-            draw_icon(self, self.icon, left, cy - icon_w / 2, icon_w, fg, STK.icon_thin)
+            draw_icon(self, self.icon, left, cy - icon_w / 2, icon_w, fg,
+                      STK.icon_thin)
             self.create_text(left + icon_w + SP.sm, cy, text=self.text, anchor="w",
                              fill=fg, font=f)
         elif self.text:
@@ -612,6 +729,9 @@ class Switch(tk.Canvas):
     """胶囊开关。滑块用 ease-out-back 滑过去，轨道颜色同步插值。
 
     开关是少数几个用品牌绿的地方：它表达的是「系统状态」，不是「操作」。
+
+    深色下轨道要加一圈内描边：深色背景上「浅灰轨道」和「底色」的明度差
+    只有一点点，不开描边时关态开关几乎看不见边界，用户不知道那里有东西。
     """
 
     def __init__(self, master, pal: theme.Palette, value: bool = False,
@@ -643,6 +763,12 @@ class Switch(tk.Canvas):
         round_rect(self, S(0.5), y1, self.w - S(0.5), y2, (y2 - y1) / 2,
                    fill=track, outline=theme.mix(p.border_control, track, t),
                    width=STK.control)
+        # 深色下再补一圈内描边（向内缩 1px 的细线），把轨道从底色里拉出来
+        if p.name == "dark":
+            round_rect(self, S(1.5), y1 + S(1), self.w - S(1.5), y2 - S(1),
+                       (y2 - y1 - S(2)) / 2, fill="",
+                       outline=theme.mix(p.border_strong, track, t),
+                       width=STK.control)
 
         knob = self.h - S(6)
         travel = self.w - knob - S(6)
@@ -673,7 +799,7 @@ class Switch(tk.Canvas):
             self._draw()
 
         # 开关滑块是唯一用 ease_out_back 的地方：它有物理感，末端要轻微过冲。
-        anim.tween(self, "knob", duration or MOTION.base, frame,
+        anim.tween(self, "knob", duration or MOTION.quick, frame,
                    anim.ease_out_back, interval=MOTION.interval)
 
     def set_value(self, v: bool, animate: bool = False) -> None:
@@ -690,7 +816,11 @@ class Switch(tk.Canvas):
 
 
 class Checkbox(tk.Canvas):
-    """方形勾选框，选中时填充墨色并画白色勾。"""
+    """方形勾选框，选中时填充墨色并画 `on_ink` 色的勾。
+
+    和 Switch 用同一套视觉语言：墨色填充、圆角、hover 底色过渡。
+    区别只在形状——开关表达「持续状态」，勾选框表达「一次性确认」。
+    """
 
     def __init__(self, master, pal: theme.Palette, text: str, value: bool = False,
                  command: Callable[[bool], None] | None = None,
@@ -775,12 +905,15 @@ class Checkbox(tk.Canvas):
 
 
 class NavItem(tk.Canvas):
-    """左侧导航项。
+    """左侧导航项：16px 图标 + 文字 + 选中浅底胶囊。
 
-    选中态 = 浅底 + 左侧 2px 墨色指示条 + 文字转主色。
-    指示条用墨色不用品牌绿：绿色表达「系统状态」，当前位置不是状态，
-    它是导航位置。把两者用同一个颜色表达会让「哪条通道开着」和
-    「我在哪一页」混成一种视觉语言。
+    **没有左侧指示条。** v1 在选中项左边画一根 2px 竖线，看起来像「书签」，
+    和列表行的状态点、开关的轨道挤在一起，一屏三条竖线，谁也不是重点。
+    P1 把它去掉了：选中态只靠「浅底胶囊 + 文字转粗」表达，一个信号足够。
+
+    为什么不用品牌绿：绿色表达「系统状态」（哪条通道开着），
+    当前位置不是状态，它是导航位置。两者用同一个颜色会让用户分不清
+    「我在这一页」和「这个功能开着」。
     """
 
     def __init__(self, master, pal: theme.Palette, key: str, label: str, icon: str,
@@ -827,7 +960,7 @@ class NavItem(tk.Canvas):
             fg = theme.mix(p.text_tertiary, p.text, self._hv)
             weight = "normal"
 
-        ic = DIM.ICON
+        ic = DIM.SIDEBAR_ICON
         ix = SP.md
         iy = (self.h - ic) / 2
         draw_icon(self, self.icon_name, ix, iy, ic, fg,
@@ -835,15 +968,9 @@ class NavItem(tk.Canvas):
         self.create_text(ix + ic + SP.md, self.h / 2, anchor="w", text=self.label,
                          fill=fg, font=theme.font(self, theme.TS["body"], weight))
 
-        if self.selected:
-            # 指示条：贴着左边缘的一小段竖线，高度只有行高的一半
-            bar_h = self.h * 0.44
-            round_rect(self, 0, (self.h - bar_h) / 2, S(2),
-                       (self.h + bar_h) / 2, S(1), fill=p.ink, outline=p.ink)
-
         if self.badge:
-            bw = max(S(20), measure(self, theme.font(self, theme.TS["small"]), self.badge)
-                     + SP.sm)
+            bw = max(S(20), measure(self, theme.font(self, theme.TS["small"]),
+                                    self.badge) + SP.sm)
             round_rect(self, w - SP.md - bw, self.h / 2 - S(9),
                        w - SP.md, self.h / 2 + S(9), S(RADIUS_PILL),
                        fill=p.brand, outline=p.brand)
@@ -1006,7 +1133,19 @@ class Segmented(tk.Canvas):
 
 
 class Field(tk.Frame):
-    """带圆角边框的输入框。focus 时边框渐变为焦点色并浮出一圈柔光。"""
+    """输入框，三态：默认 / 聚焦 / 错误。
+
+    - 默认：`border_control` 1px（3.5:1，满足 WCAG 1.4.11 对控件边界的 3:1）
+    - 聚焦：`border_focus` 2px + 一圈极淡外发光，90ms 过渡
+    - 错误：`danger` 2px + 下方一行红字说明
+
+    为什么默认态不用更淡的 `border`：那个色在白底只有 1.2:1，输入框的边界
+    等于不存在。P1 第六节写的是「描边从 border → border_control」，但那条
+    和第三节第 4 条「非文本对比度不许退步」冲突，这里以可访问性为准。
+
+    错误态必须有**一行说明**，不能只把边框染红：颜色是辅助信号，
+    色盲用户看不出红边，文字才是信息本身。
+    """
 
     def __init__(self, master, pal: theme.Palette, value: str = "",
                  placeholder: str = "", show: str | None = None,
@@ -1018,6 +1157,7 @@ class Field(tk.Frame):
         self.multiline = multiline
         self._focused = False
         self._focus_t = 0.0
+        self._error = ""
         self.h = S(height if height is not None else DIM.FIELD_H)
 
         super().__init__(master, bg=self._bg)
@@ -1052,6 +1192,13 @@ class Field(tk.Frame):
         self._placeholder_id = None
         self._ph_visible = False
 
+        # 错误说明：常驻一个 Label，没有错误时 pack_forget。
+        # 不每次都新建 Label 是因为「错误」会在每次输入时被清掉再设回来，
+        # 反复创建销毁控件比隐藏一个贵一个数量级。
+        self.err_lbl = tk.Label(self, text="", bg=self._bg, fg=pal.danger,
+                                anchor="w", justify="left",
+                                font=theme.font(self, theme.TS["small"]))
+
         self.cv.bind("<Configure>", self._on_conf)
         self.entry.bind("<FocusIn>", self._on_focus_in)
         self.entry.bind("<FocusOut>", self._on_focus_out)
@@ -1059,6 +1206,17 @@ class Field(tk.Frame):
         # 点画布空白处也能聚焦到输入框
         self.cv.bind("<Button-1>", lambda e: self.entry.focus_set())
         self._update_placeholder()
+
+    def _border(self) -> tuple[str, int]:
+        """当前描边颜色与粗细。错误 > 聚焦 > 默认。"""
+        p = self.pal
+        if self._error:
+            return p.danger, STK.ring
+        t = self._focus_t
+        if t <= 0.02:
+            return p.border_control, STK.control
+        return theme.mix(p.border_control, p.border_focus, t), (
+            STK.ring if t > 0.5 else STK.control)
 
     def _on_conf(self, e=None):
         """重画圆角背景。
@@ -1077,10 +1235,9 @@ class Field(tk.Frame):
             return
 
         self.cv.delete("fieldbg")
+        border, bw = self._border()
         t = self._focus_t
-        border = theme.mix(self.pal.border_control, self.pal.border_focus, t)
-        fill = self.pal.bg_input
-        if t > 0.02:
+        if t > 0.02 and not self._error:
             # 聚焦时加一圈极淡的外发光，边界更清楚
             round_rect(self.cv, -S(1.5), -S(1.5), w + S(1.5), h + S(1.5),
                        S(RADIUS_MD + 2),
@@ -1088,8 +1245,8 @@ class Field(tk.Frame):
                                       t * 0.55),
                        outline="", tags="fieldbg")
         round_rect(self.cv, S(0.5), S(0.5), w - S(0.5), h - S(0.5), S(RADIUS_MD),
-                   fill=fill, outline=border,
-                   width=STK.ring if t > 0.5 else STK.control, tags="fieldbg")
+                   fill=self.pal.bg_input, outline=border, width=bw,
+                   tags="fieldbg")
         self.cv.tag_lower("fieldbg")
 
         inner_w = max(1, w - SP.xl * 2)
@@ -1138,6 +1295,31 @@ class Field(tk.Frame):
             x, y, anchor=anchor, text=self.placeholder,
             fill=self.pal.placeholder, font=theme.font(self, theme.TS["small"]),
         )
+
+    # -- 错误态 ------------------------------------------------------
+    def set_error(self, text: str) -> None:
+        """把输入框切到错误态，并在下方显示一行说明。
+
+        空字符串 = 清除错误。幂等：状态没变就什么都不做，因为
+        「每次按键都重新校验」会一路调到这里。
+        """
+        text = text or ""
+        if text == self._error:
+            return
+        self._error = text
+        if text:
+            self.err_lbl.configure(text=text)
+            self.err_lbl.pack(fill="x", pady=(SP.xs, 0))
+        else:
+            self.err_lbl.pack_forget()
+        self._on_conf()
+
+    def clear_error(self) -> None:
+        self.set_error("")
+
+    @property
+    def has_error(self) -> bool:
+        return bool(self._error)
 
     # -- 值接口 ------------------------------------------------------
     def get(self) -> str:
@@ -1346,14 +1528,17 @@ class ScrollFrame(tk.Frame):
 
     def slide_in(self, dx: int = 0, dy: int | None = None,
                  duration: int | None = None) -> None:
-        """内容整体轻轻归位。
+        """内容整体轻轻归位（切页动画）。
 
         用 yview 做位移是行不通的（内容没超出时没有滚动空间），
         所以这里移动 inner 在画布上的坐标，动画结束后归零。
+
+        P1 第六节第 2 条：切页是**整页 8px 上移就位**，不再逐张卡片错峰。
+        所以调用方传 dy=SP.sm(8)、dx=0，时长 MOTION.base(160)。
         """
         if anim.reduced():
             return
-        d = S(dy if dy is not None else SP.md)
+        d = S(dy if dy is not None else SP.sm)
         ox = S(dx)
 
         def frame(t):
@@ -1405,155 +1590,100 @@ class Paragraph(tk.Label):
         self.configure(fg=color)
 
 
-# ---------------------------------------------------------------- 卡片
+# ---------------------------------------------------------------- 分组
 
 
-class Card(tk.Frame):
-    """圆角卡片：Canvas 画底，内容装在嵌入的 Frame 里。
+class Group(tk.Frame):
+    """分组：标题 + 内容区 + 底部 1px 分隔线。**没有边框，没有卡片底。**
 
-    为什么卡片要自己画圆角而不是用 tk.Frame 的 highlightborder：
-    后者只能画直角。直角边框在 12px 圆角的按钮和输入框旁边会显得很硬。
+    这是 P1 相对 v1 最大的结构改动，也是「去卡片化」的落点。
 
-    高度由内容决定：__init__ 末尾把画布高度设成 holder 的请求高度，
-    之后内容高度变化（折叠面板展开之类）再同步一次。
+    为什么去卡片化：v1 每个区块套一张描边卡片，卡片里还套卡片，
+    一屏下来边框比内容还多。边框本来是「这里是一组」的提示，但**当所有
+    东西都有边框时，边框就不再区分任何东西**，只剩视觉噪声。分组真正的
+    信号是留白：一组和一组的间距（24px）远大于组内行间距（0），
+    人眼自然就切开了。
+
+    分隔线只画在底部，不画在顶部：一页里第一个分组的上方是顶栏，
+    再画一条线就是第三条横线（顶栏、分组、分组…），显得碎。
+
+    `Section` / `Card` 是旧名，保留为别名，方便逐步替换。
     """
 
-    def __init__(self, master, pal: theme.Palette, *, title: str = "",
+    def __init__(self, master, pal: theme.Palette, title: str = "",
                  desc: str = "", bg: str | None = None, pad: int | None = None,
-                 radius: int = RADIUS_LG, border: bool = True,
-                 gap: int | None = None, fill: str | None = None):
+                 gap: int | None = None, rule: bool = True,
+                 inset: bool = False, **kw):
         self.pal = pal
         self._bg = bg or master.cget("bg")
-        # 卡片的填充色默认跟画布一致：这一版用的是「描边分组」而不是
-        # 「白底浮起」。原因很实在——卡片里的每个子控件都带着自己的
-        # 底色（页面统一传 bg_app），填白底会在卡片内部留下一圈灰边。
-        # 描边分组在 Vercel / Linear 的设置页里也是同一个做法。
-        self._fill = fill or pal.bg_app
-        self._radius = radius
-        self._border = border
-        self._pad = S(pad if pad is not None else DIM.CARD_PAD)
-        self._gap = S(gap) if gap is not None else SP.md
-        self._lastw = -1
-        self._dy = 0
-
+        self.title_text = title
+        self.desc_text = desc
+        self.inset = bool(inset)
         super().__init__(master, bg=self._bg)
-        self.cv = tk.Canvas(self, bg=self._bg, highlightthickness=0, bd=0)
-        self.cv.pack(fill="both", expand=True)
-
-        # holder 是嵌进画布的那一层，body 才是内容区（对外沿用旧名）
-        self.holder = tk.Frame(self.cv, bg=self._fill)
-        self._win = self.cv.create_window(0, 0, window=self.holder, anchor="nw")
 
         self.head = None
         self.title_lbl = None
         self.desc_lbl = None
         if title or desc:
-            self.head = tk.Frame(self.holder, bg=self._fill)
-            self.head.pack(fill="x", padx=self._pad, pady=(self._pad, 0))
+            # 分组标题上方 24px、下方 8px（P1 4.1 页 2 的版式图）。
+            # 这个 24 就是「组与组之间的距离」，是去卡片化之后唯一的分组信号，
+            # 所以它比组内任何间距都大。
+            self.head = tk.Frame(self, bg=self._bg)
+            self.head.pack(fill="x", pady=(SP.xl if gap is None else S(gap),
+                                           SP.sm))
             if title:
                 self.title_lbl = tk.Label(
-                    self.head, text=title, bg=self._fill, fg=pal.text,
+                    self.head, text=title, bg=self._bg, fg=pal.text_secondary,
                     anchor="w", font=theme.font(self, theme.TS["section"], "bold"))
                 self.title_lbl.pack(fill="x")
             if desc:
                 self.desc_lbl = tk.Label(
-                    self.head, text=desc, bg=self._fill, fg=pal.text_tertiary,
+                    self.head, text=desc, bg=self._bg, fg=pal.text_tertiary,
                     anchor="w", justify="left", wraplength=S(540),
                     font=theme.font(self, theme.TS["small"]))
-                self.desc_lbl.pack(fill="x", pady=(SP.xs, 0))
+                self.desc_lbl.pack(fill="x", pady=(SP.xxs, 0))
 
-        self.body = tk.Frame(self.holder, bg=self._fill)
-        self.body.pack(fill="both", expand=True, padx=self._pad,
-                       pady=(self._gap if self.head is not None else self._pad,
-                             self._pad))
+        self.body = tk.Frame(self, bg=self._bg)
+        if self.inset:
+            # 强调块：唯一允许带底色的「块」。P1 1.4 的配额是 ≤320×200，
+            # 这里只用在「队列为空」「这个通道不需要额外配置」这类
+            # 需要和普通行区分开的短说明上。
+            self.body.configure(bg=pal.bg_subtle)
+            self.body.pack(fill="both", expand=True,
+                           padx=S(DIM.CARD_PAD), pady=S(DIM.CARD_PAD))
+        else:
+            self.body.pack(fill="both", expand=True,
+                           padx=S(pad) if pad else 0,
+                           pady=(0, SP.lg))
 
-        self.cv.bind("<Configure>", self._on_conf)
-        self.holder.bind("<Configure>", self._on_body)
+        self._rule = None
+        if rule:
+            self._rule = divider(self, pal.border)
+            self._rule.pack(fill="x")
 
-    # -- 几何 --------------------------------------------------------
-    def _sync_height(self, h: int | None = None) -> None:
-        """把画布高度对齐到内容高度。
-
-        高度来源是 holder 自己的 <Configure> 事件（Tk 布局完成后会带着真实
-        高度过来），不是主动去问请求高度。
-
-        为什么不能用 `holder.update_idletasks()` 去问：那是**全局**空闲刷新，
-        会把整个应用重新布局一遍。一页里五到八张卡片互相触发，实测一次
-        页面构建里这个方法被调用 13~29 次、单次 20~35ms，占掉整页六成以上
-        的构建时间——这就是「切页很慢」的真正来源。
-        """
-        if h is None:
-            h = self.holder.winfo_reqheight()
-        h = max(1, int(h))
-        try:
-            if int(self.cv.cget("height")) != h:
-                self.cv.configure(height=h)
-        except tk.TclError:
-            return
-
-    def _on_body(self, e=None) -> None:
-        # e.height 是 holder 布局后的真实高度，直接拿来用，不再回问
-        self._sync_height(getattr(e, "height", None))
-
-    def _on_conf(self, e):
-        if e.width == self._lastw:
-            return
-        self._lastw = e.width
-        try:
-            self.cv.itemconfigure(self._win, width=e.width)
-            self.cv.coords(self._win, 0, self._dy)
-            self._paint(e.width, e.height)
-        except tk.TclError:
-            return
-
-    def _paint(self, w: int, h: int):
-        self.cv.delete("cardbg")
-        p = self.pal
-        r = S(self._radius)
-        dy = self._dy
-        outline = p.border if self._border else self._fill
-        round_rect(self.cv, S(0.5), S(0.5) + dy, w - S(0.5), h - S(0.5) + dy, r,
-                   fill=self._fill, outline=outline, width=STK.control,
-                   tags="cardbg")
-        self.cv.tag_lower("cardbg")
-
-    # -- 进场 --------------------------------------------------------
+    # -- 兼容旧 Card 的接口 -----------------------------------------
     def set_offset(self, dy: float) -> None:
-        """把整张卡片下移 dy 像素（进场动画用）。"""
-        self._dy = dy
-        try:
-            w = self.cv.winfo_width()
-            h = self.cv.winfo_height()
-            if w > 1 and h > 1:
-                # 顺带把嵌入窗口的宽度对齐一次。页面缓存之后，从别的页切回来
-                # 时画布宽度可能已经变了，而 <Configure> 要等事件队列才派发，
-                # 中间会有一帧内容仍按旧宽度排版。进场时直接钳死，省掉这一帧。
-                if w != self._lastw:
-                    self._lastw = w
-                    self.cv.itemconfigure(self._win, width=w)
-                self.cv.coords(self._win, 0, dy)
-                self._paint(w, h)
-        except tk.TclError:
-            return
+        """旧接口：卡片错峰进场用。P1 取消了逐张动画，这里保留为空实现，
+        免得调用方一改就炸；第 3 步重写 ui.py 后会被删掉。"""
+        return
 
     def restyle(self) -> None:
-        """调色板换了之后重画底与文字颜色（切主题时用）。"""
+        """调色板换了之后重刷文字与分隔线颜色。"""
         p = self.pal
         self.configure(bg=self._bg)
-        self.cv.configure(bg=self._bg)
-        self.holder.configure(bg=self._fill)
-        self.body.configure(bg=self._fill)
         if self.head is not None:
-            self.head.configure(bg=self._fill)
+            self.head.configure(bg=self._bg)
+        self.body.configure(bg=self._bg)
         if self.title_lbl is not None:
-            self.title_lbl.configure(bg=self._fill, fg=p.text)
+            self.title_lbl.configure(bg=self._bg, fg=p.text_secondary)
         if self.desc_lbl is not None:
-            self.desc_lbl.configure(bg=self._fill, fg=p.text_tertiary)
-        self._paint(self.cv.winfo_width(), self.cv.winfo_height())
+            self.desc_lbl.configure(bg=self._bg, fg=p.text_tertiary)
+        if self._rule is not None:
+            self._rule.configure(bg=p.border)
 
 
-class Section(Card):
-    """兼容旧名：分节 = 卡片。第三个位置参数仍是标题。"""
+class Section(Group):
+    """兼容旧名：分节 = 分组。第三个位置参数仍是标题。"""
 
     def __init__(self, master, pal: theme.Palette, title: str = "",
                  desc: str = "", bg: str | None = None, gap: int | None = None,
@@ -1561,50 +1691,71 @@ class Section(Card):
         super().__init__(master, pal, title=title, desc=desc, bg=bg, gap=gap, **kw)
 
 
+# 旧名 Card 也留着：ui.py 里还有一处，第 3 步会一起换掉
+Card = Group
+
+
 # ---------------------------------------------------------------- 设置行
 
 
 class Row(tk.Frame):
-    """卡片里的一行设置：左边标题与说明，右边控件。
+    """设置行：左边标签（可选一行说明），右边控件。**固定 52px 高。**
 
-    这是设置页最常见的单元。把「标签 + 说明 + 控件」固定成三栏，
-    是为了让同一页里所有行的基线对齐——参差的行是廉价感的主要来源。
+    52 是「专业工具」的密度基准（Linear / Raycast 都在 44–56 之间）：
+    比 46 松一档，扫读时一行一个信息不串行；再高就变成消费级 App 的
+    「大圆角列表」，一屏放不下几个设置。
+
+    用 grid 而不是 pack 是为了让右侧控件在 52px 里**垂直居中**：
+    pack 默认把子控件顶到上边，需要算 pady 才能居中，而 pady 只能用
+    令牌档位，凑不出精确的居中。grid 的 `sticky="w"`（不带 n/s）
+    本身就是垂直居中，不用算。
     """
 
     def __init__(self, master, pal: theme.Palette, label: str, hint: str = "",
                  bg: str | None = None, wrap: int = 420):
         self.pal = pal
         self._bg = bg or master.cget("bg")
-        super().__init__(master, bg=self._bg)
+        super().__init__(master, bg=self._bg, height=DIM.ROW_H)
+        self.grid_propagate(False)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_rowconfigure(0, weight=1)
 
         self.left = tk.Frame(self, bg=self._bg)
-        self.left.pack(side="left", fill="x", expand=True)
+        self.left.grid(row=0, column=0, sticky="nsew")
+        self.left.grid_columnconfigure(0, weight=1)
+        self.left.grid_rowconfigure(0, weight=1)
+
         self.label = tk.Label(self.left, text=label, bg=self._bg, fg=pal.text,
                               anchor="w", justify="left",
                               font=theme.font(self, theme.TS["body"]))
-        self.label.pack(fill="x")
+        self.label.grid(row=0, column=0, sticky="w")
         self.hint = None
         if hint:
-            self.hint = tk.Label(self.left, text=hint, bg=self._bg,
-                                 fg=pal.text_tertiary, anchor="w",
-                                 justify="left", wraplength=S(wrap),
-                                 font=theme.font(self, theme.TS["small"]))
-            self.hint.pack(fill="x", pady=(SP.xxs, 0))
+            self._add_hint(hint, wrap)
 
         self.right = tk.Frame(self, bg=self._bg)
-        self.right.pack(side="right", padx=(SP.lg, 0))
+        self.right.grid(row=0, column=1, sticky="e", padx=(SP.lg, 0))
+
+    def _add_hint(self, text: str, wrap: int = 420) -> None:
+        self.left.grid_rowconfigure(0, weight=1)
+        self.left.grid_rowconfigure(1, weight=1)
+        self.label.grid_configure(row=0, sticky="sw")
+        self.hint = tk.Label(self.left, text=text, bg=self._bg,
+                             fg=self.pal.text_tertiary, anchor="w",
+                             justify="left", wraplength=S(wrap),
+                             font=theme.font(self, theme.TS["small"]))
+        self.hint.grid(row=1, column=0, sticky="nw")
 
     def set_hint(self, text: str) -> None:
         if self.hint is None:
             if not text:
                 return
-            self.hint = tk.Label(self.left, text=text, bg=self._bg,
-                                 fg=self.pal.text_tertiary, anchor="w",
-                                 justify="left", wraplength=S(420),
-                                 font=theme.font(self, theme.TS["small"]))
-            self.hint.pack(fill="x", pady=(SP.xxs, 0))
+            self._add_hint(text)
             return
         self.hint.configure(text=text)
+
+    def set_label(self, text: str) -> None:
+        self.label.configure(text=text)
 
 
 # ---------------------------------------------------------------- 列表行
@@ -1613,8 +1764,11 @@ class Row(tk.Frame):
 class ListRow(tk.Canvas):
     """列表行：左侧图标徽章 + 标题 + 副标题 + 右侧状态点。
 
-    用于通道列表。选中态是浅底 + 主色文字，不用品牌绿——
-    理由同 NavItem。
+    用于通道列表。选中态是浅底 + 文字转粗，**没有左侧指示条**——
+    理由同 NavItem：一屏里不要有第二套「当前位置」的语言。
+
+    默认 44px（P1 4.1 页 1 的通道项高度），比设置行 52 紧一档：
+    左栏是「浏览」，右栏是「编辑」，浏览要更密。
     """
 
     def __init__(self, master, pal: theme.Palette, title: str, subtitle: str = "",
@@ -1635,7 +1789,7 @@ class ListRow(tk.Canvas):
         self.dot_color = dot
         # icon_on：徽章是否点亮（通道已启用）。None 表示跟随 active。
         self.icon_on = bool(active) if icon_on is None else bool(icon_on)
-        self.h = S(height if height is not None else DIM.ROW_H)
+        self.h = S(height if height is not None else DIM.NAV_ITEM_H)
         super().__init__(master, height=self.h, bg=self._bg,
                          highlightthickness=0, bd=0,
                          cursor="hand2" if command else "arrow")
@@ -1682,7 +1836,7 @@ class ListRow(tk.Canvas):
         fg = p.text if self.active else theme.mix(p.text_secondary, p.text, self._hv)
         cy = self.h / 2
         if self.subtitle:
-            self.create_text(tx, cy - S(8), anchor="w", fill=fg, font=ft,
+            self.create_text(tx, cy - S(7), anchor="w", fill=fg, font=ft,
                              text=elide(self, ft, self.title, avail))
             self.create_text(tx, cy + S(8), anchor="w", fill=p.text_tertiary,
                              font=fs,
@@ -1787,7 +1941,12 @@ class Pill(tk.Canvas):
 
 
 class Step(tk.Frame):
-    """教程页的一步：序号圆点 + 标题 + 正文。"""
+    """教程页的一步：22px 序号圆点 + 标题 + 正文。
+
+    P1 4.1 页 5：序号圆点 22px，**序号与正文左对齐**——圆点和标题、正文
+    共用同一条左基线，而不是「圆点占一列、文字缩进一列」。缩进式排版
+    在只有四步的短教程里会显得很空。
+    """
 
     def __init__(self, master, pal: theme.Palette, index: int = 0, title: str = "",
                  body: str = "", bg: str | None = None, i: int | None = None,
@@ -1799,34 +1958,33 @@ class Step(tk.Frame):
         self._bg = bg or master.cget("bg")
         super().__init__(master, bg=self._bg)
 
-        left = tk.Frame(self, bg=self._bg, width=S(32))
-        left.pack(side="left", fill="y")
-        left.pack_propagate(False)
-        # 序号圆点取 24（= SP.xl）：和下面正文的缩进用同一个数，
-        # 就不用再为「圆点有多宽」单独造一个令牌。
-        self.mark = tk.Canvas(left, width=SP.xl, height=SP.xl, bg=self._bg,
+        d = S(22)
+        self.mark = tk.Canvas(self, width=d, height=d, bg=self._bg,
                               highlightthickness=0, bd=0)
-        self.mark.pack(anchor="n", pady=(SP.xxs, 0))
-        round_rect(self.mark, 0.5, 0.5, S(23.5), S(23.5), S(12),
+        self.mark.pack(anchor="w", pady=(SP.xxs, SP.sm))
+        round_rect(self.mark, 0.5, 0.5, d - 0.5, d - 0.5, d / 2,
                    fill=p.bg_subtle, outline=p.border, width=STK.control)
-        self.mark.create_text(S(12), S(12), text=str(index), fill=p.text_secondary,
+        self.mark.create_text(d / 2, d / 2, text=str(index), fill=p.text_secondary,
                               font=theme.font(self, theme.TS["small"], "bold"))
 
-        right = tk.Frame(self, bg=self._bg)
-        right.pack(side="left", fill="both", expand=True)
-        tk.Label(right, text=title, bg=self._bg, fg=p.text, anchor="w",
+        tk.Label(self, text=title, bg=self._bg, fg=p.text, anchor="w",
                  font=theme.font(self, theme.TS["body"], "bold")).pack(fill="x")
         if body:
-            Paragraph(right, p, body, self._bg, p.text_secondary,
-                      size=theme.TS["small"], wrap=520).pack(fill="x",
-                                                             pady=(SP.xxs, 0))
+            Paragraph(self, p, body, self._bg, p.text_secondary,
+                      size=theme.TS["small"], wrap=620).pack(fill="x",
+                                                             pady=(SP.xs, 0))
 
 
 # ---------------------------------------------------------------- 折叠
 
 
 class Collapsible(tk.Frame):
-    """可折叠的说明块。默认收起，展开时高度渐变。"""
+    """可折叠的说明块。默认收起，展开是**高度渐变**（160ms）+ 箭头旋转 90°。
+
+    高度渐变的做法：给 body 关掉 pack_propagate，手动把高度从 0 补到
+    reqheight。Tk 没有 CSS 的 max-height 过渡，这是唯一能做到「内容
+    被逐渐推下去」的办法。动画结束后恢复 propagate，让内容自己能长高。
+    """
 
     def __init__(self, master, pal: theme.Palette, title: str,
                  body: str = "", bg: str | None = None, open_: bool = False,
@@ -1854,7 +2012,7 @@ class Collapsible(tk.Frame):
 
         self.body = tk.Frame(self, bg=self._bg)
         self.para = Paragraph(self.body, pal, body, self._bg, pal.text_secondary,
-                              size=theme.TS["small"], wrap=520)
+                              size=theme.TS["small"], wrap=620)
         # 正文缩进 = 箭头宽度 + 箭头右侧间距，跟标题文字左对齐
         self.para.pack(fill="x", padx=(S(self._chev_w) + SP.sm, 0),
                        pady=(SP.xs, 0))
@@ -1879,10 +2037,7 @@ class Collapsible(tk.Frame):
         col = self.pal.text if self._hover else self.pal.text_tertiary
         cx, cy = S(7), S(7)
         # 一个 90° 的 V 形，展开时转成向下
-        a = self._angle
-        import math
-
-        rad = math.radians(a)
+        rad = math.radians(self._angle)
         for sgn in (-1, 1):
             dx = math.cos(rad + sgn * math.radians(48)) * S(4.2)
             dy = math.sin(rad + sgn * math.radians(48)) * S(4.2)
@@ -1903,18 +2058,59 @@ class Collapsible(tk.Frame):
         self.open = not self.open
         start = self._angle
         target = 90.0 if self.open else 0.0
-        if self.open:
-            self.body.pack(fill="x")
 
         def frame(t):
             self._angle = start + (target - start) * t
             self._paint()
 
-        def done():
-            if not self.open:
-                self.body.pack_forget()
-
         anim.tween(self, "chev", MOTION.base, frame, anim.ease_out_cubic,
+                   interval=MOTION.interval)
+        self._animate_height()
+
+    def _animate_height(self) -> None:
+        """展开/收起的高度渐变。"""
+        if self.open:
+            self.body.pack(fill="x")
+            self.body.update_idletasks()
+            full = max(S(1), self.para.winfo_reqheight() + SP.xs)
+            self.body.pack_propagate(False)
+            self.body.configure(height=S(1))
+
+            def frame(t):
+                try:
+                    self.body.configure(height=max(S(1), int(full * t)))
+                except tk.TclError:
+                    pass
+
+            def done():
+                try:
+                    self.body.pack_propagate(True)
+                    self.body.configure(height=0)
+                except tk.TclError:
+                    pass
+
+            anim.tween(self, "height", MOTION.base, frame, anim.ease_out_cubic,
+                       interval=MOTION.interval, on_done=done)
+            return
+
+        start_h = self.body.winfo_height()
+        self.body.pack_propagate(False)
+
+        def frame(t):
+            try:
+                self.body.configure(height=max(0, int(start_h * (1 - t))))
+            except tk.TclError:
+                pass
+
+        def done():
+            try:
+                self.body.pack_forget()
+                self.body.pack_propagate(True)
+                self.body.configure(height=0)
+            except tk.TclError:
+                pass
+
+        anim.tween(self, "height", MOTION.base, frame, anim.ease_out_cubic,
                    interval=MOTION.interval, on_done=done)
 
 
@@ -1922,13 +2118,13 @@ class Collapsible(tk.Frame):
 
 
 class Toast(tk.Frame):
-    """右下角浮出的提示条。
+    """右下角浮出的提示条。**常规组件里唯一带阴影的。**
 
     带一条进度线：它同时表达「还剩多久消失」和「刚刚发生了一件事」，
     比单纯淡出更有信息量。
 
-    进场用 place 的位置做动画，而不是在画布内偏移绘制：
-    画布内的偏移会被画布边界裁掉，滑入的那一截根本看不见。
+    进场用 place 的位置做动画（从右侧滑入 8px，160ms），而不是在画布内
+    偏移绘制：画布内的偏移会被画布边界裁掉，滑入的那一截根本看不见。
     """
 
     ICONS = {"ok": "check", "warn": "alert", "error": "alert", "info": "info"}
@@ -1939,7 +2135,7 @@ class Toast(tk.Frame):
         self._cw = S(DIM.TOAST_W)
         self._ch = S(DIM.TOAST_H)
         self.cv = tk.Canvas(self, bg=master.cget("bg"), highlightthickness=0,
-                             bd=0, width=self._cw, height=self._ch)
+                            bd=0, width=self._cw, height=self._ch)
         self.cv.pack()
         self._kind = "ok"
         self._text = ""
@@ -1950,10 +2146,10 @@ class Toast(tk.Frame):
         self._rest = S(20)      # 静止时距右下角的距离
 
     # -- 布局 --------------------------------------------------------
-    def _place(self, dy: int = 0) -> None:
+    def _place(self, dx: int = 0) -> None:
         try:
             self.place(relx=1.0, rely=1.0, anchor="se",
-                       x=-self._rest, y=-self._rest + dy)
+                       x=-self._rest + dx, y=-self._rest)
             self.lift()
         except tk.TclError:
             return
@@ -2016,10 +2212,10 @@ class Toast(tk.Frame):
         self._progress = 1.0
         self._fit()
         self._draw()
-        self._place(S(14))
+        self._place(S(8))
 
         def frame(t):
-            self._place(int(S(14) * (1 - t)))
+            self._place(int(S(8) * (1 - t)))
 
         anim.tween(self, "in", MOTION.base, frame, anim.ease_out_expo,
                    interval=MOTION.interval)
@@ -2068,7 +2264,7 @@ class Toast(tk.Frame):
                 setattr(self, attr, None)
 
         def frame(t):
-            self._place(int(S(14) * t))
+            self._place(int(S(8) * t))
 
         def done():
             try:
@@ -2084,7 +2280,11 @@ class Toast(tk.Frame):
 
 
 class Metric(tk.Frame):
-    """一个数字 + 一句标签。运行状态页顶部那一排。"""
+    """一个数字 + 一句标签。运行状态页顶部那一排，**不用卡片**，靠竖线分隔。
+
+    数字用等宽字体：P1 1.2-C「数字右对齐、金额/计数用等宽」。等宽让
+    「128」和「3」这类位数不同的数字在竖向上对齐，扫一眼就知道量级。
+    """
 
     def __init__(self, master, pal: theme.Palette, label: str, value: str,
                  color: str | None = None, bg: str | None = None):
@@ -2093,7 +2293,8 @@ class Metric(tk.Frame):
         super().__init__(master, bg=self._bg)
         self.val = tk.Label(self, text=value, bg=self._bg,
                             fg=color or pal.text, anchor="w",
-                            font=theme.font(self, theme.TS["title"], "bold"))
+                            font=theme.font(self, theme.TS["title"], "bold",
+                                            mono=True))
         self.val.pack(fill="x")
         tk.Label(self, text=label, bg=self._bg, fg=pal.text_tertiary, anchor="w",
                  font=theme.font(self, theme.TS["small"])).pack(
@@ -2107,21 +2308,30 @@ class Metric(tk.Frame):
 
 
 class Timeline(tk.Frame):
-    """运行状态页的发送记录。左侧一条竖线串起若干节点。"""
+    """运行状态页的发送记录。左侧一条竖线串起若干节点。
+
+    每行 40px（P1 4.1 页 4），状态用**圆点颜色**表达而不是文字标签——
+    「成功/失败」两个字占掉 40px 里的一大半，而颜色一眼就能扫完一列。
+    代价是色盲用户读不出来，所以失败行的正文也用 danger 色，
+    并且这一列永远只出现在「最近发送」里，上面还有指标的失败计数兜底。
+
+    不带入场动画：P1 第七节禁令 3「不给列表项加逐项动画」。
+    所以 `reveal()` 保留为空实现，调用方不必改签名。
+    """
+
+    ROW_H = 40
 
     def __init__(self, master, pal: theme.Palette, bg: str | None = None):
         self.pal = pal
         self._bg = bg or master.cget("bg")
         super().__init__(master, bg=self._bg)
         self.rows: list[dict] = []
-        self._limit: int | None = None
         self.cv = tk.Canvas(self, bg=self._bg, highlightthickness=0, bd=0)
         self.cv.pack(fill="both", expand=True)
         self.cv.bind("<Configure>", lambda e: self._paint(self.cv))
 
     def set_rows(self, rows: list[dict]) -> None:
         self.rows = rows
-        self._limit = None
         self._paint(self.cv)
 
     def _paint(self, cv: tk.Canvas) -> None:
@@ -2131,73 +2341,59 @@ class Timeline(tk.Frame):
         if w <= 1:
             w = S(480)
         rows = self.rows
-        if self._limit is not None:
-            rows = rows[: self._limit]
         if not rows:
-            cv.create_text(w / 2, S(28), text="还没有发送记录", fill=p.text_tertiary,
+            cv.create_text(w / 2, S(28), text="还没有发送记录",
+                           fill=p.text_tertiary,
                            font=theme.font(self, theme.TS["small"]))
             cv.configure(height=S(64))
             return
 
-        y = S(10)
+        # 字体在循环外算一次：theme.font 每次都要查族名缓存，
+        # 一页二十行就是四十次无谓的字典查找。
+        f_small = theme.font(self, theme.TS["small"])
+        f_time = theme.font(self, theme.TS["small"], mono=True)
+        f_chan = theme.font(self, theme.TS["small"], "bold")
+
+        y = S(self.ROW_H) / 2 + S(4)
         lx = S(6)
         for i, r in enumerate(rows):
             okv = bool(r.get("ok"))
             color = p.success if okv else p.danger
             # 节点之间的连线
             if i > 0:
-                cv.create_line(lx, y - S(10), lx, y, fill=p.border,
+                cv.create_line(lx, y - S(self.ROW_H), lx, y, fill=p.border,
                                width=STK.rule)
             cv.create_oval(lx - S(3), y - S(3), lx + S(3), y + S(3),
                            fill=color, outline=color)
             cv.create_text(lx + S(14), y, anchor="w", text=r.get("time", ""),
-                           fill=p.text_tertiary,
-                           font=theme.font(self, theme.TS["small"], mono=True))
+                           fill=p.text_tertiary, font=f_time)
             tx = lx + S(62)
             chan = r.get("channel") or ""
             if chan:
-                fc = theme.font(self, theme.TS["small"], "bold")
                 cv.create_text(tx, y, anchor="w", text=chan, fill=p.text_secondary,
-                               font=fc)
-                tx += measure(cv, fc, chan) + SP.md
+                               font=f_chan)
+                tx += measure(cv, f_chan, chan) + SP.md
             msg = r.get("msg") or r.get("summary") or ""
             cv.create_text(tx, y, anchor="w",
-                           text=elide(cv, theme.font(self, theme.TS["small"]),
-                                      msg, w - tx - SP.md),
-                           fill=p.text if okv else p.danger,
-                           font=theme.font(self, theme.TS["small"]))
-            y += S(30)
-        cv.configure(height=y + S(6))
+                           text=elide(cv, f_small, msg, w - tx - SP.md),
+                           fill=p.text if okv else p.danger, font=f_small)
+            y += S(self.ROW_H)
+        cv.configure(height=y)
 
     def reveal(self) -> None:
-        """逐行浮现。只在进入运行状态页时跑一次。
-
-        做法是控制「画到第几行」而不是给每行加一个控件：
-        行本身是画布上的图元，多建一层控件只为做动画是纯浪费。
-        """
-        if anim.reduced() or not self.rows:
-            return
-        total = len(self.rows)
-
-        def frame(t):
-            self._limit = max(1, int(round(t * total)))
-            self._paint(self.cv)
-
-        def done():
-            self._limit = None
-            self._paint(self.cv)
-
-        anim.tween(self, "rev", MOTION.slow, frame, anim.ease_out_expo,
-                   interval=MOTION.interval, on_done=done)
+        """旧接口：v1 的逐行浮现。P1 取消（第七节禁令 3），保留为空实现。"""
+        return
 
 
 # ---------------------------------------------------------------- 空状态
 
 
 class EmptyState(tk.Frame):
-    """空状态：一个图标、一句标题、一段说明，以及一个出口动作。
+    """空状态：图形 + 标题 + 一行说明 + 可选按钮。
 
     出口动作是硬要求：没有动作的空状态是死胡同，用户只能退回去。
+    图形用「圆形浅底 + 线性图标」，不用方形卡片——方框在这个尺寸下
+    会被误读成一个还没加载出来的内容块。
     """
 
     def __init__(self, master, pal: theme.Palette, icon: str, title: str,
@@ -2207,20 +2403,19 @@ class EmptyState(tk.Frame):
         self._bg = bg or master.cget("bg")
         super().__init__(master, bg=self._bg)
 
-        # 圆角方块边长 = 图标盒的 2 倍，图标在方块里居中
-        box_w = DIM.ICON_BOX * 2
-        box = tk.Canvas(self, width=S(box_w), height=S(box_w), bg=self._bg,
+        d = S(48)
+        box = tk.Canvas(self, width=d, height=d, bg=self._bg,
                         highlightthickness=0, bd=0)
         box.pack(pady=(SP.xl, SP.md))
-        round_rect(box, S(2), S(2), S(box_w - 2), S(box_w - 2),
-                   S(DIM.ICON_BOX - 2),
-                   fill=pal.bg_subtle, outline=pal.border, width=STK.control)
-        inset = S(DIM.ICON_BOX - DIM.ICON_LG // 2)
-        draw_icon(box, icon, inset, inset, S(DIM.ICON_LG), pal.text_tertiary,
-                  STK.icon_thin)
+        box.create_oval(S(1), S(1), d - S(1), d - S(1),
+                        fill=pal.bg_subtle, outline=pal.border,
+                        width=STK.control)
+        inset = (d - S(DIM.ICON_LG * 2)) / 2
+        draw_icon(box, icon, inset, inset, S(DIM.ICON_LG * 2),
+                  pal.text_tertiary, STK.icon_thin)
 
         tk.Label(self, text=title, bg=self._bg, fg=pal.text,
-                 font=theme.font(self, theme.TS["body"], "bold")).pack()
+                 font=theme.font(self, theme.TS["section"], "bold")).pack()
         if desc:
             Paragraph(self, pal, desc, self._bg, pal.text_tertiary,
                       size=theme.TS["small"], wrap=380).pack(pady=(SP.xs, 0))
