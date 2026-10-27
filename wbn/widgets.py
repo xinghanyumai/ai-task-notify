@@ -111,7 +111,12 @@ def measure_cache_clear() -> None:
 
 
 def round_rect(cv: tk.Canvas, x1, y1, x2, y2, r, **kw):
-    """用平滑多边形画圆角矩形（Tk 没有原生圆角）。"""
+    """用平滑多边形画圆角矩形（Tk 没有原生圆角）。
+
+    **r = 高度一半时不要用它画胶囊**——`smooth=True` 是把折点按贝塞尔磨圆，
+    顶点始终落在矩形边上，半径撑不满半高，画出来是「切角矩形」而不是半圆。
+    胶囊请用 `capsule` / `capsule_border`。
+    """
     r = max(0, min(r, (x2 - x1) / 2, (y2 - y1) / 2))
     pts = [
         x1 + r, y1, x2 - r, y1, x2, y1, x2, y1 + r,
@@ -119,6 +124,52 @@ def round_rect(cv: tk.Canvas, x1, y1, x2, y2, r, **kw):
         x1, y2, x1, y2 - r, x1, y1 + r, x1, y1,
     ]
     return cv.create_polygon(pts, smooth=True, **kw)
+
+
+def capsule(cv: tk.Canvas, x1, y1, x2, y2, fill, tags=""):
+    """实心胶囊 = 中间矩形 + 两端真半圆。
+
+    半圆用 `create_oval` 的整圆再让矩形盖住一半，圆是真的圆——
+    `round_rect(r=h/2)` 做不到这一点（见上）。三个图元都用 fill 当 outline
+    描一圈，避免相邻图元之间露出 1px 底色缝。
+    """
+    r = (y2 - y1) / 2
+    if x2 - x1 < 2 * r:                      # 退化成一个圆
+        return cv.create_oval(x1, y1, x2, y2, fill=fill, outline=fill, tags=tags)
+    cv.create_rectangle(x1 + r, y1, x2 - r, y2, fill=fill, outline=fill, tags=tags)
+    cv.create_oval(x1, y1, x1 + 2 * r, y2, fill=fill, outline=fill, tags=tags)
+    return cv.create_oval(x2 - 2 * r, y1, x2, y2, fill=fill, outline=fill, tags=tags)
+
+
+def capsule_border(cv: tk.Canvas, x1, y1, x2, y2, fill, outline, width=1, tags=""):
+    """带描边的实心胶囊。
+
+    Tk 的 `create_oval(width=)` 描边压在填充色上、且圆心在边界线上，
+    圆角处会显得粗细不匀。这里改成「外层整块画描边色 → 内层缩进 width
+    再填填充色」，描边宽度处处一致。**`fill=""` 时不要用它**——内层透明，
+    外层那块实心色会整个露出来，画出来是一坨实心胶囊。空心请用 `capsule_ring`。
+    """
+    w = max(0, width)
+    capsule(cv, x1, y1, x2, y2, outline, tags=tags)
+    if w and (x2 - x1 - 2 * w > 0) and (y2 - y1 - 2 * w > 0):
+        capsule(cv, x1 + w, y1 + w, x2 - w, y2 - w, fill, tags=tags)
+
+
+def capsule_ring(cv: tk.Canvas, x1, y1, x2, y2, color, width=1, tags=""):
+    """空心胶囊描边（焦点环用）。
+
+    只能画**半圆弧**，不能画整圆：胶囊宽 44 高 24 时，两端整圆的直径 24
+    加起来 48 > 44，两个整圆会在中间叠成「8」字（实测过，很丑）。
+    `create_arc(style="arc")` 只画 90°–270° 那一半，左右各一半 + 上下两条
+    直线，接在切点上，正好是一个闭合胶囊。
+    """
+    r = min((y2 - y1) / 2, (x2 - x1) / 2)
+    cv.create_arc(x1, y1, x1 + 2 * r, y2, start=90, extent=180, style="arc",
+                  outline=color, width=width, tags=tags)
+    cv.create_arc(x2 - 2 * r, y1, x2, y2, start=270, extent=180, style="arc",
+                  outline=color, width=width, tags=tags)
+    cv.create_line(x1 + r, y1, x2 - r, y1, fill=color, width=width, tags=tags)
+    cv.create_line(x1 + r, y2, x2 - r, y2, fill=color, width=width, tags=tags)
 
 
 # 渐变单块的面积上限（逻辑像素）。320×200 是 P1 1.4 给的配额。
@@ -373,6 +424,11 @@ def draw_focus_ring(cv: tk.Canvas, x1, y1, x2, y2, r, pal: theme.Palette,
     最常见的可访问性缺口。这里统一用 2px 品牌色描边表达焦点，
     颜色用 border_focus（白底 5.16:1，满足非文本 3:1 要求）。
     """
+    if r >= (y2 - y1) / 2 - 0.5:
+        # 胶囊形控件（开关）：焦点环也必须走真半圆，否则环是方的、控件是圆的
+        capsule_ring(cv, x1, y1, x2, y2, color or pal.border_focus,
+                     width=STK.ring, tags=tags)
+        return
     round_rect(cv, x1, y1, x2, y2, r, fill="", outline=color or pal.border_focus,
                width=STK.ring, tags=tags)
 
@@ -732,12 +788,16 @@ class Button(tk.Canvas):
 
 
 class Switch(tk.Canvas):
-    """胶囊开关。滑块用 ease-out-back 滑过去，轨道颜色同步插值。
+    """胶囊开关。滑块 160ms ease-out-expo 滑过去，轨道颜色同步插值。
+
+    形状取 Tailwind / iOS 的通行比例 44×24：轨道两端是**真半圆**
+    （`capsule_border`，不是 `round_rect(r=h/2)`——后者只能磨出切角矩形，
+    这正是上一版看起来像「方块」的原因），滑块直径 20，左右各留 2px 边距，
+    行程 20px，和轨道高度一致，开/关两态的位移一眼可辨。
 
     开关是少数几个用品牌绿的地方：它表达的是「系统状态」，不是「操作」。
-
-    深色下轨道要加一圈内描边：深色背景上「浅灰轨道」和「底色」的明度差
-    只有一点点，不开描边时关态开关几乎看不见边界，用户不知道那里有东西。
+    关态轨道用 `track_off`（比进度条轨道深两档），再压一圈 `border_control`
+    描边——开关没有第二段色块帮忙分界，只靠浅灰填充会整块融进页面底。
     """
 
     def __init__(self, master, pal: theme.Palette, value: bool = False,
@@ -751,7 +811,11 @@ class Switch(tk.Canvas):
         self.w = width if width is not None else DIM.SWITCH_W
         self.h = height if height is not None else DIM.SWITCH_H
         self._pos = 1.0 if self.value else 0.0
-        super().__init__(master, width=self.w, height=self.h + S(4), bg=self._bg,
+        # 画布四周各留 4px：轨道内缩 4px，焦点环再外扩 2px，正好装得下。
+        # 不留这圈的话焦点环会被画布裁掉——自绘控件最常见的「焦点看不见」。
+        self._pad = S(4)
+        super().__init__(master, width=self.w + 2 * self._pad,
+                         height=self.h + 2 * self._pad, bg=self._bg,
                          highlightthickness=0, bd=0, cursor="hand2")
         self._draw()
         self.bind("<Button-1>", self._toggle)
@@ -761,35 +825,32 @@ class Switch(tk.Canvas):
         self.delete("all")
         p = self.pal
         t = self._pos
-        track = theme.mix(p.track, p.brand, t)
-        y1 = S(2)
-        y2 = self.h + S(2)
-        # 关态轨道是浅灰压在更浅的页面底上，几乎看不出形状。
-        # 加一圈描边，开关的「可点区域」才读得出来。
-        round_rect(self, S(0.5), y1, self.w - S(0.5), y2, (y2 - y1) / 2,
-                   fill=track, outline=theme.mix(p.border_control, track, t),
-                   width=STK.control)
-        # 深色下再补一圈内描边（向内缩 1px 的细线），把轨道从底色里拉出来
-        if p.name == "dark":
-            round_rect(self, S(1.5), y1 + S(1), self.w - S(1.5), y2 - S(1),
-                       (y2 - y1 - S(2)) / 2, fill="",
-                       outline=theme.mix(p.border_strong, track, t),
-                       width=STK.control)
+        pad = self._pad
+        x1, y1 = pad, pad
+        x2, y2 = pad + self.w, pad + self.h
+        track = theme.mix(p.track_off, p.brand, t)
+        # 描边：关态用 border_control（对页面底 ≥3:1，满足 WCAG 1.4.11 的
+        # 控件边界要求）；开态随插值收进品牌色，绿块外不再套一圈深灰。
+        edge = theme.mix(p.border_control, track, t)
+        capsule_border(self, x1 + S(0.5), y1, x2 - S(0.5), y2,
+                       fill=track, outline=edge, width=STK.control)
 
-        knob = self.h - S(6)
-        travel = self.w - knob - S(6)
-        x = S(3) + travel * t
+        kpad = S(2)
+        knob = self.h - 2 * kpad
+        travel = self.w - knob - 2 * kpad
+        x = x1 + kpad + travel * t
         cy = (y1 + y2) / 2
-        # 滑块投影：往下 1px 压一档暗色，滑块才不像贴纸
-        self.create_oval(x + S(0.5), cy - knob / 2 + S(1),
-                         x + knob + S(0.5), cy + knob / 2 + S(1),
-                         fill=theme.mix(p.track, "#000000", 0.18), outline="")
+        # 滑块投影：整体下移 1px 压一档暗色。Tk 没有模糊，单圈硬阴影
+        # 就够表达「滑块浮在轨道上」，再多画几层反而显脏。
+        self.create_oval(x, cy - knob / 2 + S(1),
+                         x + knob, cy + knob / 2 + S(1),
+                         fill=theme.mix(track, "#000000", 0.22), outline="")
         self.create_oval(x, cy - knob / 2, x + knob, cy + knob / 2,
                          fill="#ffffff", outline="")
 
         if has_focus(self):
-            draw_focus_ring(self, S(0.5), y1 - S(2), self.w - S(0.5),
-                            y2 + S(2), (y2 - y1) / 2 + S(2), p)
+            draw_focus_ring(self, x1 - S(2), y1 - S(2), x2 + S(2), y2 + S(2),
+                            (y2 - y1) / 2 + S(2), p)
 
     def _toggle(self, _e=None):
         self.value = not self.value
@@ -804,9 +865,11 @@ class Switch(tk.Canvas):
             self._pos = start + (target - start) * t
             self._draw()
 
-        # 开关滑块是唯一用 ease_out_back 的地方：它有物理感，末端要轻微过冲。
-        anim.tween(self, "knob", duration or MOTION.quick, frame,
-                   anim.ease_out_back, interval=MOTION.interval)
+        # ease_out_expo 而不是 ease_out_back：开关是「状态切换」，过冲会让
+        # 滑块撞到轨道端点再弹回来，读起来像没对准；指数缓出前段快、尾段
+        # 收得干净，160ms 内完成且没有回弹。
+        anim.tween(self, "knob", duration or MOTION.base, frame,
+                   anim.ease_out_expo, interval=MOTION.interval)
 
     def set_value(self, v: bool, animate: bool = False) -> None:
         self.value = bool(v)
@@ -1387,6 +1450,7 @@ class ScrollFrame(tk.Frame):
         self._wheel_bound = False
         self._bind_wheel()
         self._lastw = -1
+        self._region = (-1, -1)
         self._drawn_view = (0.0, 1.0)
         self._last_view = (0.0, 1.0)
 
@@ -1398,10 +1462,28 @@ class ScrollFrame(tk.Frame):
 
     def _on_inner(self, _e=None):
         try:
-            # 用 inner 的请求高度而不是 bbox("all")：bbox 要遍历画布上所有
-            # item，而这里只关心那一个 window item 有多高。
+            # **未映射 / 宽度未定的页面，直接不做布局计算。**
+            #
+            # 这不只是省事，是必须。页面缓存之后，预建的 4 个页面都在内存里
+            # 但没被 pack 出来，它们的 canvas 宽度是 1、`_lastw` 还是 -1。
+            # 此时算出来的 scrollregion 是 `(0, 0, 1, h)`；而设 scrollregion
+            # 会让 canvas 重新摆放那个 window item，反过来又给 inner 派发一个
+            # `<Configure>`——h 每轮都在变，幂等判断挡不住，于是自激成每秒
+            # 8000 多次的循环（实测 3 秒 24578 次，占全界面 Configure 的 97.6%）。
+            #
+            # 它不报错、也不卡死循环，但会把事件队列塞满：用户的点击、拖动、
+            # 窗口拖动消息全排在后面，Windows 等不到消息泵响应，就判定
+            # 「窗口无响应」。这正是启动后那阵卡顿的来源。
+            if not self.cv.winfo_ismapped():
+                return
+            cw = self.cv.winfo_width()
+            if cw <= 1:
+                return
             h = max(self.inner.winfo_reqheight(), self.inner.winfo_height())
-            self.cv.configure(scrollregion=(0, 0, self._lastw, h))
+            if (cw, h) == self._region:
+                return
+            self._region = (cw, h)
+            self.cv.configure(scrollregion=(0, 0, cw, h))
         except tk.TclError:
             return
         self._refresh_bar()
@@ -1411,6 +1493,7 @@ class ScrollFrame(tk.Frame):
         if e.width == self._lastw:
             return
         self._lastw = e.width
+        self._region = (-1, -1)      # 宽度变了，之前缓存的 region 作废
         self.cv.itemconfigure(self._win, width=e.width)
         self._refresh_bar()
 
@@ -1968,8 +2051,10 @@ class Step(tk.Frame):
         self.mark = tk.Canvas(self, width=d, height=d, bg=self._bg,
                               highlightthickness=0, bd=0)
         self.mark.pack(anchor="w", pady=(SP.xxs, SP.sm))
-        round_rect(self.mark, 0.5, 0.5, d - 0.5, d - 0.5, d / 2,
-                   fill=p.bg_subtle, outline=p.border, width=STK.control)
+        # 正圆用 create_oval：round_rect(r=d/2) 在满半径时磨出来是八边形
+        self.mark.create_oval(0.5, 0.5, d - 0.5, d - 0.5,
+                              fill=p.bg_subtle, outline=p.border,
+                              width=STK.control)
         self.mark.create_text(d / 2, d / 2, text=str(index), fill=p.text_secondary,
                               font=theme.font(self, theme.TS["small"], "bold"))
 

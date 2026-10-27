@@ -86,8 +86,10 @@ _DIM = {
     "FIELD_H_MULTI": 80,
     "FIELD_H_TALL": 140,    # 模板正文那种大输入区
     "SEG_H": 28,            # 分段控件
-    "SWITCH_W": 38,
-    "SWITCH_H": 22,
+    # 开关取 Tailwind / iOS 的通行比例 44×24（约 1.83:1）。原 38×22 是
+    # 1.73:1，两端半圆一撑满就显小，滑块行程只有 16px，开/关位移不明显。
+    "SWITCH_W": 44,
+    "SWITCH_H": 24,
     "CHECK_BOX": 18,
     # 图标与徽标
     "LOGO": 30,

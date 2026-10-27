@@ -14,16 +14,12 @@ import hashlib
 import hmac
 import json
 import re
-import smtplib
 import time
 import unicodedata
 import urllib.error
 import urllib.parse
 import urllib.request
 from datetime import datetime
-from email.header import Header
-from email.mime.text import MIMEText
-from email.utils import formataddr
 
 from . import config, store
 from .sanitize import check_http_url, clean_obj, clean_text, one_line, redact
@@ -1256,6 +1252,14 @@ def _send_feishu(c: dict, title: str, content: str, timeout: int) -> tuple[bool,
 
 
 def _send_smtp(c: dict, title: str, content: str, timeout: int) -> tuple[bool, str]:
+    # smtplib + email.* 只在真发邮件时才需要，放在这里延迟导入：
+    # 模块级导入会拖慢启动（实测 smtplib 一项 47ms），而绝大多数用户
+    # 用的是微信/Webhook 通道，一辈子走不到这个函数。
+    import smtplib
+    from email.header import Header
+    from email.mime.text import MIMEText
+    from email.utils import formataddr
+
     host = (c.get("host") or "").strip()
     user = (c.get("user") or "").strip()
     pwd = (c.get("password") or "").strip()

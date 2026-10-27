@@ -808,7 +808,38 @@ class App:
         if build is None:
             return
         frame = tk.Frame(self.content, bg=self.pal.bg_app)
-        build(frame)
+        # **先给一个确定宽度，再建内容。**
+        #
+        # 未 pack 的容器宽度是 0/1，而页里有 grid 的 `uniform` 等宽列
+        # （触发条件页的两列网格）。uniform 的列宽分配要拿容器宽度当参照，
+        # 参照是 1 的时候算不出来，Tk 会在 idle 里反复迭代——每轮都派发一批
+        # `<Configure>`，永远不收敛。实测触发条件页预建后 3 秒内产生
+        # 24578 次 Configure，占全界面 97.6%，把事件队列塞满，用户看到的就是
+        # 「窗口无响应」。
+        #
+        # `place` 在屏幕外并给出宽度：不参与 pack 布局（不影响当前页），
+        # 但内部控件拿得到真实宽度，一次就收敛。建完立刻 `place_forget`，
+        # 回到「未管理」状态，和原来一样。
+        cw = self.content.winfo_width()
+        if cw <= 1:
+            # 启动期 root 还是 withdraw 状态，`winfo_width()` 对未映射的
+            # 窗口返回 1。用初始窗口尺寸推算内容区宽度，预建页才有一致的
+            # 布局参照。
+            cw = max(S(DIM.WIN_W) - S(DIM.SIDEBAR_W), S(640))
+        if cw > 1:
+            frame.place(x=-20000, y=0, width=cw)
+            # 让 place 的宽度真正下发到 frame 自身，之后 build 出来的子控件
+            # 才从第一轮就拿到真实宽度。`update_idletasks()` 只跑空闲任务、
+            # 不派发 `<Configure>`，所以不会把下面那个震荡循环引出来。
+            try:
+                frame.update_idletasks()
+            except tk.TclError:
+                pass
+        try:
+            build(frame)
+        finally:
+            if cw > 1:
+                frame.place_forget()
         self._pages[key] = frame
         self._save_view(key)
 
