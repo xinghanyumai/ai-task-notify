@@ -255,10 +255,16 @@ bridge，Python 侧看不出任何异常，只是画面一次都没合成过。
 index.html      壳的骨架 + 9 条 CSP 指令
 tokens.css      唯一色值来源（57 个变量，亮/暗各一套）
 shell.css       壳布局 + 通用组件，只写 var(--x)，不写字面色值
+channels.css    通道页的两栏布局（240 列表 + 表单），同样只用 token
 theme-boot.js   <head> 里的同步脚本，首屏定 data-theme，防 FOUC
-shell.js        主题 / hash 路由 / bridge 封装 / 侧栏 / 顶栏
+shell.js        主题 / hash 路由 / bridge 封装 / 异步回调分发 / 侧栏 / 顶栏
 pages/*.js      页面模块，挂在 window.WBN_PAGES 上
 ```
+
+页面模块拿到的 `ctx` 有 `call / el / icon / $ / $$ / go / refreshChain /
+nextCb / dropCb / notify`。`nextCb` 是异步回调：Python 侧用
+`evaluate_js("window.__wbnCb({...})")` 推结果回来，页面拿一个 id 等它。
+这个全局只能由壳提供——它是传输层，不是某一页的业务。
 
 **铁律：`tokens.css` 之外不许出现字面色值。** 自检（输出必须为空）：
 
@@ -303,6 +309,63 @@ grep -rnE ':\s*(#[0-9a-fA-F]{3,8}|rgba?\()' webui/assets/shell.css webui/index.h
 **教训**：`overflow: hidden` + grid/flex 是「静默截断」的经典组合。
 看不见滚动条又确实有内容时，先怀疑行高被内容撑开，而不是元素没渲染。
 
+## 踩过的坑：js_api 上一个公开属性就炸掉整个 bridge（2026-10-28，已解决）
+
+**症状**：窗口开出来了、页面也画了，但一直停在骨架屏（「正在读取…」），
+侧栏的链路陈述同样不动。15 秒后 `app.py` 的存活探针判死，降级到 tkinter。
+**Python 侧一句报错都没有**，日志里只有刷屏的：
+
+```
+[pywebview] Error while processing window.native.AccessibilityObject.Bounds.Empty.Empty.Empty...
+...: maximum recursion depth exceeded
+```
+
+**根因**：W3 为了把异步结果推回页面，给 Bridge 挂了个窗口句柄：
+
+```python
+self.window = win          # ← 这一个公开属性就够了
+```
+
+pywebview 的 `get_functions()`（`site-packages/webview/util.py`）会 `dir()` 一遍
+js_api 对象，对每个**公开的、非可调用的**属性递归展开。`Window` 对象展开下去
+就是 `native.AccessibilityObject.Bounds.Empty.Empty...` 无限递归，异常在注入
+阶段被吞掉，`window.pywebview.api` 根本没挂上——前端 `apiReady()` 等到超时，
+所有 bridge 调用永远 pending。
+
+**解法**：句柄只能放私有属性，用私有方法挂：
+
+```python
+def __init__(self, on_activity=None, window=None):
+    self._window = window          # 下划线开头，get_functions 跳过
+def _attach(self, window) -> None: # app.py 建完窗口再调
+    self._window = window
+```
+
+`tests/test_bridge.py::test_bridge_has_no_public_data_attributes` 守着这条：
+js_api 上**只许有方法**，不许有公开的数据属性。
+
+**教训**：`js_api` 的对象图会被框架遍历。任何挂上去的东西都必须是 JSON 安全的
+纯数据或方法，否则失败方式是「静默不工作」，不是报错。
+
+## 踩过的坑：`height: 100%` 在 auto 高度的祖先下静默失效（2026-10-28）
+
+通道页是「左列表 + 右表单」两栏，各自内部滚动，整页不滚。高度先写成
+`height: 100%`，默认窗口（1180×780）下看着完全正确——**换到 880×600 就塌了**：
+`.chan` 变成 1509px 高，两个栏都不滚，整页跟着滚。
+
+原因：`.chan` 的包含块是 `.col`，`.col` 的高度是 `auto`，百分比高度解析不出来，
+浏览器**静默**退化成 `auto`（不报错、不警告）。`calc(100vh - 顶栏 - 内边距)`
+不依赖任何祖先的高度解析，是本机唯一稳的写法。
+
+同一轮还发现根滚动容器会凭空多出 21px 滚动区（`de.scrollHeight` 492 vs
+`clientHeight` 471），右侧多一条全高滚动条，白吃 15px 宽度。`.shell` 的
+`height: 100vh` 会被向上取整到 1/64px，而真实视口是小数——改成 `height: 100%`
+并给 `html, body` 加 `overflow: hidden`（这个应用**永远不整体滚动**，
+滚动只发生在 `.content` 里）。
+
+**教训**：`vh` / 百分比高度 / `overflow` 三者一起用时，必须在**最小窗口**
+（880×600，不是默认的 1180×780）下再验一遍。默认尺寸下正确不算正确。
+
 ## 本机 CSS 视口是 973×621，不是 1180×780
 
 窗口按 `width=1180, height=780` 创建，但实测 `window.innerWidth = 973`、
@@ -311,8 +374,11 @@ grep -rnE ':\s*(#[0-9a-fA-F]{3,8}|rgba?\()' webui/assets/shell.css webui/index.h
 推论（调布局时会用到）：
 
 - 内容列 `max-width: 720` 在本机永远达不到上限（973 − 侧栏 240 − 两侧 32×2 = 669）
-- 「880×600 窗口」对应的 CSS 视口是 **733**，不是 880
+- 「880×600 窗口」对应的 CSS 视口是 **723×471**（实测 `innerWidth/innerHeight`），
+  不是 880×600——通道页的双栏在这一档会塌成 157px，必须换成横向条布局
 - 四张统计卡的断点因此定在 `max-width: 900px`（四列需要内容列 ≥ 676）
+- 通道页字段的单列/双列断点定在 `max-width: 820px`，两栏→横向条的断点
+  定在 `max-width: 760px`
 
 ## WebView2 的 devicePixelRatio 是 2.4，不是 2.0（2026-10-28 实测，不是 bug）
 

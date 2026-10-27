@@ -13,6 +13,8 @@
 from __future__ import annotations
 
 import json
+import threading
+import time
 from datetime import datetime
 
 import pytest
@@ -295,6 +297,319 @@ def test_read_only_methods_feed_the_liveness_probe(isolated_state):
     assert len(hits) == 3
 
 
+# ---------------------------------------------------------- 通道页：结构 / 状态
+
+
+def test_groups_cover_every_channel_exactly_once(isolated_state):
+    """分组必须把 10 个通道一个不漏地分掉，且不重复。
+
+    漏掉的通道在界面上永远点不到——而 `CHANNEL_META` 里还有它，
+    写配置的人会以为是自己填错了。
+    """
+    data = bridge.Bridge().channels_meta()["data"]
+    flat = [t for g in data["groups"] for t in g["types"]]
+    assert sorted(flat) == sorted(data["meta"])
+    assert len(flat) == len(set(flat)) == 10
+
+
+def test_meta_fields_are_objects_not_tuples(isolated_state):
+    """元组要转成对象：JSON 里没有元组，前端也不能按下标取。"""
+    data = bridge.Bridge().channels_meta()["data"]
+    for ctype, m in data["meta"].items():
+        assert m["label"] and m["short"], ctype
+        for f in m["fields"]:
+            assert set(f) == {"key", "label", "type", "default", "hint"}, ctype
+            assert f["type"] in ("text", "password", "bool", "int", "textarea")
+
+
+def test_meta_is_generated_from_channel_meta(isolated_state, monkeypatch):
+    """**验收第 2 条的机器版**：给 bark 加一个假字段，meta 里必须自动多一条。
+
+    这条证明表单是 schema 驱动的，不是把 10 套字段抄了 10 遍。
+    """
+    from wbn import channels as ch
+
+    extra = ("fake_field", "假字段", "text", "x", "验收用的临时字段")
+    monkeypatch.setitem(ch.CHANNEL_META["bark"], "fields",
+                        list(ch.CHANNEL_META["bark"]["fields"]) + [extra])
+
+    fields = bridge.Bridge().channels_meta()["data"]["meta"]["bark"]["fields"]
+    assert [f["key"] for f in fields][-1] == "fake_field"
+    assert fields[-1]["label"] == "假字段"
+
+
+def test_required_comes_from_channels(isolated_state):
+    from wbn import channels as ch
+
+    data = bridge.Bridge().channels_meta()["data"]
+    assert data["required"] == {k: list(v) for k, v in ch.REQUIRED.items()}
+
+
+def test_state_values_cover_exactly_the_schema_fields(isolated_state):
+    """values 的键必须和 schema 的字段一一对应。
+
+    多一个（比如混进 enabled）就会在前端被当成输入框渲染出来；
+    少一个则该字段永远是空的，用户填了保存也会丢。
+    """
+    meta = bridge.Bridge().channels_meta()["data"]["meta"]
+    for row in bridge.Bridge().channels_state()["data"]:
+        keys = [f["key"] for f in meta[row["type"]]["fields"]]
+        assert sorted(row["values"]) == sorted(keys), row["type"]
+
+
+def test_state_keeps_bool_and_int_shapes(isolated_state):
+    """bool 必须是真布尔，int 必须是字符串——两个都有具体后果。
+
+    `_send_smtp` 写的是 `if c.get("ssl", True)`：字符串 "false" 是真值，
+    传字符串会静默变成「永远开 SSL」。
+    而 port 在现有 config.json 里就是 "465"，跟着现状走，
+    免得存回去时 `git diff config.json` 冒出一堆无意义的引号增删。
+    """
+    rows = {r["type"]: r for r in bridge.Bridge().channels_state()["data"]}
+    assert rows["smtp"]["values"]["ssl"] is True
+    assert rows["smtp"]["values"]["port"] == "465"
+    assert rows["wxmp"]["values"]["wrap"] is True
+    assert rows["ntfy"]["values"]["priority"] == "3"
+
+
+def test_state_subtitle_matches_insight(isolated_state):
+    """副标题只许有一份判定逻辑，否则两版界面对同一份配置说两句话。"""
+    from wbn import insight
+
+    cfg = config.load()
+    for row in bridge.Bridge().channels_state()["data"]:
+        want = insight.channel_state(row["type"],
+                                     config.get_channel(cfg, row["type"]))
+        assert (row["subtitle"], row["level"], row["on"]) == want
+
+
+# ---------------------------------------------------------- 通道页：异步测试
+
+
+class FakeWindow:
+    """只记 evaluate_js 的脚本，不真跑。"""
+
+    def __init__(self) -> None:
+        self.scripts: list[str] = []
+        self.pushed = threading.Event()
+
+    def evaluate_js(self, script: str) -> None:
+        self.scripts.append(script)
+        self.pushed.set()
+
+
+def _payload(script: str) -> dict:
+    """从 `window.__wbnCb({...})` 里把那个 JSON 抠出来解析。
+
+    这一句本身就是断言：如果 payload 没转义好、把脚本拼断了，
+    `json.loads` 会直接抛——比「肉眼看着没问题」硬得多。
+    """
+    prefix = "window.__wbnCb("
+    assert script.startswith(prefix), script[:80]
+    assert script.endswith(")"), script[-40:]
+    return json.loads(script[len(prefix):-1])
+
+
+def test_channel_test_returns_before_network_finishes(isolated_state, monkeypatch):
+    """**8 秒超时期间主线程不能阻塞**——这条把它变成机器判据。
+
+    channel_test 必须在 HTTP 还没回来时就返回，否则整个窗口冻住，
+    Windows 会把标题栏改成「未响应」。
+    """
+    from wbn import insight
+
+    started = threading.Event()
+    release = threading.Event()
+
+    def slow(cfg, ctype):
+        started.set()
+        release.wait(5)
+        return True, "已发送"
+
+    monkeypatch.setattr(insight, "test_channel", slow)
+
+    win = FakeWindow()
+    t0 = time.monotonic()
+    res = bridge.Bridge(window=win).channel_test("bark", {}, 1)
+    elapsed = time.monotonic() - t0
+
+    assert res["ok"] is True and res["data"]["started"] is True
+    assert elapsed < 0.5, f"channel_test 阻塞了 {elapsed:.2f}s"
+    assert started.wait(2), "线程没起来"
+    assert win.scripts == [], "结果不该在 HTTP 回来之前就推"
+
+    release.set()
+    assert win.pushed.wait(3), "结果没推回来"
+
+
+def test_channel_test_pushes_ok_payload(isolated_state, monkeypatch):
+    from wbn import insight
+
+    monkeypatch.setattr(insight, "test_channel", lambda cfg, ctype: (True, "已发送"))
+    win = FakeWindow()
+    bridge.Bridge(window=win).channel_test("bark", {}, 42)
+
+    assert win.pushed.wait(3)
+    payload = _payload(win.scripts[0])
+    assert payload == {"id": 42, "ok": True, "data": {"msg": "已发送"}}
+
+
+def test_channel_test_escapes_hostile_remote_body(isolated_state, monkeypatch):
+    """**evaluate_js 的注入闸门。**
+
+    msg 是远端服务返回的 body，属于不可信文本。直接拼进 JS 字符串的话，
+    一个引号就能把脚本拼断——而 window.pywebview.api 就在同一个上下文里，
+    拼断之后能调 config_get() 读走全部通道密钥。
+    """
+    from wbn import insight
+
+    evil = 'pwn"});alert(1);//'
+    monkeypatch.setattr(insight, "test_channel", lambda cfg, ctype: (False, evil))
+
+    win = FakeWindow()
+    bridge.Bridge(window=win).channel_test("bark", {}, 9)
+    assert win.pushed.wait(3)
+
+    script = win.scripts[0]
+    payload = _payload(script)          # 拼断了这里就会抛
+    assert payload["data"]["msg"] == evil
+    assert script.endswith("})") or script.endswith(")"), script[-20:]
+
+
+def test_channel_test_escapes_line_separators(isolated_state, monkeypatch):
+    """U+2028 / U+2029 在 JSON 里允许裸写，但老 JS 引擎当行分隔符。"""
+    from wbn import insight
+
+    evil = "前\u2028中\u2029后"
+    monkeypatch.setattr(insight, "test_channel", lambda cfg, ctype: (False, evil))
+
+    win = FakeWindow()
+    bridge.Bridge(window=win).channel_test("bark", {}, 3)
+    assert win.pushed.wait(3)
+
+    script = win.scripts[0]
+    assert "\u2028" not in script and "\u2029" not in script
+    assert _payload(script)["data"]["msg"] == evil
+
+
+def test_channel_test_uses_form_values_not_disk(isolated_state, monkeypatch):
+    """测的是表单里当前的值，不是磁盘上那份。
+
+    用户改完还没保存就点测试，要试的是他眼前这一份。
+    """
+    from wbn import insight
+
+    seen = {}
+
+    def spy(cfg, ctype):
+        seen["key"] = config.get_channel(cfg, ctype).get("key")
+        return True, "ok"
+
+    monkeypatch.setattr(insight, "test_channel", spy)
+    bridge.Bridge(window=FakeWindow()).channel_test("bark", {"key": "改过的"}, 1)
+
+    for _ in range(50):
+        if seen:
+            break
+        time.sleep(0.05)
+    assert seen["key"] == "改过的"
+    assert config.get_channel(config.load(), "bark").get("key") != "改过的", \
+        "测试不许写盘"
+
+
+def test_channel_test_ignores_fields_outside_schema(isolated_state, monkeypatch):
+    """只认 schema 里有的字段，别的一概不写进配置。"""
+    from wbn import insight
+
+    seen = {}
+
+    def spy(cfg, ctype):
+        seen.update(config.get_channel(cfg, ctype))
+        return True, "ok"
+
+    monkeypatch.setattr(insight, "test_channel", spy)
+    bridge.Bridge(window=FakeWindow()).channel_test(
+        "bark", {"key": "k", "enabled": True, "随便什么": 1}, 1)
+
+    for _ in range(50):
+        if seen:
+            break
+        time.sleep(0.05)
+    assert seen["key"] == "k"
+    assert "随便什么" not in seen
+    # 表单传 enabled=True，磁盘上 bark 默认是 False —— 必须还是 False。
+    # 开关归「每通道独立开关」管，表单字段不许绕过去。
+    assert seen["enabled"] is False, "表单里的 enabled 不许绕过开关去改配置"
+
+
+def test_channel_test_rejects_unknown_channel(isolated_state):
+    res = bridge.Bridge(window=FakeWindow()).channel_test("nope", {}, 1)
+    assert res["ok"] is False
+    assert "未知通道" in res["error"]
+
+
+def test_channel_test_survives_exception_in_thread(isolated_state, monkeypatch):
+    """线程里的异常没人接，必须自己兜住再推回去，否则前端永远转圈。"""
+    from wbn import insight
+
+    def boom(cfg, ctype):
+        raise RuntimeError("网络炸了")
+
+    monkeypatch.setattr(insight, "test_channel", boom)
+    win = FakeWindow()
+    bridge.Bridge(window=win).channel_test("bark", {}, 5)
+
+    assert win.pushed.wait(3)
+    payload = _payload(win.scripts[0])
+    assert payload["ok"] is False
+    assert "网络炸了" in payload["data"]["msg"]
+
+
+def test_push_without_window_does_not_raise(isolated_state, monkeypatch):
+    """窗口已经关了（或者 pytest 里根本没窗口）时，推送静默失败就行。"""
+    from wbn import insight
+
+    monkeypatch.setattr(insight, "test_channel", lambda cfg, ctype: (True, "ok"))
+    res = bridge.Bridge().channel_test("bark", {}, 1)
+    assert res["ok"] is True
+    time.sleep(0.3)          # 让线程跑完，确认没有未捕获异常
+
+
+def test_fetch_openid_pushes_result(isolated_state, monkeypatch):
+    from wbn import insight
+
+    monkeypatch.setattr(insight, "fetch_openid", lambda f: (["o1", "o2"], ""))
+    win = FakeWindow()
+    bridge.Bridge(window=win).channel_fetch_openid(
+        {"appid": "a", "secret": "s", "template_id": "t"}, 11)
+
+    assert win.pushed.wait(3)
+    payload = _payload(win.scripts[0])
+    assert payload["id"] == 11
+    assert payload["ok"] is True
+    assert payload["data"]["ids"] == ["o1", "o2"]
+
+
+def test_fetch_openid_only_passes_appid_and_secret(isolated_state, monkeypatch):
+    from wbn import insight
+
+    seen = {}
+
+    def spy(fields):
+        seen.update(fields)
+        return [], "先填 appID 和 appsecret"
+
+    monkeypatch.setattr(insight, "fetch_openid", spy)
+    bridge.Bridge(window=FakeWindow()).channel_fetch_openid(
+        {"appid": "a", "secret": "s", "openid": "不该传"}, 12)
+
+    for _ in range(50):
+        if seen:
+            break
+        time.sleep(0.05)
+    assert set(seen) == {"appid", "secret"}
+
+
 # ---------------------------------------------------------- 接口面约束
 
 
@@ -313,7 +628,25 @@ def test_bridge_exposes_only_implemented_methods():
         "config_get", "config_save",
         # W2 状态页要的三个只读方法
         "stats_today", "chain_sentence", "channels_list",
+        # W3 通道页：结构 / 状态 / 两个异步动作
+        "channels_meta", "channels_state",
+        "channel_test", "channel_fetch_openid",
     }
+
+
+def test_bridge_has_no_public_data_attributes():
+    """js_api 上**只许有方法**，不许有公开的数据属性。
+
+    现场（2026-10-28，W3）：`self.window = win` 挂上去之后，pywebview 的
+    `get_functions()` 会 `dir()` 一遍再对每个公开非可调用属性递归展开，
+    于是开始遍历 `window.native.AccessibilityObject.Bounds.Empty.Empty...`，
+    无限递归 → API 注入失败 → 前端永远拿不到 `window.pywebview.api` →
+    页面停在骨架屏 → 存活探针判死降级 tkinter。Python 侧一句报错都没有。
+    """
+    b = bridge.Bridge(window=FakeWindow())
+    bad = [n for n in dir(b)
+           if not n.startswith("_") and not callable(getattr(b, n))]
+    assert bad == [], f"js_api 上不许有公开数据属性：{bad}"
 
 
 def test_bridge_does_not_import_webview():

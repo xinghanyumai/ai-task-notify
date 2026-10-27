@@ -135,6 +135,37 @@
     });
   }
 
+  /* ---- 异步回调（Python 侧主动推结果回来） --------------------------------
+     `wbn/bridge.py` 的 `_push()` 调 `window.__wbnCb({id, ok, data})`。
+     这个全局只能是**壳**提供的：它是传输层，不是某一页的业务。
+     页面用 `ctx.nextCb(handler)` 领一个 id 传给 bridge，结果回来时
+     handler(ok, data) 被调用一次，注册项随即删掉（不会泄漏）。 */
+
+  var cbSeq = 1;
+  var cbMap = {};
+
+  function nextCb(handler) {
+    var id = cbSeq++;
+    cbMap[id] = handler;
+    return id;
+  }
+
+  function dropCb(id) {
+    delete cbMap[id];
+  }
+
+  window.__wbnCb = function (payload) {
+    if (!payload || !payload.id) return;
+    var h = cbMap[payload.id];
+    if (!h) return;                 /* 已经超时放弃了，结果没人要 */
+    delete cbMap[payload.id];
+    try {
+      h(!!payload.ok, payload.data || {});
+    } catch (e) {
+      /* 页面回调自己炸了不许影响下一次推送 */
+    }
+  };
+
   /* ---- 主题 -------------------------------------------------------------- */
 
   var mql = null;
@@ -189,10 +220,11 @@
     sw.setAttribute("aria-checked", state.enabled ? "true" : "false");
   }
 
-  function showMsg(text) {
+  function showMsg(text, level) {
     var n = $("#topbar-msg");
     if (!n) return;
     n.textContent = text;
+    n.dataset.level = level === "ok" ? "ok" : "danger";
     n.hidden = false;
     clearTimeout(state.msgTimer);
     state.msgTimer = setTimeout(function () { n.hidden = true; }, 6000);
@@ -278,6 +310,10 @@
     if (h1) h1.textContent = title;
     document.title = title + " · AI 任务通知";
 
+    /* 给 CSS 一个「现在在哪一页」的钩子：通道页是双栏，要突破 .col 的
+       720px 限宽，其他页维持阅读宽度。 */
+    document.body.dataset.route = name;
+
     mount(name);
   }
 
@@ -355,7 +391,12 @@
     $: $,
     $$: $$,
     go: go,
-    refreshChain: refreshChain
+    refreshChain: refreshChain,
+    nextCb: nextCb,
+    dropCb: dropCb,
+    /* 顶栏那条临时提示。页面里要报「保存成功 / 还差什么」时用这个，
+       不要自己 alert()（§3.4 明确禁止） */
+    notify: showMsg
   };
 
   /* ---- 启动 -------------------------------------------------------------- */

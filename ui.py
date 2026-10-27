@@ -47,6 +47,7 @@ import tkinter as tk
 from wbn import anim, channels, config, events, insight, pipeline, store, theme
 from wbn import splash as splash_mod
 from wbn import widgets as W
+from wbn.channels import CHANNEL_GROUPS
 from wbn.theme import TS, S
 from wbn.tokens import DIM, MOTION, SP, STK
 
@@ -90,13 +91,8 @@ PLACEHOLDERS = [
     ("{kind}", "事件类型"), ("{session}", "会话 ID"),
 ]
 
-# 通道分组：自建 / 第三方 / 本地
-CHANNEL_GROUPS = [
-    ("自建推送", ["wxmp", "wecom_app"]),
-    ("第三方", ["bark", "ntfy", "wecom_bot", "dingtalk_bot",
-                "feishu_bot", "smtp", "webhook"]),
-    ("本机", ["log"]),
-]
+# 通道分组（自建 / 第三方 / 本地）已搬到 wbn/channels.py —— 它是通道元数据，
+# 不是布局。webview 版不该为了拿一份常量去 import 这个文件。
 
 # 触发条件的中文说明。放在这里而不是 events.py，因为这是界面文案。
 KIND_DESC = {

@@ -107,14 +107,14 @@ POST https://api.weixin.qq.com/cgi-bin/message/template/send?access_token=...
 
 ## 第四步：填进设置中心
 
-回到设置中心，选「微信测试号」，打开右上角开关，填 appID、appsecret、模板 ID。
+回到设置中心，选「微信测试号」，打开该通道的开关，填 appID、appsecret、模板 ID。
 
 openid 可以留空，程序会自动取第一个关注者，也可以点「自动获取 openid」。
 拿到 openid 之后存在 `state/token_cache.json` 里，ACL 已经收紧。
 
 ## 第五步：测试
 
-点右下角「测试此通道」。手机微信应该立刻弹出消息。
+点「测试此通道」。手机微信应该立刻弹出消息。
 
 ## 字段
 

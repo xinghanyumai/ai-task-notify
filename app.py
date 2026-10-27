@@ -171,16 +171,23 @@ def run_ui() -> int:
         os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--no-sandbox")
 
     alive = threading.Event()
+    api = Bridge(on_activity=alive.set)
     index = (ROOT / "webui" / "index.html").as_uri()   # 中文/空格会被 percent-encode
     win = webview.create_window(
         WIN_TITLE, index,
-        js_api=Bridge(on_activity=alive.set),
+        js_api=api,
         width=1180, height=780, min_size=(880, 600),
         background_color="#fafafa",
     )
     if win is None:
         fallback_to_tkinter()
         return 0
+
+    # 通道页的异步测试要把结果推回页面，需要窗口句柄。建窗口时还没有它，
+    # 所以建完再补一次——bridge 里不 import webview，保持纯 Python 可测。
+    # **必须走 `_attach()`**：挂成公开属性 `api.window` 会让 pywebview 的
+    # js_api 枚举递归展开 Window 对象，API 注入直接失败（详见 Bridge 类注释）。
+    api._attach(win)
 
     # 存活探针。`has_webview2()` 探到运行时、`create_window` 也没抛异常，窗口
     # 照样可能是**一块黑**：WebView2 初始化回调报成功，控制器随后失效，页面

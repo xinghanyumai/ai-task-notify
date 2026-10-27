@@ -18,11 +18,20 @@
    `.main` 比窗口高、`.content` 的 overflow 永远不触发，而 `.shell` 的
    `overflow: hidden` 把侧栏底部和列表末尾一起截掉——表现是「页面底部
    凭空少一块，且看不出是滚动还是丢了」。2026-10-28 实测踩过。 */
+/* 这个应用**永远不整体滚动**：滚动只发生在 `.content` 里（通道页再细分到两栏）。
+   给 html/body 设 hidden 是掐掉「根滚动容器」——实测它在 880×600 下会凭空多出
+   21px 的滚动区（`de.scrollHeight` 492 vs `clientHeight` 471），右侧就多一条
+   全高滚动条，看着像能滚，其实内容一像素都不缺。 */
+html, body { overflow: hidden; }
+
 .shell {
   display: grid;
   grid-template-columns: var(--sidebar-w) minmax(0, 1fr);
   grid-template-rows: minmax(0, 1fr);
-  height: 100vh;
+  /* 不用 100vh：100vh 会被向上取整到 1/64px，而真实视口高度是小数，
+     于是根滚动容器多出零点几像素的溢出，右侧凭空多一条全高滚动条
+     （白吃 15px 宽度，看起来像页面能滚其实一像素都滚不动）。 */
+  height: 100%;
   overflow: hidden;
 }
 
@@ -256,7 +265,7 @@
   transition: background var(--dur) var(--ease);
 }
 
-/* 开启态外面套一圈 --brand-ink：品牌绿 #00c29a 对白卡只有 2.29:1，
+/* 开启态外面套一圈 --brand-ink：品牌绿（`--brand`）对白卡只有 2.29:1，
    控件边界本身达不到 3:1。套一圈深绿（5.16:1）之后边界达标，
    品牌绿仍然是「活着」的信号，不用换色。暗色下 --brand-ink 就是 --brand，
    那一侧本来就 11.45:1，这一圈等于不可见，不影响。 */
@@ -282,7 +291,7 @@
 
 .switch[aria-checked="true"]::after { transform: translateX(16px); }
 
-/* 顶栏里的临时错误提示。不用 alert()（§3.4 明确禁止） */
+/* 顶栏里的临时提示。不用 alert()（§3.4 明确禁止） */
 .topbar-msg {
   max-width: 260px;
   font-size: var(--fs-aux);
@@ -292,6 +301,10 @@
   text-overflow: ellipsis;
   white-space: nowrap;
 }
+
+/* 成功提示也走这一条（保存成功、已自动启用…）。默认色是危险色，
+   因为它最初只报错；加了 level 之后两种都在这一个位置出现。 */
+.topbar-msg[data-level="ok"] { color: var(--ok); }
 
 /* ---- 内容区 -------------------------------------------------------------- */
 
@@ -315,6 +328,10 @@
   max-width: var(--col-w);
   margin: 0 auto;
 }
+
+/* 通道页是「列表 + 表单」双栏，720px 装不下（240 列表 + 表单只剩 456）。
+   这一页放开限宽，其余页维持阅读宽度。路由名由 shell.js 写到 body 上。 */
+body[data-route="channels"] .col { max-width: none; }
 
 /* 切页：200ms 淡入上移。位移只有 4px，多了会晃 */
 .page-enter { animation: pageIn var(--dur) var(--ease); }
@@ -587,6 +604,37 @@
   line-height: var(--lh-aux);
   color: var(--fg-muted);
   word-break: break-word;
+}
+
+/* ---- 工具类 -------------------------------------------------------------- */
+
+/* 给读屏的一句话，视觉上不占位。必填星号「*」对读屏是噪音，
+   所以星号 aria-hidden，另配一句「（必填）」。 */
+.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  margin: -1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  white-space: nowrap;
+  border: 0;
+}
+
+/* 转圈：只在「测试此通道」进行中出现，用来告诉用户请求已发出 */
+.spin {
+  width: 14px;
+  height: 14px;
+  flex: 0 0 auto;
+  border-radius: var(--r-pill);
+  border: 2px solid currentColor;
+  border-top-color: transparent;
+  animation: spin .8s linear infinite;
+}
+
+@keyframes spin {
+  to { transform: rotate(360deg); }
 }
 
 /* ---- 降级：减少动效 ------------------------------------------------------ */

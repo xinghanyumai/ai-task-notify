@@ -200,6 +200,18 @@ for _t, _ic in _CHANNEL_ICONS.items():
         CHANNEL_META[_t]["icon"] = _ic
 
 
+# 通道页的分组。放在这里而不是 ui.py：它是**通道元数据**，不是布局。
+# 留在 ui.py 里的话，webview 版要 import 那个 6000 行的 tkinter 文件才能拿到
+# 一份常量——而 W5 就会把 ui.py 删掉。分组顺序是「自建 → 第三方 → 本机」，
+# 越靠前越推荐。
+CHANNEL_GROUPS: list[tuple[str, list[str]]] = [
+    ("自建推送", ["wxmp", "wecom_app"]),
+    ("第三方", ["bark", "ntfy", "wecom_bot", "dingtalk_bot",
+                "feishu_bot", "smtp", "webhook"]),
+    ("本机", ["log"]),
+]
+
+
 # ---------------------------------------------------------------- 完整性判定
 # 「填齐了才算配好」的必填字段。openid 不在里面——它会自动从关注者列表拉取。
 REQUIRED: dict[str, tuple[str, ...]] = {
