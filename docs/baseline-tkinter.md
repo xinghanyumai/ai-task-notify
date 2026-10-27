@@ -51,6 +51,13 @@ perf.md：App(root) 建侧栏/顶栏/首屏   82 ms     （250% DPI，进程已�
 **要跨文档对照，只有一条路**：先对齐 DPI（在同一台机器、同一缩放比例下各测一次），
 再对齐起点终点。做不到就别比，只在本文件内部纵向比（W6 的新数字 vs 本文件）。
 
+> **补充（2026-10-28，W2 期间查到的）**：这台机器的 Windows「文本大小」是 **120%**
+> （`HKCU\Software\Microsoft\Accessibility\TextScaleFactor = 120`）。
+> **tkinter 不读这个设置**（Tk 只认 DPI，`theme.S.scale = 1.9988`），
+> 而 **WebView2 会把它乘进 `devicePixelRatio`**（2.0 × 1.2 = 2.4）。
+> 所以 W6 拿本文件的 tkinter 截图去和 web 版并排时，字号会差 20%——
+> 那不是回归。详见 `architecture.md` 的「devicePixelRatio 是 2.4」一节。
+
 > 顺带一个待查项：`perf.md` 写 250%，本文件实测 200%。可能是换了显示器或改了缩放，
 > 也可能是当时估的。**这不影响本文件的数字**（本文件是实测 `GetDpiForWindow`），
 > 但说明 `perf.md` 的环境描述不够硬，别把它当环境基准。

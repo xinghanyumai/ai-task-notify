@@ -254,6 +254,31 @@ README 里写清这一步，比签一个假证书有用。
 
 ---
 
+## D13 · 要不要随包 Inter 字体
+
+W2 把 `--font` 栈写成 `"Inter", "Segoe UI Variable Text", "Segoe UI", "Microsoft YaHei UI"`，
+但 `webui/assets/fonts/` 是空的——构建环境无外网，拿不到 Inter 的 woff2。
+
+| 选项 | 代价 | 效果 |
+|---|---|---|
+| 不随包，用系统栈 | 0 | Win11 走 Segoe UI Variable Text，Win10 走 Segoe UI。**字形与 Inter 不同，字宽略宽** |
+| 随包 Inter（100KB woff2 + OFL 许可文件） | 仓库多两个文件 | 三端字形一致，但要有人能联网下载一次并提交 |
+| 从 CDN 引 | 0 | **不可行**：W2 的 CSP `font-src 'self'` 会拦，离线也加载不了 |
+
+**裁定：不随包。** 理由：
+
+1. 单 exe、离线可用是硬约束，字体不该成为运行时依赖。
+2. 14px 正文下，Segoe UI Variable Text 与 Inter 的观感差异很小（W2 截图已验收）。
+3. 一旦随包，就得管许可文件、`--add-data`、`excludes`，为 100KB 增加三处维护点。
+
+`tokens.css` 末尾那段被注释掉的 `@font-face` **保留**，作为"以后想加怎么加"的说明。
+但**不许留着 `url()` 指向不存在的文件**（会在 Console 里留 `ERR_FILE_NOT_FOUND`，
+违反 W2 验收第 6 条）——W2 这点做对了。
+
+**要改的话只有一处**：把 woff2 放进 `webui/assets/fonts/`，放开注释，栈不用动。
+
+---
+
 ## 已裁定记录
 
 > 用户拍板后在这里追加，格式：`D1 = B（2026-10-28，理由：…）`

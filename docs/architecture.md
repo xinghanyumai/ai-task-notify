@@ -314,6 +314,35 @@ grep -rnE ':\s*(#[0-9a-fA-F]{3,8}|rgba?\()' webui/assets/shell.css webui/index.h
 - 「880×600 窗口」对应的 CSS 视口是 **733**，不是 880
 - 四张统计卡的断点因此定在 `max-width: 900px`（四列需要内容列 ≥ 676）
 
+## WebView2 的 devicePixelRatio 是 2.4，不是 2.0（2026-10-28 实测，不是 bug）
+
+W2 发现窗口按 1180×780 建出来，CSS 视口只有 973×621。查过，结论是**这台机器的
+Windows「文本大小」设成了 120%**，WebView2 会把它乘进 DPR：
+
+| 观测 | 值 | 说明 |
+|---|---|---|
+| 帧缓冲分辨率 | 3120 × 2080 | `EnumDisplaySettings` |
+| Windows 逻辑屏幕 | 1560 × 1040 | `GetSystemMetrics(SM_CXSCREEN)` |
+| DPI 缩放 | **2.0** | 3120 / 1560 |
+| `HKCU\Software\Microsoft\Accessibility\TextScaleFactor` | **120** | 设置 → 辅助功能 → 文本大小 |
+| WebView2 `devicePixelRatio` | **2.4** | = 2.0 × 1.2 |
+| WebView2 `screen.width` | 1300 | = 1560 / 1.2 |
+
+**不是 DPI 感知的问题。** 实测过：不设感知、设 `SetProcessDpiAwareness(2)` 两种跑法，
+`dpr` / `innerWidth` 四个数字**完全相同**（2.4 / 973 / 621 / 192）。所以别去改
+`enable_dpi_awareness()` 或加 `permonitorv2` 清单——那条路走不通，改了也不会变。
+
+**为什么会这样**：`create_window(width=1180)` 的 1180 是逻辑像素，pywebview 按真实
+DPI（2.0）算出 2338 物理像素的窗口；WebView2 再按 2.4 把它折回 CSS 像素，得到 973。
+两个比例不一致，于是**页面比设计值大 20%，视口比设计值窄 21%**。
+
+**要不要"修"**：不修。120% 文本大小是用户自己设的辅助功能选项，尊重它是对的。
+要修的是我们的**测量口径**：
+
+- 验收一律用 **CSS 视口宽度**，不用窗口尺寸。本机「880×600 窗口」= 733 CSS 宽，
+  换一台 `TextScaleFactor=100` 的机器就是 880。**两个是不同的测试。**
+- 任何布局断点、截图对照，报告里必须同时写 `devicePixelRatio` 和 `innerWidth`。
+
 ## 运行环境
 
 | 项 | 要求 | 说明 |
@@ -323,6 +352,7 @@ grep -rnE ':\s*(#[0-9a-fA-F]{3,8}|rgba?\()' webui/assets/shell.css webui/index.h
 | 第三方包 | `pystray`、`Pillow` | 只有托盘需要，缺了自动降级 |
 | 网络 | 能访问所选推送服务 | 微信测试号 / 企业微信 / Bark / ntfy 国内直连即可 |
 | 权限 | 普通用户 | 不写注册表、不装服务 |
+| 文本缩放 | 任意 | **会被乘进 `devicePixelRatio`**，见上一节。100% 与 120% 下 CSS 视口差 20% |
 
 ## 测试与 CI
 
