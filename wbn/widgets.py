@@ -458,19 +458,25 @@ class Button(tk.Canvas):
         command: Callable | None = None,
         variant: str = "secondary",
         icon: str | None = None,
-        height: int = DIM.BTN_H,
+        height: int | None = None,
         min_width: int = 0,
         font_size: int = theme.TS["small"],
         bold: bool = False,
         bg: str | None = None,
-        pad_x: int = 16,
+        pad_x: int | None = None,
     ):
+        # 尺寸类参数（height / min_width / pad_x）一律是**设备像素**，
+        # 因为调用方传进来的就是 DIM / SP 令牌，它们内部已经乘过 DPI 比例。
+        # 早先写成 `height: int = DIM.BTN_H` 是错的：默认值在 import 时求值，
+        # 那时 scale 还是 1.0，之后 S() 又会乘一次——100% 缩放下看不出来，
+        # 200% 缩放下按钮高变成 72 逻辑像素，比设计值大一倍。
+        # 现在统一成 None → 运行时取 DIM.*（已是设备像素），不再套 S()。
         self.pal = pal
         self.text = text
         self.variant = variant
         self.icon = icon
         self.command = command
-        self.h = S(height)
+        self.h = height if height is not None else DIM.BTN_H
         self.font_size = font_size
         self.bold = bold
         self._enabled = True
@@ -482,13 +488,13 @@ class Button(tk.Canvas):
         self._spin = 0
         self._spin_job = None
         self._bg = bg or master.cget("bg")
-        self._pad_x = S(pad_x)
+        self._pad_x = pad_x if pad_x is not None else SP.lg
 
         f = theme.font(master, font_size, "bold" if bold else "normal")
         tw = measure(master, f, text)
         iw = DIM.ICON if icon else 0
         gap = SP.sm if icon and text else 0
-        self.w = max(S(min_width), int(tw) + self._pad_x * 2 + iw + gap)
+        self.w = max(min_width, int(tw) + self._pad_x * 2 + iw + gap)
 
         super().__init__(master, width=self.w, height=self.h, bg=self._bg,
                          highlightthickness=0, bd=0, cursor="hand2")
@@ -563,7 +569,7 @@ class Button(tk.Canvas):
         # 高度必须 ≤ BTN_H(36)：这是 P1 1.4 给按钮渐变的配额上限。
         grad = (self.variant == "primary" and self._enabled
                 and not self._loading and self._hv > 0.02
-                and h <= S(DIM.BTN_H))
+                and h <= DIM.BTN_H)
         if grad:
             c1 = theme.mix(p.ink, p.ink_top, self._hv)
             c2 = theme.mix(p.ink, p.ink_bottom, self._hv)
@@ -742,8 +748,8 @@ class Switch(tk.Canvas):
         self.value = bool(value)
         self.command = command
         self._bg = bg or master.cget("bg")
-        self.w = S(width if width is not None else DIM.SWITCH_W)
-        self.h = S(height if height is not None else DIM.SWITCH_H)
+        self.w = width if width is not None else DIM.SWITCH_W
+        self.h = height if height is not None else DIM.SWITCH_H
         self._pos = 1.0 if self.value else 0.0
         super().__init__(master, width=self.w, height=self.h + S(4), bg=self._bg,
                          highlightthickness=0, bd=0, cursor="hand2")
@@ -929,7 +935,7 @@ class NavItem(tk.Canvas):
         self._hover = False
         self._hv = 0.0
         self.badge = badge
-        self.h = S(height if height is not None else DIM.NAV_ITEM_H)
+        self.h = height if height is not None else DIM.NAV_ITEM_H
         super().__init__(master, height=self.h, bg=self._bg,
                          highlightthickness=0, bd=0, cursor="hand2")
         self._draw()
@@ -1021,7 +1027,7 @@ class Segmented(tk.Canvas):
         self.value = value
         self.command = command
         self._bg = bg or master.cget("bg")
-        self.h = S(height if height is not None else DIM.SEG_H)
+        self.h = height if height is not None else DIM.SEG_H
         self.font_size = (font_size if font_size is not None
                           else theme.TS["small"])
         f = theme.font(master, self.font_size)
@@ -1158,7 +1164,7 @@ class Field(tk.Frame):
         self._focused = False
         self._focus_t = 0.0
         self._error = ""
-        self.h = S(height if height is not None else DIM.FIELD_H)
+        self.h = height if height is not None else DIM.FIELD_H
 
         super().__init__(master, bg=self._bg)
         self.cv = tk.Canvas(self, bg=self._bg, highlightthickness=0, bd=0,
@@ -1570,7 +1576,7 @@ class Paragraph(tk.Label):
                  line: float | None = None, spacing: int | None = None,
                  mono: bool = False):
         self.pal = pal
-        self._wrap = S(wrap)
+        self._wrap = wrap
         super().__init__(master, text=text, bg=bg, fg=fg, anchor="w",
                          justify="left", wraplength=self._wrap,
                          font=theme.font(master, size if size is not None
@@ -1650,10 +1656,10 @@ class Group(tk.Frame):
             # 需要和普通行区分开的短说明上。
             self.body.configure(bg=pal.bg_subtle)
             self.body.pack(fill="both", expand=True,
-                           padx=S(DIM.CARD_PAD), pady=S(DIM.CARD_PAD))
+                           padx=DIM.CARD_PAD, pady=DIM.CARD_PAD)
         else:
             self.body.pack(fill="both", expand=True,
-                           padx=S(pad) if pad else 0,
+                           padx=pad if pad else 0,
                            pady=(0, SP.lg))
 
         self._rule = None
@@ -1789,7 +1795,7 @@ class ListRow(tk.Canvas):
         self.dot_color = dot
         # icon_on：徽章是否点亮（通道已启用）。None 表示跟随 active。
         self.icon_on = bool(active) if icon_on is None else bool(icon_on)
-        self.h = S(height if height is not None else DIM.NAV_ITEM_H)
+        self.h = height if height is not None else DIM.NAV_ITEM_H
         super().__init__(master, height=self.h, bg=self._bg,
                          highlightthickness=0, bd=0,
                          cursor="hand2" if command else "arrow")
@@ -1971,8 +1977,8 @@ class Step(tk.Frame):
                  font=theme.font(self, theme.TS["body"], "bold")).pack(fill="x")
         if body:
             Paragraph(self, p, body, self._bg, p.text_secondary,
-                      size=theme.TS["small"], wrap=620).pack(fill="x",
-                                                             pady=(SP.xs, 0))
+                      size=theme.TS["small"], wrap=S(620)).pack(
+            fill="x", pady=(SP.xs, 0))
 
 
 # ---------------------------------------------------------------- 折叠
@@ -2012,7 +2018,7 @@ class Collapsible(tk.Frame):
 
         self.body = tk.Frame(self, bg=self._bg)
         self.para = Paragraph(self.body, pal, body, self._bg, pal.text_secondary,
-                              size=theme.TS["small"], wrap=620)
+                              size=theme.TS["small"], wrap=S(620))
         # 正文缩进 = 箭头宽度 + 箭头右侧间距，跟标题文字左对齐
         self.para.pack(fill="x", padx=(S(self._chev_w) + SP.sm, 0),
                        pady=(SP.xs, 0))
@@ -2132,8 +2138,8 @@ class Toast(tk.Frame):
     def __init__(self, master, pal: theme.Palette):
         self.pal = pal
         super().__init__(master, bg=master.cget("bg"))
-        self._cw = S(DIM.TOAST_W)
-        self._ch = S(DIM.TOAST_H)
+        self._cw = DIM.TOAST_W
+        self._ch = DIM.TOAST_H
         self.cv = tk.Canvas(self, bg=master.cget("bg"), highlightthickness=0,
                             bd=0, width=self._cw, height=self._ch)
         self.cv.pack()
@@ -2170,7 +2176,7 @@ class Toast(tk.Frame):
     def _fit(self) -> None:
         f = theme.font(self, theme.TS["small"])
         self._lines = self._wrap(self._text, f)
-        self._ch = max(S(DIM.TOAST_H), S(18) + S(20) * len(self._lines))
+        self._ch = max(DIM.TOAST_H, S(18) + S(20) * len(self._lines))
         try:
             self.cv.configure(width=self._cw, height=self._ch)
         except tk.TclError:
@@ -2365,9 +2371,13 @@ class Timeline(tk.Frame):
                                width=STK.rule)
             cv.create_oval(lx - S(3), y - S(3), lx + S(3), y + S(3),
                            fill=color, outline=color)
-            cv.create_text(lx + S(14), y, anchor="w", text=r.get("time", ""),
+            t_txt = r.get("time", "")
+            cv.create_text(lx + S(14), y, anchor="w", text=t_txt,
                            fill=p.text_tertiary, font=f_time)
-            tx = lx + S(62)
+            # 时间列宽必须实测：写死 62px 在 9pt 等宽下刚好装不下
+            # 「12:49:00」八个字符，最后一秒会被后一列压住（截图里看得到
+            # 「12:49:0✅」）。等宽字体的宽度只跟字号有关，实测一次就够。
+            tx = lx + S(14) + measure(cv, f_time, t_txt) + SP.md
             chan = r.get("channel") or ""
             if chan:
                 cv.create_text(tx, y, anchor="w", text=chan, fill=p.text_secondary,
@@ -2410,15 +2420,15 @@ class EmptyState(tk.Frame):
         box.create_oval(S(1), S(1), d - S(1), d - S(1),
                         fill=pal.bg_subtle, outline=pal.border,
                         width=STK.control)
-        inset = (d - S(DIM.ICON_LG * 2)) / 2
-        draw_icon(box, icon, inset, inset, S(DIM.ICON_LG * 2),
+        inset = (d - DIM.ICON_LG * 2) / 2
+        draw_icon(box, icon, inset, inset, DIM.ICON_LG * 2,
                   pal.text_tertiary, STK.icon_thin)
 
         tk.Label(self, text=title, bg=self._bg, fg=pal.text,
                  font=theme.font(self, theme.TS["section"], "bold")).pack()
         if desc:
             Paragraph(self, pal, desc, self._bg, pal.text_tertiary,
-                      size=theme.TS["small"], wrap=380).pack(pady=(SP.xs, 0))
+                      size=theme.TS["small"], wrap=S(380)).pack(pady=(SP.xs, 0))
         if action:
             text, cb = action
             Button(self, text, pal, command=cb, variant="secondary",

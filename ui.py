@@ -1,36 +1,39 @@
 """设置中心。
 
-设计说明
+设计说明（P1 · v2）
+------------------
+v1 的实质是「换了颜色值 + 立了令牌体系」，但组件形态和排版一行没动，
+所以用户看到的东西没变多少。v2 把三块一起换：配色、组件、排版。
+
+四条基本判断
+------------
+
+1. **去卡片化。** v1 每个区块套一张描边卡片，卡片里还套卡片，一屏下来
+   边框比内容还多。**当所有东西都有边框时，边框就不再区分任何东西。**
+   v2 全站卡片数量 = 0（启动层除外）：分组靠「标题 + 留白 + 底部 1px
+   分隔线」组织，组间距 24px 远大于组内行距 0，人眼自然就切开了。
+
+2. **顶栏只有页面名。** v1 顶栏是「标题 + 描述 + 一条分割线」，再加上每页
+   自己的页头，一屏出现两次页面名。v2 把页面名收进顶栏（17px 加粗），
+   删掉页头，顶栏内一条线都不画。右侧只放全局动作（主题、总开关）。
+   v1 那句「任务完成时，经微信测试号，送到你手机」的链路陈述句移到侧栏
+   底部——它回答的是「这条链路通不通」，本来就属于侧栏的语义。
+
+3. **正文列定宽 660 居中。** 窗口拉到 1360 之后如果正文跟着铺满，一行字
+   横跨 1100px，眼睛要在两端来回跳。一行中文超过 34 个字就读不下去，
+   660 约 33 字。窗口变宽只影响两侧留白，不影响行宽。
+
+4. **切页是整页 8px 上移就位，不是逐张卡片错峰。** v1 每张卡片依次从下方
+   10px 升到位、间隔 24ms，五张卡片光是等动画就要 96ms，而用户切页是为了
+   看内容，不是为了看动画。v2 整页一次性上移 8px，160ms `ease_out_expo`。
+
+页面缓存
 --------
-这一版是对上一版的整体重做，不是微调。上一版的视觉语言直接沿用宿主
-（品牌绿铺满按钮和选中态、去卡片化、左侧一根「竖脊」串起五个节点），
-读起来像一个消费级 App 的设置页：到处是彩色，反而没有重点；一屏没有
-边界的长表单，扫读成本高；所有动效统一 180ms 三次缓出，中段速度不够，
-看起来像「被推到位」。
-
-这一版换了四条基本判断：
-
-1. **中性色画布 + 墨色主操作 + 品牌绿作信号色。**
-   主按钮是墨色（近黑 / 深色下近白），品牌绿只出现在「系统状态」上：
-   开关打开、连接正常、发送成功。彩色实心按钮是消费级最强的信号，
-   墨色按钮 + 克制的彩色状态点读起来才是专业工具。
-
-2. **内容重新装进卡片。**
-   卡片边界靠 1px 描边，不靠投影和底色差。每张卡片是一个语义分组，
-   卡片内的设置行共用「标题 / 说明 / 控件」三栏基线，行与行之间一条
-   细线。参差的行是廉价感的主要来源。
-
-3. **每页有页头。**
-   上一版刻意不做页面标题，靠左侧高亮表达「你在哪」。但导航只有文字，
-   页面滚起来之后就没有参照物了。这一版每页开头是「标题 + 一句说明」，
-   顶部栏则保留那句关于当前配置的陈述——两者分工不同：
-   页头回答「这是什么」，顶栏回答「我现在到底会不会收到通知」。
-
-4. **切页不重建，进场错开。**
-   上一版每次切页销毁整页再重建（一页 105~110 个控件、约 457 次 Tcl 调用），
-   实测 117~153ms，超过 100ms 的「即时」阈值。这一版把每个页面建一次
-   留着，切页只是 pack_forget + pack，进场时卡片依次从下方 10px 升到位，
-   用 ease_out_expo（前 100ms 走完八成位移），而不是统一次缓出。
+每页只建一次，切页就是 `pack_forget` + `pack`，实测 2–4ms。
+缓存最容易坏的地方是「失效判断」：v1 的 `_rebuild()` 销毁了全部控件却
+没清 `_pages`，字典里留着已销毁的 frame，切主题之后 `_show_page` 永远
+提前返回，内容区一片空白（D1）。v2 的判断带**存活检查**，就算有人以后
+又忘了清字典，也不会再出现空白页。
 """
 
 from __future__ import annotations
@@ -54,13 +57,13 @@ from wbn.tokens import DIM, MOTION, SP, STK
 APP_TITLE = "AI 任务通知"
 APP_VER = "个人版 v1.2"
 
-# (key, 导航名, 图标, 顶栏说明, 是否与上一项断开)
+# (key, 导航名, 图标, 是否与上一项断开)
 PAGES = [
-    ("channels", "推送通道", "bell", "选择把消息送到哪里", False),
-    ("triggers", "触发条件", "bolt", "决定什么情况下才打扰你", False),
-    ("template", "消息模板", "doc", "自定义标题与正文", False),
-    ("status", "运行状态", "chart", "发送记录与排查", False),
-    ("guide", "使用教程", "book", "从零到收到第一条通知", True),
+    ("channels", "推送通道", "bell", False),
+    ("triggers", "触发条件", "bolt", False),
+    ("template", "消息模板", "doc", False),
+    ("status", "运行状态", "chart", False),
+    ("guide", "使用教程", "book", True),
 ]
 
 THEME_OPTIONS = [("auto", "跟随"), ("light", "浅色"), ("dark", "深色")]
@@ -202,12 +205,15 @@ class App:
         self.page_sc = None
         self.nav_items: dict = {}
         self.content = None
+        self.page_title_lbl = None
         self.chain_dot = None
         self.chain_lbl = None
+        self._installed = False
         self.master_lbl = None
         self.master_switch = None
         self.dirty_dot = None
         self.dirty_lbl = None
+        self.reset_btn = None
 
         # 网络动作的按钮引用：加载态要落在「刚被点的那个按钮」上
         self.ch_test_btn = None
@@ -333,10 +339,9 @@ class App:
         self.main.pack(side="left", fill="both", expand=True)
         self._build_topbar()
 
-        # 内容区：每页建一次留着，切页只换 pack，不重建（见模块说明第 4 条）
+        # 内容区：每页建一次留着，切页只换 pack，不重建
         self.content = tk.Frame(self.main, bg=p.bg_app)
         self.content.pack(fill="both", expand=True)
-        self.content.bind("<Configure>", self._on_content_conf)
 
         self._build_footer()
         self.toast = W.Toast(self.root, p)
@@ -345,6 +350,12 @@ class App:
         self.root.after(120, self._apply_titlebar)
 
     def _build_sidebar(self) -> None:
+        """侧栏 236px：顶部品牌、中部导航、底部链路状态。
+
+        导航项**不再有「设置」分组标签**。一个只有五个页面的设置工具，
+        在导航上方写「设置」等于在标题栏写「窗口」——零信息，还占掉 26px
+        和一次视觉停顿。去掉之后导航直接从品牌区下面开始，视线起点更清楚。
+        """
         p = self.pal
         side = tk.Frame(self.root, bg=p.sidebar, width=DIM.SIDEBAR_W)
         side.pack(side="left", fill="y")
@@ -371,19 +382,10 @@ class App:
                  font=theme.font(self.root, TS["small"])).pack(
             anchor="w", pady=(SP.xxs, 0))
 
-        # -- 导航：分组标签 + 项目列表
+        # -- 导航
         nav = tk.Frame(side, bg=p.sidebar)
         nav.pack(fill="x", padx=SP.sm)
-        # 分组标签固定占 NAV_GROUP_H 高、文字贴底：字号或字体一换，
-        # 下面第一项的起始位置不会跟着漂。
-        grp = tk.Frame(nav, bg=p.sidebar, height=S(DIM.NAV_GROUP_H))
-        grp.pack(fill="x", padx=SP.sm, pady=(0, SP.xs))
-        grp.pack_propagate(False)
-        tk.Label(grp, text="设置", bg=p.sidebar, fg=p.text_tertiary, anchor="w",
-                 font=theme.font(self.root, TS["small"], "bold")).pack(
-            side="bottom", fill="x")
-
-        for key, label, icon, _desc, gap in PAGES:
+        for key, label, icon, gap in PAGES:
             if gap:
                 tk.Frame(nav, bg=p.sidebar, height=SP.sm).pack(fill="x")
                 tk.Frame(nav, bg=p.border, height=STK.rule).pack(
@@ -393,49 +395,57 @@ class App:
             item.pack(fill="x", pady=SP.xxs)
             self.nav_items[key] = item
 
-        # -- 底部：接入状态
+        # -- 底部：接入状态 + 链路陈述
+        #
+        # 链路陈述句从顶栏搬到这里（P1 4.2 顶栏只留页面名）。它回答的是
+        # 「这条链路现在通不通」，和「已接入宿主」是同一个问题的两半，
+        # 放在一起才读得通。用 Paragraph 折行而不是 elide：侧栏只有 204px，
+        # 省略号会把这句话裁到只剩主谓宾，信息就没了。
         foot = tk.Frame(side, bg=p.sidebar)
         foot.pack(side="bottom", fill="x", padx=SP.lg, pady=(0, SP.lg))
         tk.Frame(foot, bg=p.border, height=STK.rule).pack(fill="x", pady=(0, SP.md))
 
         installed = self._hooks_installed()
+        self._installed = installed
         state = tk.Frame(foot, bg=p.sidebar)
         state.pack(fill="x")
-        dot = tk.Canvas(state, width=DIM.DOT_W, height=DIM.DOT_H, bg=p.sidebar,
-                        highlightthickness=0, bd=0)
-        dot.pack(side="left")
-        color = p.success if installed else p.warning
-        dot.create_oval(S(1), S(5), S(7), S(11), fill=color, outline=color)
+        self.chain_dot = tk.Canvas(state, width=DIM.DOT_W, height=DIM.DOT_H,
+                                   bg=p.sidebar, highlightthickness=0, bd=0)
+        self.chain_dot.pack(side="left")
         tk.Label(state, text="已接入宿主" if installed else "未接入宿主",
                  bg=p.sidebar, fg=p.text_secondary,
                  font=theme.font(self.root, TS["small"])).pack(
             side="left", padx=(SP.xs, 0))
 
-        tip = ("任务结束时自动推送" if installed
-               else "运行 install.py 完成接入")
-        tk.Label(foot, text=tip, bg=p.sidebar, fg=p.text_tertiary,
-                 font=theme.font(self.root, TS["small"])).pack(
-            anchor="w", pady=(SP.xs, 0))
+        self.chain_lbl = W.Paragraph(foot, p, "", p.sidebar, p.text_tertiary,
+                                     size=TS["small"],
+                                     wrap=DIM.SIDEBAR_W - SP.xl * 2)
+        self.chain_lbl.pack(fill="x", pady=(SP.xs, 0))
+
+        if not installed:
+            tk.Label(foot, text="运行 install.py 完成接入", bg=p.sidebar,
+                     fg=p.text_tertiary,
+                     font=theme.font(self.root, TS["small"])).pack(
+                anchor="w", pady=(SP.xxs, 0))
+
+        self._paint_chain()
 
     def _build_topbar(self) -> None:
-        """顶栏 = 一句关于当前配置的陈述句 + 全局开关。
+        """顶栏 58px：左侧页面名，右侧全局动作。**一条线都不画。**
 
-        用户在任何页面都想知道「我现在到底会不会收到通知」，所以这一行
-        放全局状态；页面自身的身份由左侧高亮和页头表达。
+        v1 这里是「标题 + 一句链路描述 + 右侧主题/开关，中间还夹一条竖分隔线」，
+        加上每页自己的页头，一屏出现两次页面名、三种分割方式。
+        v2 只留一个页面名（17px 加粗，全站最大字号），右侧动作靠间距分组，
+        不靠竖线——间距本身就是分组，多一条线只是多一条噪声。
         """
         p = self.pal
         bar = tk.Frame(self.main, bg=p.bg_app, height=DIM.TOPBAR_H)
         bar.pack(fill="x")
         bar.pack_propagate(False)
 
+        # 右侧：主题分段 + 总开关。顺序是「先全局设置，再总闸」。
         right = tk.Frame(bar, bg=p.bg_app)
         right.pack(side="right", padx=(0, SP.xl))
-        W.Segmented(right, p, THEME_OPTIONS, self.theme_mode,
-                    command=self._switch_theme, bg=p.bg_app,
-                    height=DIM.SEG_H, font_size=TS["small"]).pack(side="left")
-
-        tk.Frame(right, bg=p.border, width=STK.rule,
-                 height=DIM.DIVIDER_V_H).pack(side="left", padx=SP.lg)
         self.master_switch = W.Switch(right, p, bool(self.cfg.get("enabled", True)),
                                       command=self._on_master, bg=p.bg_app)
         self.master_switch.pack(side="right")
@@ -443,22 +453,28 @@ class App:
                                    font=theme.font(self.root, TS["small"]))
         self.master_lbl.pack(side="right", padx=(0, SP.sm))
 
-        # 左侧必须 expand，宽度由 packer 决定；否则宽度会跟着文字长度变，
-        # 省略计算就会陷入「越省越窄、越窄越省」的死循环。
+        W.Segmented(right, p, THEME_OPTIONS, self.theme_mode,
+                    command=self._switch_theme, bg=p.bg_app,
+                    height=DIM.SEG_H, font_size=TS["small"]).pack(
+            side="right", padx=(0, SP.lg))
+
+        # 左侧：页面名。宽度交给 packer，文字用 Label 的自然宽度，
+        # 不需要省略——五个页面名最长四个字，236px 侧栏之外的空间永远够。
         left = tk.Frame(bar, bg=p.bg_app)
-        left.pack(side="left", fill="both", expand=True, padx=(SP.xl, SP.md))
-        self.chain_dot = tk.Canvas(left, width=DIM.DOT_W, height=DIM.DOT_H,
-                                   bg=p.bg_app,
-                                   highlightthickness=0, bd=0)
-        self.chain_dot.pack(side="left")
-        self.chain_lbl = tk.Label(left, text="", bg=p.bg_app, fg=p.text,
-                                  font=theme.font(self.root, TS["body"]),
-                                  anchor="w", justify="left")
-        self.chain_lbl.pack(side="left", padx=(SP.xs, 0))
-        left.bind("<Configure>", self._fit_chain)
+        left.pack(side="left", fill="both", expand=True, padx=(SP.xl, 0))
+        self.page_title_lbl = tk.Label(
+            left, text="", bg=p.bg_app, fg=p.text, anchor="w",
+            font=theme.font(self.root, TS["title"], "bold"))
+        self.page_title_lbl.pack(side="left")
 
         self._paint_master()
-        self._paint_chain()
+
+    def _paint_page_title(self) -> None:
+        if self.page_title_lbl is None or not self.page_title_lbl.winfo_exists():
+            return
+        name = next((n for k, n, _i, _g in PAGES if k == self.current_page), "")
+        if str(self.page_title_lbl.cget("text")) != name:
+            self.page_title_lbl.configure(text=name)
 
     def _chain_sentence(self) -> tuple[str, str]:
         """把当前配置翻译成一句人话：(陈述句, 状态色)。"""
@@ -497,37 +513,24 @@ class App:
         return f"{when}，经{names}，送到你手机", p.success
 
     def _paint_chain(self) -> None:
+        """刷新侧栏底部的链路陈述。
+
+        状态点表达「宿主接没接上」（静态事实），文字颜色表达「这条链路
+        现在通不通」（随配置变化）。两者分开，因为它们会不一致：
+        宿主接了但一条通道都没开，就是「接了但发不出去」。
+        """
         if self.chain_lbl is None or not self.chain_lbl.winfo_exists():
             return
         text, color = self._chain_sentence()
         self._chain_text = text
-        self.chain_dot.delete("all")
-        self.chain_dot.create_oval(S(1), S(5), S(7), S(11),
-                                   fill=color, outline=color)
-        self._fit_chain()
-
-    def _fit_chain(self, _e=None) -> None:
-        """按实测可用宽度省略链路陈述句。
-
-        不能用「超过 N 个字就截断」这种固定阈值：字体、DPI、窗口宽度
-        三者任何一个变了，阈值就不准。
-        """
-        if self.chain_lbl is None or not self.chain_lbl.winfo_exists():
-            return
-        text = getattr(self, "_chain_text", "")
-        if not text:
-            return
-        try:
-            avail = (self.chain_lbl.master.winfo_width()
-                     - self.chain_dot.winfo_width() - S(6))
-        except tk.TclError:
-            return
-        if avail <= 20:
-            return
-        f = theme.font(self.root, TS["body"])
-        shown = W.elide(self.chain_lbl, f, text, avail)
-        if shown != self.chain_lbl.cget("text"):
-            self.chain_lbl.configure(text=shown)
+        if self.chain_dot is not None and self.chain_dot.winfo_exists():
+            dotc = self.pal.success if self._installed else self.pal.warning
+            self.chain_dot.delete("all")
+            self.chain_dot.create_oval(S(1), S(5), S(7), S(11),
+                                       fill=dotc, outline=dotc)
+        if str(self.chain_lbl.cget("text")) != text:
+            self.chain_lbl.configure(text=text)
+        self.chain_lbl.set_fg(color)
 
     def _paint_master(self) -> None:
         if self.master_lbl is None:
@@ -538,6 +541,14 @@ class App:
             fg=self.pal.text_secondary if on else self.pal.text_tertiary)
 
     def _build_footer(self) -> None:
+        """底栏 64px：左侧保存状态，右侧 [发送测试] [重置] [保存配置]。
+
+        三个按钮都是「对整份配置生效」的动作，所以放在同一个位置、
+        用同一套优先级：主操作（保存）墨色实心且在最右，重置是描边的
+        次操作，发送测试也是描边——它虽然常用，但不改变配置。
+        日志 / 配置目录是轻量的跳转，放在左边贴着保存状态，因为它们
+        和「这份配置存到哪了」是同一件事。
+        """
         p = self.pal
         foot = tk.Frame(self.main, bg=p.bg_card, height=DIM.FOOTER_H)
         foot.pack(fill="x", side="bottom")
@@ -547,6 +558,10 @@ class App:
         self.save_btn = W.Button(foot, "保存配置", p, command=self.on_save,
                                  variant="primary", min_width=DIM.BTN_MIN_W)
         self.save_btn.pack(side="right", padx=(SP.sm, SP.xl), pady=SP.md)
+        self.reset_btn = W.Button(foot, "重置", p, command=self.on_reset,
+                                  variant="secondary",
+                                  min_width=DIM.BTN_MIN_W_SM)
+        self.reset_btn.pack(side="right", padx=SP.sm, pady=SP.md)
         self.test_btn = W.Button(foot, "发送测试", p, command=self.on_test,
                                  variant="secondary", min_width=DIM.BTN_MIN_W_SM)
         self.test_btn.pack(side="right", pady=SP.md)
@@ -623,10 +638,27 @@ class App:
             w.destroy()
         # 旧控件已销毁，必须丢掉全部视图引用，否则 _collect 会摸到僵尸控件
         self._reset_view_state(include_shell=True)
+        self._reset_pages()
         self.current_page = page
         self.current_channel = chan
         self._dirty = dirty
         self._build_all()
+
+    def _reset_pages(self) -> None:
+        """清空页面缓存。**销毁容器的同一处必须调它。**
+
+        D1 的根因就是这里：`_rebuild()` 销毁了 root 的全部子控件，却把
+        `_pages` 里的 frame 引用留着。之后 `_show_page` 看到「这一页在
+        字典里」就直接返回，而那个 frame 早就没有 Tk 对象了——内容区
+        一片空白。
+
+        v2 用两道锁：① `_show_page` 的判断带 `winfo_exists()` 存活检查，
+        就算字典没清也不会空白；② 这里仍然统一清一次，因为留着死引用
+        会让 `_view` 里的控件引用也一起烂掉，`_collect()` 每次都要
+        try/except 兜一圈。两道锁都不贵，少任何一道都会在某个路径上翻车。
+        """
+        self._pages.clear()
+        self._view.clear()
 
     def _reset_view_state(self, include_shell: bool = False) -> None:
         """清空视图引用。
@@ -669,19 +701,23 @@ class App:
     def _show_page(self, key: str) -> None:
         """切换页面。
 
-        每页只建一次，之后切页就是 pack_forget + pack。上一版每次销毁整页
-        再重建，一页 105~110 个控件、约 457 次 Tcl 调用，实测 117~153ms，
-        超过 100ms 的「即时」阈值；现在只剩换页和进场动画。
+        每页只建一次，之后切页就是 pack_forget + pack，实测 2–4ms。
+        失效判断必须带**存活检查**：`_rebuild()` 之后 `_pages` 里可能
+        留着已销毁的 frame，只看「键在不在」会让页面永远空白（D1）。
         """
         if self.content is None:
             return
         builders = self._builders()
         if key not in builders:
             key = "channels"
-        if key == self.current_page and key in self._pages:
-            for k, item in self.nav_items.items():
-                item.set_selected(k == key)
-            return
+
+        if key == self.current_page:
+            frame = self._pages.get(key)
+            if frame is not None and frame.winfo_exists():
+                for k, item in self.nav_items.items():
+                    item.set_selected(k == key)
+                self._paint_page_title()
+                return
 
         # 先把当前页上的编辑读进 cfg，否则换页会丢掉未保存的输入
         self.cfg = self._collect()
@@ -691,7 +727,11 @@ class App:
 
         self.current_page = key
         frame = self._pages.get(key)
-        if frame is None or not frame.winfo_exists():
+        if frame is not None and not frame.winfo_exists():
+            # 字典里是个僵尸，丢掉重来（D1 的兜底）
+            self._pages.pop(key, None)
+            frame = None
+        if frame is None:
             frame = tk.Frame(self.content, bg=self.pal.bg_app)
             builders[key](frame)
             self._pages[key] = frame
@@ -708,6 +748,7 @@ class App:
         for k, item in self.nav_items.items():
             item.set_selected(k == key)
 
+        self._paint_page_title()
         self._paint_chain()
         self._enter_anim(frame)
 
@@ -727,69 +768,64 @@ class App:
         except Exception:
             return
 
+    def _drop_page(self, key: str) -> None:
+        """销毁某一页并把它从缓存里摘掉（重置、强制刷新时用）。"""
+        frame = self._pages.pop(key, None)
+        self._view.pop(key, None)
+        if frame is not None:
+            try:
+                frame.destroy()
+            except tk.TclError:
+                pass
+
     def _enter_anim(self, frame) -> None:
-        """进场：卡片依次从下方 10px 升到位。
+        """切页进场：整页 8px 上移就位，160ms `ease_out_expo`。
 
-        用 ease_out_expo 而不是 ease_out_cubic：它前 100ms 走完约八成位移，
-        观感是「弹到位」；三次缓出中段速度不够，看起来像被推着走。
+        **不做逐张卡片的错峰动画。** v1 每张卡片依次从下方 10px 升到位、
+        间隔 24ms，五张卡片光等动画就要 96ms；而用户切页是为了看内容，
+        不是为了看动画。整页一次性位移 8px，前 100ms 走完八成，剩下的
+        收尾——观感是「弹到位」，比逐张更像一个整体。
 
-        错开间隔 24ms，最多 6 张。再多就成了表演，而用户切页是为了看内容。
+        Tkinter 没有逐控件透明度，所以这里只能用位移做「进场」，
+        不能用淡入（P1 1.5 的能力边界）。
         """
         if anim.reduced():
             return
-        cards = self._collect_cards(frame)
-        if not cards:
-            if self.page_sc is not None:
-                self.page_sc.slide_in(dy=SP.sm, duration=MOTION.base)
-            return
-
-        for i, card in enumerate(cards[:6]):
-            if i == 0:
-                self._enter_card(card)
-            else:
-                anim.later(frame, i * MOTION.stagger,
-                           lambda c=card: self._enter_card(c))
-
-    @staticmethod
-    def _enter_card(card) -> None:
-        def frame(t):
-            card.set_offset(S(10) * (1 - t))
-
-        anim.tween(card, "enter", MOTION.base, frame, anim.ease_out_expo,
-                   interval=MOTION.interval)
-
-    @staticmethod
-    def _collect_cards(root) -> list:
-        out = []
-
-        def walk(w):
-            for c in w.winfo_children():
-                if isinstance(c, W.Card):
-                    out.append(c)
-                walk(c)
-
-        walk(root)
-        return out
-
-    def _on_content_conf(self, e) -> None:
-        """窄窗口下的尺寸适配。桌面程序没有断点，只有「别撑破」。"""
-        if e.width <= 1:
-            return
-        if self.current_page == "channels" and self.left_col is not None:
-            w = max(DIM.LIST_COL_MIN, min(DIM.LIST_COL_MAX, int(e.width * 0.30)))
-            if abs(self.left_col.winfo_width() - w) > S(6):
-                self.left_col.configure(width=w)
-        elif self.current_page == "template" and self.preview_cv is not None:
-            w = max(DIM.PREVIEW_MIN, min(DIM.PREVIEW_MAX, int(e.width * 0.34)))
-            if abs(w - self._preview_w) > S(6):
-                self._preview_w = w
-                try:
-                    self.preview_cv.configure(width=w, height=int(w * 1.72))
-                except tk.TclError:
-                    return
-                self._update_preview()
+        # 有整页滚动容器的页面，滑它；通道页没有整页滚动容器
+        # （左右两栏各自滚），滑右侧详情面板。
+        for sc in (self.page_sc, self.ch_form_sc):
+            if sc is not None and sc.winfo_exists():
+                sc.slide_in(dy=SP.sm, duration=MOTION.base)
+                return
 
     # ------------------------------------------------------------ 通用小组件
+
+    def _center_col(self, host, maxw: int | None = None) -> tk.Frame:
+        """在 host 里挂一个「定宽居中」的列，返回这个列。
+
+        P1 1.3 的判据是「1360px 下正文列宽 660±2」。做法是只调列的左右
+        padx、不改 inner 宽度——改 inner 宽度会反过来再触发一次
+        <Configure>，形成「越算越窄」的循环。
+
+        通道页右栏和模板页左栏都要这个，所以抽出来复用。
+        """
+        p = self.pal
+        col = tk.Frame(host, bg=p.bg_app)
+        col.pack(fill="x")
+        # 注意：DIM.* 返回的**已经是**设备像素（内部走过 theme.S），
+        # 这里再加一次 S() 就是二次换算——100% 缩放下看不出问题，
+        # 200% 缩放下 660 会变成 2636，正文列永远压不住。
+        limit = maxw or DIM.CONTENT_MAX
+        col._pad = -1
+
+        def _fit(e):
+            pad = max(0, (e.width - limit) // 2)
+            if pad != col._pad:
+                col._pad = pad
+                col.pack_configure(padx=(pad, pad))
+
+        host.bind("<Configure>", _fit, add="+")
+        return col
 
     def _scroll_area(self, parent) -> tk.Frame:
         """可滚动的正文区，返回一个居中的定宽列。
@@ -801,45 +837,10 @@ class App:
         sc = W.ScrollFrame(parent, self.pal, bg=self.pal.bg_app)
         sc.pack(fill="both", expand=True)
         self.page_sc = sc
-
-        col = tk.Frame(sc.inner, bg=self.pal.bg_app)
-        col.pack(fill="x")
-        maxw = S(DIM.CONTENT_MAX)
-        col._pad = -1
-
-        def _fit(e):
-            # 只调 padx，不改 inner 宽度，所以不会反过来再触发一次 <Configure>
-            pad = max(0, (e.width - maxw) // 2)
-            if pad != col._pad:
-                col._pad = pad
-                col.pack_configure(padx=(pad, pad))
-
-        sc.inner.bind("<Configure>", _fit, add="+")
-        return col
-
-    def _page_head(self, parent, title: str, desc: str = "",
-                   padx: int | None = None) -> tk.Frame:
-        """页头：标题 + 一句说明。
-
-        上一版刻意不做页面标题，靠左侧高亮表达「你在哪」。但导航只有文字，
-        页面一滚就没有参照物了。主流设置界面（Stripe / Linear / Vercel）
-        都是「页标题 + 一句话说明」开头，这不是模板化，是方位感。
-        """
-        p = self.pal
-        outer = tk.Frame(parent, bg=p.bg_app)
-        outer.pack(fill="x", padx=padx if padx is not None else 0,
-                   pady=(SP.xl, SP.lg))
-        tk.Label(outer, text=title, bg=p.bg_app, fg=p.text, anchor="w",
-                 font=theme.font(self.root, TS["title"], "bold")).pack(fill="x")
-        if desc:
-            tk.Label(outer, text=desc, bg=p.bg_app, fg=p.text_tertiary, anchor="w",
-                     justify="left", wraplength=S(620),
-                     font=theme.font(self.root, TS["small"])).pack(
-                fill="x", pady=(SP.xs, 0))
-        return outer
+        return self._center_col(sc.inner)
 
     def _section(self, parent, text: str, bg: str) -> None:
-        """卡片内的小标题。比卡片标题轻一档，用来在卡片里再分小组。"""
+        """分组内的小标题。比分组标题轻一档，用来在组里再分小组。"""
         p = self.pal
         tk.Label(parent, text=text, bg=bg, fg=p.text_tertiary, anchor="w",
                  font=theme.font(self.root, TS["small"], "bold")).pack(
@@ -896,17 +897,18 @@ class App:
     # ------------------------------------------------------------ 页：推送通道
 
     def _page_channels(self, parent) -> None:
+        """页 1 · 推送通道：左 240 列表 + 1px 分隔线 + 右 660 详情。
+
+        左栏**没有边框**，靠右侧一条 1px 竖线与详情分开。这一条竖线是
+        整页唯一的分割元素——如果再给左栏套一个圆角底、给右栏套一张卡片，
+        屏幕上就会出现三层边界，而实际上只有「列表」和「详情」两件事。
+        """
         p = self.pal
-        self._page_head(
-            parent, "推送通道",
-            "选一条把消息送到手机的路。凭证填齐后开关会自动打开，"
-            "没有可用通道时，任务结束不会有任何提醒。",
-            padx=SP.xl)
 
         wrap = tk.Frame(parent, bg=p.bg_app)
-        wrap.pack(fill="both", expand=True, padx=SP.xl, pady=(0, SP.md))
+        wrap.pack(fill="both", expand=True, padx=(SP.xl, 0), pady=(SP.sm, 0))
 
-        # -- 左：出口列表。不做成卡片，靠一条竖线与右侧详情分开。
+        # -- 左：出口列表
         left = tk.Frame(wrap, bg=p.bg_app, width=DIM.LIST_COL_W)
         left.pack(side="left", fill="y")
         left.pack_propagate(False)
@@ -927,9 +929,9 @@ class App:
         tk.Frame(wrap, bg=p.border, width=STK.rule).pack(
             side="left", fill="y", padx=(SP.md, 0))
 
-        # -- 右：出口详情（独立滚动）
+        # -- 右：出口详情（独立滚动，正文列 660 居中）
         right = tk.Frame(wrap, bg=p.bg_app)
-        right.pack(side="left", fill="both", expand=True, padx=(SP.lg, 0))
+        right.pack(side="left", fill="both", expand=True, padx=(SP.xl, 0))
         self.ch_form_host = right
 
         self._build_channel_list()
@@ -1035,7 +1037,9 @@ class App:
 
         sc = W.ScrollFrame(host, self.pal, bg=self.pal.bg_app)
         sc.place(x=0, y=0, relwidth=1, relheight=1)
-        self._channel_form(sc.inner)
+        # 表单内容走 660 居中列：通道详情是长表单，1360px 下如果铺满，
+        # 「密钥」和右边的「测试」按钮会隔着一整个屏幕，读不成一行。
+        self._channel_form(self._center_col(sc.inner))
 
         for w in old:
             w.destroy()
@@ -1114,7 +1118,7 @@ class App:
                 anchor="w", pady=(SP.xxs, 0))
 
         # -- 配置
-        sec = W.Section(parent, p, "配置", bg=p.bg_app, gap=SP.sm)
+        sec = W.Group(parent, p, "配置", bg=p.bg_app, gap=SP.sm)
         sec.pack(fill="x", pady=(SP.lg, 0))
 
         fields = meta.get("fields") or []
@@ -1417,43 +1421,33 @@ class App:
     # ------------------------------------------------------------ 页：触发条件
 
     def _page_triggers(self, parent) -> None:
+        """页 2 · 触发条件：分组标题 + 52px 设置行 + 底部 1px 分隔线。
+
+        **没有卡片。** 六个开关如果套在描边卡片里，读者要先认出「这是一组」
+        再认出「这里有六个选项」，多一层解码；分组标题 + 留白直接给出结论。
+        """
         p = self.pal
         inner = self._scroll_area(parent)
-        self._page_head(
-            inner, "触发条件",
-            "决定什么情况下才打扰你。选得越多越吵，多数人只需要前两项。",
-            padx=SP.xl)
 
-        sec = W.Section(inner, p, "通知哪些事件",
-                        "勾选后才会推送对应类型的消息。不确定就只留前两项。",
-                        bg=p.bg_app)
-        sec.pack(fill="x", padx=SP.xl, pady=(SP.xs, 0))
-
-        grid = tk.Frame(sec.body, bg=p.bg_app)
-        grid.pack(fill="x")
-        grid.columnconfigure(0, weight=1, uniform="t")
-        grid.columnconfigure(1, weight=1, uniform="t")
+        sec = W.Group(inner, p, "推送哪些消息",
+                      "选得越多越吵，多数人只需要前两项。", bg=p.bg_app)
+        sec.pack(fill="x")
 
         kinds = ["task_done", "task_failed", "need_input", "tool_failed",
                  "session_start", "session_end"]
-        for i, kind in enumerate(kinds):
-            cell = tk.Frame(grid, bg=p.bg_app)
-            cell.grid(row=i // 2, column=i % 2, sticky="w",
-                      padx=SP.xxs, pady=SP.sm)
-            cb = W.Checkbox(cell, p, events.KIND_LABELS.get(kind, kind),
-                            bool(self.cfg["triggers"].get(kind)), bg=p.bg_app,
-                            font_size=TS["body"],
-                            command=lambda v: self._mark_dirty())
-            cb.pack(anchor="w")
-            tk.Label(cell, text=KIND_DESC.get(kind, ""), bg=p.bg_app,
-                     fg=p.text_tertiary,
-                     font=theme.font(self.root, TS["small"])).pack(
-                anchor="w", padx=SP.xxl)
-            self.tr_vars[kind] = cb
+        for kind in kinds:
+            row = W.Row(sec.body, p, events.KIND_LABELS.get(kind, kind),
+                        KIND_DESC.get(kind, ""), bg=p.bg_app)
+            row.pack(fill="x")
+            sw = W.Switch(row.right, p, bool(self.cfg["triggers"].get(kind)),
+                          bg=p.bg_app,
+                          command=lambda v: self._mark_dirty())
+            sw.pack()
+            self.tr_vars[kind] = sw
 
-        sec2 = W.Section(inner, p, "过滤与限流",
-                         "用这些规则压掉噪音，避免手机被刷屏", bg=p.bg_app)
-        sec2.pack(fill="x", padx=SP.xl, pady=(SP.xs, 0))
+        sec2 = W.Group(inner, p, "过滤与限流",
+                       "用这些规则压掉噪音，避免手机被刷屏", bg=p.bg_app)
+        sec2.pack(fill="x")
 
         self._section(sec2.body, "阈值", p.bg_app)
         f = self.cfg.get("filters", {})
@@ -1510,15 +1504,22 @@ class App:
     # ------------------------------------------------------------ 页：消息模板
 
     def _page_template(self, parent) -> None:
+        """页 3 · 消息模板：左编辑区吃剩余宽度，右预览固定 320。
+
+        这一页**不吃 660 的正文列上限**：660 是「一段文字读起来多宽」的上限，
+        而这里是两栏编辑器——编辑区被压到 316px 的话，一段四行的模板会
+        每行折一次，比铺宽更难读。所以列宽上限取
+        `660 + 320 + 24`，1360 窗口下编辑区正好 660，和正文列同宽。
+        """
         p = self.pal
-        inner = self._scroll_area(parent)
-        self._page_head(
-            inner, "消息模板",
-            "手机上看到的那条消息长什么样。左边改，右边立刻预览。",
-            padx=SP.xl)
+        sc = W.ScrollFrame(parent, p, bg=p.bg_app)
+        sc.pack(fill="both", expand=True)
+        self.page_sc = sc
+        inner = self._center_col(
+            sc.inner, DIM.CONTENT_MAX + DIM.PREVIEW_W + SP.xl)
 
         bar = tk.Frame(inner, bg=p.bg_app)
-        bar.pack(fill="x", padx=SP.xl, pady=(SP.xs, SP.lg))
+        bar.pack(fill="x", pady=(SP.sm, SP.lg))
         opts = [(k, events.KIND_LABELS.get(k, k))
                 for k in ("task_done", "task_failed", "need_input",
                           "tool_failed", "test")]
@@ -1527,15 +1528,15 @@ class App:
                     font_size=TS["small"]).pack(side="left")
 
         cols = tk.Frame(inner, bg=p.bg_app)
-        cols.pack(fill="both", expand=True, padx=SP.xl, pady=(0, SP.lg))
+        cols.pack(fill="both", expand=True, pady=(0, SP.lg))
         cols.columnconfigure(0, weight=1)
         cols.columnconfigure(1, weight=0)
 
         ed = tk.Frame(cols, bg=p.bg_app)
         ed.grid(row=0, column=0, sticky="nsew")
 
-        s1 = W.Section(ed, p, "标题与正文",
-                       "改动即时反映到右侧预览", bg=p.bg_app, gap=SP.lg)
+        s1 = W.Group(ed, p, "标题与正文",
+                     "改动即时反映到右侧预览", bg=p.bg_app, gap=SP.lg)
         s1.pack(fill="x")
 
         tk.Label(s1.body, text="标题", bg=p.bg_app, fg=p.text_secondary,
@@ -1556,24 +1557,32 @@ class App:
         self.content_field.pack(fill="x")
         self.content_field.bind_change(self._on_preview_change)
 
-        s2 = W.Section(ed, p, "可用占位符",
-                       "发送前会被替换成真实内容", bg=p.bg_app, gap=SP.xs)
+        s2 = W.Group(ed, p, "可用占位符",
+                     "发送前会被替换成真实内容", bg=p.bg_app, gap=SP.xs)
         s2.pack(fill="x", pady=(SP.sm, 0))
         chips = tk.Frame(s2.body, bg=p.bg_app)
         chips.pack(fill="x")
+        # 两列而不是三列：D2 的根因就是「按固定三列排，列宽不随容器收缩」。
+        # 两列 + 说明文字固定折行宽度（96px）之后，单元格最宽约 172px，
+        # 两列 344px，960 最小窗口下编辑区还有 380px，永远装得下。
+        chips.columnconfigure(0, weight=1, uniform="chip")
+        chips.columnconfigure(1, weight=1, uniform="chip")
         for i, (token, desc) in enumerate(PLACEHOLDERS):
             chip = tk.Frame(chips, bg=p.bg_subtle)
-            chip.grid(row=i // 3, column=i % 3, sticky="w",
-                      padx=(0, SP.sm), pady=SP.xs)
+            chip.grid(row=i // 2, column=i % 2, sticky="w",
+                      padx=(0, SP.sm), pady=SP.xxs)
             tk.Label(chip, text=token, bg=p.bg_subtle, fg=p.brand_ink,
                      font=theme.font(self.root, TS["small"], mono=True)).pack(
-                side="left", padx=(SP.sm, SP.xs), pady=SP.xs)
+                side="left", padx=(SP.sm, SP.xs), pady=SP.xxs)
             tk.Label(chip, text=desc, bg=p.bg_subtle, fg=p.text_tertiary,
-                     font=theme.font(self.root, TS["small"])).pack(
-                side="left", padx=(0, SP.sm), pady=SP.xs)
+                     font=theme.font(self.root, TS["small"]),
+                     anchor="w", justify="left",
+                     wraplength=S(96)).pack(
+                side="left", padx=(0, SP.sm), pady=SP.xxs)
 
         prev = tk.Frame(cols, bg=p.bg_app)
         prev.grid(row=0, column=1, sticky="n", padx=(SP.xl, 0))
+        self._preview_w = DIM.PREVIEW_W
         self.preview_cv = tk.Canvas(
             prev, width=self._preview_w, height=int(self._preview_w * 1.72),
             bg=p.bg_app, highlightthickness=0, bd=0)
@@ -1712,21 +1721,37 @@ class App:
     # ------------------------------------------------------------ 页：运行状态
 
     def _page_status(self, parent) -> None:
+        """页 4 · 运行状态：一行指标 + 时间线，全程不用卡片。
+
+        指标不用卡片、靠竖线分隔：三个数字是「同一个东西的三个切面」，
+        套三个盒子会让它们看起来是三件不相关的事。时间线每行 40px，
+        状态用圆点颜色而不是「成功/失败」两个字——两个字占掉 40px 里
+        一大半，而颜色一眼能扫完一列。
+        """
         p = self.pal
         inner = self._scroll_area(parent)
-        self._page_head(
-            inner, "运行状态",
-            "这条链路上真实发生过什么。收不到通知时，先看这里。",
-            padx=SP.xl)
         stats = self._stats()
+
+        # -- 状态行：左侧一句结论，右侧重新检测
+        head = tk.Frame(inner, bg=p.bg_app)
+        head.pack(fill="x", pady=(SP.sm, SP.md))
+        ok_all = stats["today"] > 0
+        tk.Label(head, text="运行中" if ok_all else "今日还没有发出通知",
+                 bg=p.bg_app, fg=p.text,
+                 font=theme.font(self.root, TS["section"], "bold")).pack(side="left")
+        W.Button(head, "重新检测", p, command=self._recheck,
+                 variant="secondary").pack(side="right")
 
         # -- 指标：数字 + 标签，竖线分隔。不做卡片。
         mrow = tk.Frame(inner, bg=p.bg_app)
-        mrow.pack(fill="x", padx=SP.xl, pady=(SP.sm, SP.xl))
+        mrow.pack(fill="x", pady=(0, SP.lg))
         metrics = [
             ("今日通知", str(stats["today"]), p.text),
-            ("送达成功", str(stats["ok"]), p.success),
-            ("发送失败", str(stats["fail"]),
+            # 这两个是「通道级」的次数，不是「条」数：一条通知会同时
+            # 投给所有启用的通道，2 个通道就是 2 次。所以标签写「通道」
+            # 不写「送达」，否则读者会拿它和「今日通知」相减。
+            ("通道成功", str(stats["ok"]), p.success),
+            ("通道失败", str(stats["fail"]),
              p.danger if stats["fail"] else p.text_tertiary),
             ("启用通道", f'{stats["channels"]}/{len(channels.CHANNEL_META)}',
              p.brand_ink),
@@ -1743,9 +1768,9 @@ class App:
         # -- 通道状态：只列已启用的。
         # 把 10 条全列出来会把下面的「最近通知」挤到屏幕外，而且未启用的
         # 通道在这里没有信息量——它们不在这条链路上。
-        sec = W.Section(inner, p, "通道状态",
-                        "右侧的点表示这条出口现在通不通", bg=p.bg_app)
-        sec.pack(fill="x", padx=SP.xl)
+        sec = W.Group(inner, p, "通道状态",
+                      "右侧的点表示这条出口现在通不通", bg=p.bg_app)
+        sec.pack(fill="x")
         live = [c for c in self.cfg.get("channels", []) if c.get("enabled")]
         idle = len(channels.CHANNEL_META) - len(live)
         for ch in live:
@@ -1773,10 +1798,10 @@ class App:
             ).pack(fill="x", pady=(SP.sm, 0))
 
         # -- 最近通知：时间轴
-        sec2 = W.Section(inner, p, "最近通知",
-                         "来自 logs/notifications.log，最新的在上面。"
-                         "红点表示这次是失败类事件", bg=p.bg_app)
-        sec2.pack(fill="x", padx=SP.xl)
+        sec2 = W.Group(inner, p, "最近通知",
+                       "来自 logs/notifications.log，最新的在上面。"
+                       "红点表示这次是失败类事件", bg=p.bg_app)
+        sec2.pack(fill="x")
         recent = stats["recent"]
         if not recent:
             W.EmptyState(
@@ -1791,15 +1816,20 @@ class App:
             tl.set_rows(recent)
             self.timeline = tl
 
-        # -- 运行日志
-        sec3 = W.Section(inner, p, "运行日志",
-                         "最近 12 行，排查问题用", bg=p.bg_app, gap=SP.sm)
-        sec3.pack(fill="x", padx=SP.xl)
-        box3 = tk.Frame(sec3.body, bg=p.bg_subtle)
-        box3.pack(fill="x")
-        W.Paragraph(box3, p, store.tail_log(12) or "（暂无）", p.bg_subtle,
+        # -- 运行日志：强调块（唯一允许带底色的块）
+        sec3 = W.Group(inner, p, "运行日志",
+                       "最近 12 行，排查问题用", bg=p.bg_app, gap=SP.sm,
+                       inset=True)
+        sec3.pack(fill="x")
+        W.Paragraph(sec3.body, p, store.tail_log(12) or "（暂无）", p.bg_subtle,
                     p.text_secondary, size=TS["small"], mono=True).pack(
-            fill="x", padx=SP.md, pady=SP.sm)
+            fill="x")
+
+    def _recheck(self) -> None:
+        """重新读日志并刷新这一页。"""
+        self.cfg = self._collect()
+        self._refresh_status()
+        self.toast.show("已重新读取发送记录", "info")
 
     def _refresh_status(self) -> None:
         """重进运行状态页时刷新数字与时间轴，不重建控件。
@@ -1811,8 +1841,8 @@ class App:
         p = self.pal
         values = {
             "今日通知": (str(stats["today"]), p.text),
-            "送达成功": (str(stats["ok"]), p.success),
-            "发送失败": (str(stats["fail"]),
+            "通道成功": (str(stats["ok"]), p.success),
+            "通道失败": (str(stats["fail"]),
                      p.danger if stats["fail"] else p.text_tertiary),
             "启用通道": (f'{stats["channels"]}/{len(channels.CHANNEL_META)}',
                      p.brand_ink),
@@ -1846,10 +1876,15 @@ class App:
                     # 日志行格式是「时间 [宿主] 事件类型 | 标题」。
                     # 标题本身已经渲染了宿主名和类型，再拼一遍就是重复信息，
                     # 所以这一行只显示时间 + 结果点 + 标题。
+                    # 标题开头通常是 ✅ / ⚠️ 这类 emoji，而 Canvas 的
+                    # 正文画布用的是界面字体，没有 emoji 字形，直接画出来
+                    # 是豆腐块。这里把开头的 emoji 拆掉——成功/失败已经由
+                    # 左侧圆点的颜色表达，emoji 是重复信号。
+                    _emoji, plain = _split_emoji(m.group(5))
                     rows.append({
                         "time": m.group(2),
                         "channel": "",
-                        "summary": m.group(5)[:52],
+                        "summary": (plain or m.group(5))[:52],
                         "ok": kind not in ("task_failed", "tool_failed"),
                     })
             except Exception:
@@ -1860,6 +1895,14 @@ class App:
             try:
                 for line in lp.read_text(encoding="utf-8",
                                          errors="replace").splitlines():
+                    # 只数「通道级」的行（`channel=xxx ok=...`）。
+                    # 每个事件在通道行之后还有一行汇总：
+                    #   event=Stop kind=task_done sent=True remote_ok=False ...
+                    # 那一行里的 `remote_ok=False` 会被 "ok=False" 命中，
+                    # 于是失败数直接翻倍——19 次真实失败显示成 38，
+                    # 而「今日通知」只有 19，三个数字自相矛盾。
+                    if "channel=" not in line:
+                        continue
                     if "ok=True" in line:
                         ok += 1
                     elif "ok=False" in line:
@@ -1876,19 +1919,25 @@ class App:
     # ------------------------------------------------------------ 页：使用教程
 
     def _page_guide(self, parent) -> None:
+        """页 5 · 从零到第一条通知：单栏长文，正文列 660。
+
+        这一页不需要页头标题（顶栏已经有了），但需要一段「开场承诺」：
+        告诉读者要花多久、推荐哪条路线。它不是标题，是正文的第一段。
+        """
         p = self.pal
         inner = self._scroll_area(parent)
 
-        # -- 开场：页头 + 一段承诺
-        self._page_head(
-            inner, "从零到收到第一条通知",
+        # -- 开场：一段承诺
+        W.Paragraph(
+            inner, p,
             "四步走完，全程免费，第一次配置大约三分钟。推荐路线是微信测试号："
             "微信官方的开发者测试号，扫码即得凭证，不用实名、不用付费、不限条数。",
-            padx=SP.xl)
+            p.bg_app, p.text_secondary, size=TS["body"],
+        ).pack(fill="x", pady=(SP.sm, 0))
 
         # -- 四步
-        sec = W.Section(inner, p, "四步走通", bg=p.bg_app)
-        sec.pack(fill="x", padx=SP.xl)
+        sec = W.Group(inner, p, "四步走通", bg=p.bg_app)
+        sec.pack(fill="x")
         steps = [
             ("选一条通道",
              "打开「推送通道」，左边选「微信测试号」。它是微信官方的开发者测试号，"
@@ -1912,11 +1961,11 @@ class App:
                    last=(i == len(steps) - 1)).pack(fill="x")
 
         # -- 手机弹窗
-        sec2 = W.Section(
+        sec2 = W.Group(
             inner, p, "手机弹窗怎么开",
             "通道配好只保证「消息发出去了」，能不能弹出来由系统通知权限决定",
             bg=p.bg_app)
-        sec2.pack(fill="x", padx=SP.xl)
+        sec2.pack(fill="x")
         blocks = [
             ("微信内", [
                 "我 → 设置 → 新消息通知：打开「接收新消息通知」「通知显示消息详情」",
@@ -1940,11 +1989,11 @@ class App:
                 self._bullet(sec2.body, text, p.bg_app)
 
         # -- 电脑弹窗
-        sec3 = W.Section(
+        sec3 = W.Group(
             inner, p, "电脑上也要弹窗",
             "本程序本身不弹窗（宿主已有自己的提示）。想让 Windows 也弹，"
             "配一个带桌面客户端的通道即可。", bg=p.bg_app)
-        sec3.pack(fill="x", padx=SP.xl)
+        sec3.pack(fill="x")
         plans = [
             ("方案 A · ntfy（最轻）",
              "通道选「ntfy」，起一个别人猜不到的 topic 填进去。电脑装 ntfy 桌面客户端"
@@ -1964,8 +2013,11 @@ class App:
             self._para(sec3.body, body, p.bg_app, p.text_secondary, pady=SP.xxs)
 
         # -- 排查：这里的内容确实是「按顺序」，所以编号是有意义的
-        sec4 = W.Section(inner, p, "收不到？按这个顺序查", bg=p.bg_app, gap=SP.sm)
-        sec4.pack(fill="x", padx=SP.xl)
+        sec4 = W.Group(inner, p, "收不到？按这个顺序查", bg=p.bg_app, gap=SP.sm)
+        # 全页最后一个分组，底部留 32 而不是 16：再往下就是底栏，
+        # 最后一段正文和一条 1px 线之间需要比「组间距」更大的一档留白，
+        # 否则滚到底时文字像贴在底栏上。
+        sec4.pack(fill="x", pady=(0, SP.xxl))
         checks = [
             ("先看「运行状态」页的「今日通知」",
              "是 0 → 说明根本没发出去，问题在触发条件或限流（比如最短耗时 20 秒、静默时段）。"),
@@ -2072,6 +2124,30 @@ class App:
         # 表单里的字段可能被自动启用逻辑改动，重建一次详情页保持一致
         if self.current_page == "channels":
             self._build_channel_form(animate=False)
+
+    def on_reset(self) -> None:
+        """丢弃未保存的改动，回到磁盘上的那份配置。
+
+        为什么不弹确认框：这个动作只会丢掉「还没保存的编辑」，而磁盘上
+        的那份一直在；反过来，如果用户是想撤销一个刚打的错字，弹框反而
+        多一次点击。真正危险的是「覆盖磁盘」，那个动作是「保存」。
+        """
+        if not self._dirty:
+            self.toast.show("没有未保存的改动", "info")
+            return
+        self.cfg = config.load()
+        self._dirty = False
+        self.current_channel = self._pick_channel()
+        # 先清视图引用再丢页面：否则 _collect 会摸到已销毁的控件
+        self._reset_view_state()
+        self._drop_page(self.current_page)
+        self._show_page(self.current_page)
+        if self.master_switch is not None and self.master_switch.winfo_exists():
+            self.master_switch.set_value(bool(self.cfg.get("enabled", True)),
+                                         animate=True)
+        self._paint_dirty()
+        self._paint_master()
+        self.toast.show("已还原为上次保存的配置", "info")
 
     def on_test(self) -> None:
         self.on_save()
