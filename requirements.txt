@@ -19,3 +19,13 @@ Pillow>=10.0
 # 取版本号要用 importlib.metadata.version("pywebview")。
 # 上限 <7 是因为 7.x 大概率还会动 API，别让 pip 自己升上去。
 pywebview>=6.2,<7
+
+# ---- 下面只在开发/验收时用，运行程序不需要，**不要打进 exe** ----
+#
+# Windows Graphics Capture 截图（tools/shot_webview.py）。WebView2 的内容是
+# DirectComposition 硬件合成，ImageGrab 和 PrintWindow 都只能拍到黑块，
+# 只有 WGC 能拍到真实画面——细节见该脚本的 docstring。
+#
+# 它会连带装 numpy + opencv-python（合计 80MB 左右）。W7 打包时 excludes
+# 必须排掉 numpy / cv2 / windows_capture，否则单文件 exe 白胖一圈。
+windows-capture>=2.0
