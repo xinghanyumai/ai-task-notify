@@ -3,7 +3,7 @@
 
 # P1 · 全站界面重做（v2）
 
-> 对应任务书：`docs/prompts/P1-视觉重设计.md`（v2 · 2026-10-27）
+> 对应任务书：`docs/archive/prompts-tkinter/P1-视觉重设计.md`（v2 · 2026-10-27）
 > 起点：`redesign-base` = `ca59c3d`（P0 回退后的基线）
 > 本文记录**改了什么、为什么这样改、怎么验的**。任务书写「要什么」，这里写「给了什么」。
 
@@ -669,9 +669,9 @@ v2 改两列 + 说明文字 `wraplength=S(96)`。探针在 960×660 下逐页测
 | 灰度对照 2 张 | `assets/screenshots/compare_gray_channels.png`、`compare_gray_guide.png` |
 | 彩色对照 1 张 | `assets/screenshots/compare_color_channels.png` |
 | 13 对对比度全表 | 本文 2.2 |
-| 启动时间轴实测 | `docs/perf.md` 4.1 |
+| 启动时间轴实测 | `docs/archive/perf.md` 4.1 |
 | 交互 10 项勾选 | 本文第六节 |
 | 功能基线 11 条勾选 | 本文第九节 + `docs/functional-baseline.md` |
 | 装饰清单 | 本文 8.1 |
 | 渐变清单 | 本文 8.3 |
-| 性能文档 | `docs/perf.md` |
+| 性能文档 | `docs/archive/perf.md` |

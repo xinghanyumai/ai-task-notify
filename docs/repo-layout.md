@@ -93,6 +93,7 @@ Work buddy 通知/
 ├─ docs/
 │   ├─ README.md                      ← 新增：文档索引
 │   ├─ architecture.md  security.md  troubleshooting.md
+│   ├─ functional-baseline.md  roadmap.md
 │   ├─ adr/                           ← 决策记录（ADR-007 已取代 006）
 │   ├─ archive/                       ← C0：tkinter 时代的文档，只读不改
 │   │   ├─ design.md  design-redesign.md  perf.md

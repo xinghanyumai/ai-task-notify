@@ -1,5 +1,10 @@
 # 架构
 
+> ⚠️ **技术选型已变更（2026-10-27）。** 本文的**目录结构**与**核心链路**描述仍然有效；
+> 但「为什么用 Python 加 Tkinter」一节已作废，见 ADR-007，UI 层改用 pywebview + 系统 WebView2，
+> 见 [`adr/ADR-007-pywebview-over-tkinter.md`](adr/ADR-007-pywebview-over-tkinter.md)。
+> 目录结构会在 W5 删掉旧 UI 后重画，本文暂不预写未来结构。
+
 这份文档讲这个工具怎么知道「任务结束了」，以及为什么这样拆。
 
 ## 目标与边界
@@ -141,7 +146,10 @@ hook 是同步执行的，它崩了或卡住，对话就废了。所以整条链
 - 推送失败只影响后台进程，同时入队，下次事件时重试，最多 5 次
 - `state/runtime.json`、`state/queue.jsonl` 被手改坏时，所有数字读取走宽容转换
 
-## 为什么用 Python 加 Tkinter
+## 为什么用 Python 加 Tkinter（已作废，见 ADR-007）
+
+> ⚠️ 本节论证的是 2026-10 的选型，已被 ADR-007 推翻。保留原因：它解释了
+> 「核心链路零第三方依赖」这条原则的来处——这条原则**仍然有效**，只是 UI 层例外。
 
 核心链路零第三方依赖，只用标准库（`json`、`urllib`、`smtplib`、`hashlib`、`tkinter`）。
 hook 进程启动快，也不会因为某个包缺失就整个失效。
