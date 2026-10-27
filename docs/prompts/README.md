@@ -77,6 +77,14 @@
 | **W8** | 发布与分发 | 版本号、发布包、升级路径、卸载 | 升级不丢配置；hook 自动迁移；不自动删旧目录 | W7（有可运行的 exe） | 从旧版升级后配置完整；卸载干净 |
 | **P5** | 开源发布 | README / 文档 / 许可证对齐 | 与代码栈无关 | S0（文档与 LICENSE） | 仓库可公开 |
 
+### 2.0 已归档的旧提示词
+
+P0–P4 是 tkinter 时代的任务书，**已由 C0 全部归档到
+[`../archive/prompts-tkinter/`](../archive/prompts-tkinter/)，不再执行**。
+
+保留它们只为一件事实：`../archive/perf.md` 里的实测数字出自 P0 / P1。
+看它们之前先读归档横幅——横幅写明「当前事实见 roadmap」，不要照着做。
+
 ### 2.1 三条不能破的规则
 
 1. **W7 之前的所有阶段都是开发态**（`python app.py`），不许提前打 exe。
@@ -362,7 +370,7 @@ W0 逻辑抽取 ──▶ W1 统一入口+桥                   │
 
 ## 8. 附：对外来方案的审查结论（压缩版）
 
-原始方案：[`../ui-rebuild-webview-plan.md`](../ui-rebuild-webview-plan.md)。
+原始方案：[`../archive/ui-rebuild-webview-plan.md`](../archive/ui-rebuild-webview-plan.md)。
 **采纳 5 条，修正 8 条，其中一处硬伤。**
 
 | 修正 | 问题 | 处理 |

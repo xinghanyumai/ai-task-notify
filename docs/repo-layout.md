@@ -92,16 +92,17 @@ Work buddy 通知/
 │
 ├─ docs/
 │   ├─ README.md                      ← 新增：文档索引
-│   ├─ architecture.md  design.md  security.md  troubleshooting.md
-│   ├─ adr/                           ← 决策记录（不动）
+│   ├─ architecture.md  security.md  troubleshooting.md
+│   ├─ adr/                           ← 决策记录（ADR-007 已取代 006）
+│   ├─ archive/                       ← C0：tkinter 时代的文档，只读不改
+│   │   ├─ design.md  design-redesign.md  perf.md
+│   │   ├─ ui-rebuild-webview-plan.md
+│   │   └─ prompts-tkinter/           ← 旧 P0–P4（不再执行）
 │   ├─ channels/                      ← 通道配置说明（不动）
-│   ├─ prompts/                       ← 新增：现行提示词
-│   │   ├─ README.md
-│   │   ├─ P0-收尾与功能基线.md
-│   │   ├─ P1-视觉重设计.md
-│   │   ├─ P2-性能预算.md
-│   │   ├─ P3-复核-无障碍与响应式.md
-│   │   ├─ P4-结构与目录.md
+│   ├─ prompts/                       ← 现行提示词（C0 + W0–W8 + P5）
+│   │   ├─ README.md  DECISIONS.md
+│   │   ├─ C0-清场与旧资产归档.md
+│   │   ├─ W0…W8
 │   │   └─ P5-开源发布.md
 │   └─ reviews/                       ← 只留审查报告
 │       ├─ README.md                  ← 补一段"05/06/08 已归档到 docs/prompts/"
@@ -109,7 +110,7 @@ Work buddy 通知/
 │
 ├─ assets/
 │   ├─ icon.ico  icon_256.png
-│   └─ screenshots/                   ← 可选：ui_*.png 移入
+│   └─ screenshots/                   ← 已移入：ui_*.png + 对照图（W6 要用）
 ├─ state/  logs/                      ← 运行数据，路径由 wbn/config.py 推导，不许动
 └─ .github/workflows/ci.yml
 ```
@@ -215,7 +216,7 @@ if str(ROOT) not in sys.path:
 |---|---|---|
 | `README.md` | 71–73 | `selftest.py`（**不动**） |
 | `docs/architecture.md` | 164–167 | 目录树里三行 → 已收进 `tools/` 一节 |
-| `docs/design.md` | 72 | `audit.py` → `tools/audit.py` |
+| `docs/archive/design.md` | 72 | `audit.py` → `tools/audit.py` |
 | `docs/security.md` | 63 | `python shot.py` → `python tools/shot.py` |
 | `docs/troubleshooting.md` | 94 | `python make_icon.py` → `python tools/make_icon.py` |
 | `docs/adr/ADR-006` | 35 | `audit.py` → `tools/audit.py` |

@@ -152,11 +152,11 @@ W5，且必须满足前置条件：
 **归档不删。** 理由：
 
 - P0/P1 里有大量实测数字（启动时间轴、Configure 风暴 25243 次、单页成本），
-  是 `docs/perf.md` 的原始出处
-- 删了之后 `docs/perf.md` 里的引用就成了悬空链接
+  是 `docs/archive/perf.md` 的原始出处
+- 删了之后 `docs/archive/perf.md` 里的引用就成了悬空链接
 - 在 README 状态表里标清楚"作废"就够，读者不会误读
 
-如果要删，先确认 `docs/perf.md`、`docs/design-redesign.md` 里对这些文件的
+如果要删，先确认 `docs/archive/perf.md`、`docs/archive/design-redesign.md` 里对这些文件的
 引用全部清理干净。
 
 ---
@@ -266,4 +266,4 @@ README 里写清这一步，比签一个假证书有用。
 - **D3 = 手写 CSS**（2026-10-27，用户原话"手写 css"。零构建链，
   不装 node，产物就是源码。`webui/assets/*.css` 直接编辑生效）
 - **D7 = 归档**（2026-10-27，旧提示词 P0–P4 移到 `docs/archive/prompts-tkinter/`，
-  不物理删除——`perf.md` 的数字出自它们）
+  不物理删除——`archive/perf.md` 的数字出自它们）

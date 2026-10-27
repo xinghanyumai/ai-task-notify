@@ -1,7 +1,10 @@
+> 📦 **已归档（2026-10-27）。** 本文描述的是 tkinter 时代的实现，当前事实见
+> [`roadmap.md`](../roadmap.md)。保留原因：迁移方案的原文出处；采纳 5 条、修正 8 条的结论见 `../prompts/README.md` 第 2 节。
+
 # WorkBuddy 通知 · UI 重构方案
 ## 从 tkinter 迁到 pywebview + Web 前端
 
-> **📌 本文已被审查，结论与修正见 [`prompts/README.md`](prompts/README.md) 第 2 节。**
+> **📌 本文已被审查，结论与修正见 [`prompts/README.md`](../prompts/README.md) 第 2 节。**
 >
 > 技术方向（pywebview + 系统 WebView2、不引框架、抄 shadcn token、分阶段）**全部采纳**。
 > 但有 8 处必须修正，其中一处是硬伤：
@@ -21,7 +24,7 @@
 > 另外本文 1.3 节列的 9 条「土」里，**第 5 条（背景死白）和第 7 条（品牌色占比太高）已经过时**，
 > 作者看的是 `redesign-base` 之前的截图。其余 7 条成立。
 >
-> **执行请走 [`prompts/README.md`](prompts/README.md) 的 W0 → W6，不要直接照本文第 5 节的 Phase 走。**
+> **执行请走 [`prompts/README.md`](../prompts/README.md) 的 W0 → W6，不要直接照本文第 5 节的 Phase 走。**
 
 > 版本：v1.0 · 2026-10-27
 > 目标：在**不动任何业务逻辑**的前提下，把现在这套"tkinter 手搓 UI"换成真正的大厂网页质感。

@@ -97,7 +97,7 @@
 | 资产 | 现状 | 去向 |
 |---|---|---|
 | `tests/` 7 个文件 | 170 passed | 保留；`test_platform.py` 里 `W.Switch` 那条删掉；新增 `test_insight.py`、`test_bridge.py`、`test_frozen_paths.py` |
-| `docs/` 40 篇 | 完整 | 更新 architecture / README / troubleshooting；`perf.md`、`design-redesign.md` 标注"tkinter 时代，存档" |
+| `docs/` 40 篇 | 完整 | 更新 architecture / README / troubleshooting；`archive/perf.md`、`archive/design-redesign.md` 已归档（C0 完成） |
 | CI | 2 OS × 3 Python | 保留；**加一个 Windows 打包 job**（W7） |
 | `CHANGELOG.md` | 有 | 每次阶段验收追加 |
 

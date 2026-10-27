@@ -1,3 +1,6 @@
+> 📦 **已归档（2026-10-27）。** 本文描述的是 tkinter 时代的实现，当前事实见
+> [`roadmap.md`](../roadmap.md)。保留原因：P1 重设计的完整记录（三条判据、13 对对比度全表、装饰配额），W6 新旧并排对照要引用它的结论。
+
 # P1 · 全站界面重做（v2）
 
 > 对应任务书：`docs/prompts/P1-视觉重设计.md`（v2 · 2026-10-27）
@@ -16,9 +19,9 @@
 
 ### 1.1 灰度并排：结构有没有变
 
-![灰度对照 · 推送通道](../assets/screenshots/compare_gray_channels.png)
+![灰度对照 · 推送通道](../../assets/screenshots/compare_gray_channels.png)
 
-![灰度对照 · 使用教程](../assets/screenshots/compare_gray_guide.png)
+![灰度对照 · 使用教程](../../assets/screenshots/compare_gray_guide.png)
 
 抹掉颜色之后，v1 和 v2 的区别是**结构性的**，不是同一套布局换个色：
 
@@ -38,7 +41,7 @@
 
 ### 1.2 彩色并排：配色有没有换出层次
 
-![彩色对照 · 推送通道](../assets/screenshots/compare_color_channels.png)
+![彩色对照 · 推送通道](../../assets/screenshots/compare_color_channels.png)
 
 | 维度 | v1 | v2 |
 |---|---|---|

@@ -137,7 +137,7 @@ WorkBuddy 点窗口关闭按钮只是隐藏到托盘，要右键托盘图标选�
 | 文档 | 内容 |
 |---|---|
 | [docs/architecture.md](docs/architecture.md) | hook 协议、事件归类、两段式架构、触发控制、fail-open |
-| [docs/design.md](docs/design.md) | 界面语汇、设计令牌、自绘控件、无障碍与响应式 |
+| [docs/archive/design.md](docs/archive/design.md) | 📦 已归档：tkinter 时代的界面语汇、设计令牌、自绘控件 |
 | [docs/security.md](docs/security.md) | 凭证处理、请求边界、不可信输入、截图脱敏 |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 症状对照表、日志位置、编码事故完整复盘 |
 | [docs/channels/](docs/channels/) | 10 个通道各一页，申请步骤与坑 |
