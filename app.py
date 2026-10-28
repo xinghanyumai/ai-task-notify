@@ -189,6 +189,28 @@ def run_ui() -> int:
     # js_api 枚举递归展开 Window 对象，API 注入直接失败（详见 Bridge 类注释）。
     api._attach(win)
 
+    # 关窗拦截：前端有未保存的改动时先问一句。
+    #
+    # **用 pywebview 自己的 `create_confirmation_dialog`**，不自绘：原生对话框
+    # 才有正确的键盘行为（Esc = 取消、Enter = 默认按钮）和读屏支持，自绘一个
+    # 只会得到「能点但不会用」的东西。
+    #
+    # 返回值语义和直觉相反，别改反了：pywebview 的 `Event.set()` 把
+    # **返回 False 当作「取消关闭」**（见 `event.py` 的 `false_values`，
+    # winforms 后端据此 `args.Cancel = True`）。所以这里返回的必须是
+    # 「允许关闭」，正好等于对话框的返回值（True = 点了确定）。
+    def _on_closing() -> bool:
+        if not api._unsaved:
+            return True
+        try:
+            return bool(win.create_confirmation_dialog(
+                "关闭", "有未保存的改动，确定关闭？"))
+        except Exception as e:            # 对话框弹不出来，不能让窗口关不掉
+            _log(f"[app] 关窗确认框没弹出来，直接放行：{e}")
+            return True
+
+    win.events.closing += _on_closing
+
     # 存活探针。`has_webview2()` 探到运行时、`create_window` 也没抛异常，窗口
     # 照样可能是**一块黑**：WebView2 初始化回调报成功，控制器随后失效，页面
     # 一次都没画出来（本机 2026-10 实测，MSHTML 后端同代码正常）。

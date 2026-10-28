@@ -165,17 +165,19 @@ def test_stats_does_not_read_ok_from_msg():
     assert s["fail"] == 1
 
 
-def test_stats_recent_skips_test_kind():
+def test_stats_recent_ignores_test_send_lines():
     """「最近通知」里出现一条带绿色 ✓ 的「通知测试」，就是「看起来像真的」。
 
-    `kind` 表达的就是「这条记录是什么事件」，判断「是不是通知」是它的本职。
-    注意这个特判**只管 recent**，不参与 today / ok / fail 的计数。
+    `send_test` 写的是 `test-send type=…`，第一段不是 `event=`，
+    所以永远进不了 `recent`——这里钉住这一点，别哪天为了「测试也要显示」
+    把它放进来。测试不是通知（D14）。
     """
     today = datetime.now().strftime("%Y-%m-%d")
-    _write(config.LOG_DIR / "notifications.log", [
-        f"{today} 10:00:00 [WorkBuddy] test | 🔔 通知测试",
-        "    通道工作正常。",
-        f"{today} 10:01:00 [WorkBuddy] task_done | ✅ WorkBuddy 任务完成",
+    _write(config.LOG_DIR / f"notify-{today}.log", [
+        "[10:00:00] test-send type=bark ok=True msg=HTTP 200",
+        "[10:00:01] test channel=log ok=True msg=已记录",
+        "[10:01:00] event=Stop kind=task_done sent=True remote_ok=True "
+        "elapsed=1.0s title=✅ WorkBuddy 任务完成",
     ])
     recent = insight.stats(config.load())["recent"]
     assert len(recent) == 1
@@ -205,14 +207,15 @@ def test_stats_ignores_test_send_lines():
     assert s["fail"] == 1, "只剩那一行真实发送；真行不许被一起滤掉"
 
 
-def test_stats_today_comes_from_event_lines_not_notifications_log():
-    """**「关掉 log 通道 today 就冻结」那个 bug 的回归测试。**
+def test_stats_recent_does_not_read_notifications_log():
+    """**「关掉 log 通道最近通知就永久为空」那个 bug 的回归测试。**
 
-    `notifications.log` 全项目只有 `channels._send_log` 写，而那个通道有开关，
-    用户关掉它这个数就不动了。所以 `today` 必须数 `pipeline.notify()` 写的
-    `event=… sent=True` 汇总行——它和通道开关无关。
+    `recent` 曾经读 `notifications.log`，而那个文件全项目只有
+    `channels._send_log` 写——它属于一个**可以关掉的通道**。用户关掉它，
+    「最近通知」就永远空白，空态还写「还没收到通知」，可他明明发了 20 条。
 
-    这里故意写 3 条 notifications.log 记录，today 一个都不许跟着动。
+    现在 `recent` 和 `today` 读同一行（`pipeline` 写的事件汇总行），
+    这个文件里的东西一条都不许进 `recent`。
     """
     today = datetime.now().strftime("%Y-%m-%d")
     _write(config.LOG_DIR / "notifications.log", [
@@ -221,39 +224,52 @@ def test_stats_today_comes_from_event_lines_not_notifications_log():
         f"{today} 09:02:00 [WorkBuddy] task_done | ✅ 三",
     ])
     _write(config.LOG_DIR / f"notify-{today}.log", [
-        "[09:00:00] event=Stop kind=task_done sent=True remote_ok=False",
-        "[09:01:00] event=Stop kind=task_done sent=True remote_ok=True",
-        "[09:02:00] event=Stop kind=task_done sent=False remote_ok=False",
+        "[09:00:00] event=Stop kind=task_done sent=True remote_ok=False "
+        "elapsed=1.0s title=✅ 远端全失败那条",
+        "[09:01:00] event=Stop kind=task_done sent=True remote_ok=True "
+        "elapsed=1.0s title=✅ 真到手机那条",
+        "[09:02:00] event=Stop kind=task_done sent=False remote_ok=False "
+        "elapsed=0.1s title=✅ 一条都没发出去",
         "[09:03:00] skip event=Stop kind=task_done reason=耗时太短",
     ])
     s = insight.stats(config.load())
     assert s["today"] == 1, "只有 remote_ok=True 才算到手机；远端全失败不算"
-    assert len(s["recent"]) == 3, "recent 仍然读 notifications.log"
+    assert len(s["recent"]) == 1, "recent 只收真正送达的事件，和 today 同一行"
+    assert s["recent"][0]["summary"] == "真到手机那条"
 
 
-def test_stats_today_survives_log_channel_being_off():
-    """关掉「写入本地日志」通道后 notifications.log 根本不存在，today 照样要涨。"""
+def test_stats_today_and_recent_survive_log_channel_being_off():
+    """关掉「写入本地日志」通道后 notifications.log 根本不存在。
+
+    两个数都要照样有——它们和通道开关无关（W3.5 / B 项）。
+    """
     today = datetime.now().strftime("%Y-%m-%d")
     assert not (config.LOG_DIR / "notifications.log").exists()
     _write(config.LOG_DIR / f"notify-{today}.log", [
         "[10:00:00] channel=webhook ok=True msg=HTTP 200",
-        "[10:00:00] event=Stop kind=task_done sent=True remote_ok=True",
+        "[10:00:00] event=Stop kind=task_done sent=True remote_ok=True "
+        "elapsed=1.0s title=✅ 关掉 log 也发得出去",
     ])
     s = insight.stats(config.load())
     assert s["today"] == 1
-    assert s["recent"] == [], "没有正文记录就是空，不许凭空编"
+    assert len(s["recent"]) == 1, "最近通知不许因为 log 通道关着就空着"
+    assert s["recent"][0]["summary"] == "关掉 log 也发得出去"
 
 
 def test_is_delivered_anchors_on_the_first_field():
-    """`remote_ok=True` 只是子串判据，靠「第一段是 `event=`」把不相干的行挡掉。"""
+    """`remote_ok=True` 靠整行按位置匹配来判，不是整行找子串。"""
     assert insight._is_delivered(
-        "[10:00:00] event=Stop sent=True remote_ok=True")
+        "[10:00:00] event=Stop kind=task_done sent=True remote_ok=True elapsed=1.0s")
     # sent=True 但远端全失败 = 没到手机
     assert not insight._is_delivered(
-        "[10:00:00] event=Stop sent=True remote_ok=False")
+        "[10:00:00] event=Stop kind=task_done sent=True remote_ok=False elapsed=1.0s")
     assert not insight._is_delivered("[10:00:00] event=Stop sent=False")
-    assert not insight._is_delivered("[10:00:00] skip event=Stop remote_ok=True")
-    assert not insight._is_delivered("[10:00:00] test-send type=log remote_ok=True")
+    # 被过滤链拦下的行第一段是 `skip`，不是 `event=`
+    assert not insight._is_delivered(
+        "[10:00:00] skip event=Stop remote_ok=True")
+    # 手动测试不是通知
+    assert not insight._is_delivered(
+        "[10:00:00] test-send type=log remote_ok=True")
     assert not insight._is_delivered("garbage line without prefix")
 
 
@@ -271,37 +287,79 @@ def test_is_test_line_only_looks_at_the_first_field():
 def test_stats_counts_today_and_recent_newest_first():
     today = datetime.now().strftime("%Y-%m-%d")
     # 真实日志是追加写的，最后一行才是最新的
-    _write(config.LOG_DIR / "notifications.log", [
-        "2020-01-01 09:10:00 [WorkBuddy] task_done | 去年那条",
-        f"{today} 09:00:00 [WorkBuddy] task_done | ✅ 第一条",
-        f"{today} 09:05:00 [WorkBuddy] task_failed | ❌ 第二条",
+    _write(config.LOG_DIR / f"notify-{today}.log", [
+        "[09:00:00] event=Stop kind=task_done sent=True remote_ok=True "
+        "elapsed=1.0s title=✅ 第一条",
+        "[09:05:00] event=Stop kind=task_failed sent=True remote_ok=True "
+        "elapsed=1.0s title=❌ 第二条",
     ])
     s = insight.stats(config.load())
-    # today 已经不读这个文件了（它数 notify-*.log 的 event= 行），这里一条都没有
-    assert s["today"] == 0
-    assert len(s["recent"]) == 3, "recent 不按日期过滤，只取最后 8 条"
+    assert s["today"] == 2
     assert s["recent"][0]["summary"] == "第二条", "recent 是最新在前"
-    assert s["recent"][0]["ok"] is False
+    # 红点说的是「这次任务不顺」，不是「没发出去」——两条都送到了
+    assert s["recent"][0]["ok"] is False, "task_failed 是失败类事件"
     assert s["recent"][1]["ok"] is True
+
+
+def test_stats_recent_marks_yesterday():
+    """**跨天条目必须标出来**（W3.5 / C 项）。
+
+    只给 `HH:MM` 的话，昨天 23:50 和今天 00:10 在界面上看不出区别，
+    用户会把昨晚的通知当成刚才的。
+    """
+    from datetime import timedelta
+
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+
+    _write(config.LOG_DIR / f"notify-{yesterday}.log", [
+        "[23:50:00] event=Stop kind=task_done sent=True remote_ok=True "
+        "elapsed=1.0s title=✅ 昨晚那条",
+    ])
+    _write(config.LOG_DIR / f"notify-{today}.log", [
+        "[00:10:00] event=Stop kind=task_done sent=True remote_ok=True "
+        "elapsed=1.0s title=✅ 今天那条",
+    ])
+    recent = insight.stats(config.load())["recent"]
+    assert [r["summary"] for r in recent] == ["今天那条", "昨晚那条"]
+    assert recent[0]["day"] == "today"
+    assert recent[1]["day"] == "yesterday", "昨天的条目要带 day 标记"
+    # today 只数今天：昨天的通知不是今天的成绩
+    assert insight.stats(config.load())["today"] == 1
 
 
 def test_stats_strips_leading_emoji_from_title():
     today = datetime.now().strftime("%Y-%m-%d")
-    _write(config.LOG_DIR / "notifications.log", [
-        f"{today} 09:00:00 [WorkBuddy] task_done | ✅ 重构完成",
+    _write(config.LOG_DIR / f"notify-{today}.log", [
+        "[09:00:00] event=Stop kind=task_done sent=True remote_ok=True "
+        "elapsed=1.0s title=✅ 重构完成",
     ])
     row = insight.stats(config.load())["recent"][0]
     assert row["summary"] == "重构完成"
     assert "✅" not in row["summary"]
 
 
+def test_stats_recent_falls_back_when_title_is_missing():
+    """老的事件行没有 `title=` 字段，不许渲染出一行空白。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    _write(config.LOG_DIR / f"notify-{today}.log", [
+        "[09:00:00] event=Stop kind=task_done sent=True remote_ok=True elapsed=1.0s",
+    ])
+    row = insight.stats(config.load())["recent"][0]
+    assert row["summary"] == "任务完成", "没有标题就用事件名顶上"
+
+
 def test_stats_recent_caps_at_eight():
     today = datetime.now().strftime("%Y-%m-%d")
-    _write(config.LOG_DIR / "notifications.log", [
-        f"{today} 09:00:{i:02d} [WorkBuddy] task_done | 第 {i} 条"
+    _write(config.LOG_DIR / f"notify-{today}.log", [
+        f"[09:00:{i:02d}] event=Stop kind=task_done sent=True remote_ok=True "
+        f"elapsed=1.0s title=第 {i} 条"
         for i in range(20)
     ])
-    assert len(insight.stats(config.load())["recent"]) == 8
+    recent = insight.stats(config.load())["recent"]
+    assert len(recent) == 8
+    assert recent[0]["summary"] == "第 19 条", "最新在前"
 
 
 def test_stats_missing_logs_is_all_zero():
@@ -456,6 +514,44 @@ def test_delivery_health_levels():
         remote, {"bark": _rec(True), "wxmp": _rec(False)}) == "partial"
     assert insight.delivery_health(
         remote, {"bark": _rec(False), "wxmp": _rec(False)}) == "fail"
+
+
+def test_delivery_health_ignores_test_records():
+    """**W3.5 验收第 4 条：一次「测试此通道」失败不许把侧栏永久打成红。**
+
+    测试用的是**表单里还没保存的值**。用户想看看报错长什么样，故意填个错地址
+    点一下测试，侧栏从此变红——而磁盘上的配置可能是对的。
+    D14 也早就把「测试」排除在投递之外了。
+    """
+    remote = ["wxmp"]
+    test_fail = {"wxmp": {"time": "10:00", "ok": False,
+                          "msg": "errcode=40037", "test": True}}
+    assert insight.delivery_health(remote, test_fail) == "none"
+
+    cfg = _cfg()
+    _enable(cfg, "wxmp")
+    text, level = insight.chain_sentence(cfg, test_fail)
+    assert level == insight.LEVEL_OK, "只有测试失败时侧栏必须维持 ok"
+    assert "送到你手机" in text
+
+    # 再来一条真实失败 → 立刻 danger
+    real_fail = {"wxmp": {"time": "10:01", "ok": False,
+                          "msg": "errcode=40037", "test": False}}
+    assert insight.delivery_health(remote, real_fail) == "fail"
+    _text2, level2 = insight.chain_sentence(cfg, real_fail)
+    assert level2 == insight.LEVEL_DANGER
+
+
+def test_delivery_health_keeps_test_time_but_not_test_result():
+    """两处**故意不对称**：时间认测试，成败不认。
+
+    用户刚点完测试，列表显示「刚刚」是对的；但「有没有送到」不能用一次
+    故意的试探来回答。改这里之前先读 `delivery_health` 的 docstring。
+    """
+    last = {"wxmp": {"time": "10:00", "ok": True, "msg": "", "test": True}}
+    # 时间照用（这条由 channels_list 负责，这里只钉 delivery_health 不采信）
+    assert last["wxmp"]["time"] == "10:00"
+    assert insight.delivery_health(["wxmp"], last) == "none"
 
 
 # ---------------------------------------------------------------- channel_state

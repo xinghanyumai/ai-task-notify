@@ -452,6 +452,9 @@ body[data-route="channels"] .col { max-width: none; }
   color: var(--fg-subtle);
   font-variant-numeric: tabular-nums;
   flex: 0 0 auto;
+  /* 跨天条目前缀「昨天 」，比 HH:MM 宽。给一个下限，否则每一行的时间列
+     宽度不同，后面的点和正文会左右错开（W3.5 / C 项）。 */
+  min-width: 5.6em;
 }
 
 .row-meta {

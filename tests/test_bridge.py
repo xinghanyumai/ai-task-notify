@@ -389,6 +389,73 @@ def test_last_send_times_keeps_spaces_in_msg():
     assert "模板 ID 无效" in rec["msg"]
 
 
+# --------------------------------------------------- W3.5 测试发送 / 关窗拦截
+
+
+def test_last_send_times_marks_test_lines():
+    """**W3.5 验收第 4 条：读出来，但标上是不是测试。**
+
+    只读不判：`time` 要用（刚点完测试，列表显示刚刚是对的），
+    `ok` 不能用（测试用的是表单里没保存的值）。
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    (config.LOG_DIR / f"notify-{today}.log").write_text(
+        "[09:12:00] test-send type=wxmp ok=False msg=errcode=40037\n"
+        "[09:13:00] test channel=bark ok=True msg=HTTP 200\n"
+        "[09:14:00] channel=webhook ok=True msg=HTTP 200\n",
+        encoding="utf-8",
+    )
+    got = bridge._last_send_times()
+    assert got["wxmp"]["test"] is True
+    assert got["bark"]["test"] is True, "W3.1 之前的历史写法也要认"
+    assert got["webhook"]["test"] is False
+    # 时间照给，测试行也算
+    assert got["wxmp"]["time"] == "09:12"
+
+
+def test_chain_sentence_ignores_test_failure(isolated_state):
+    """**W3.5 验收第 4 条：只有测试失败 → 侧栏仍是 ok。**
+
+    真实失败才降级。两条断言必须挨着写，否则你分不清是「排掉了测试」
+    还是「什么都没看见」。
+    """
+    _ready_two_remote()
+    today = datetime.now().strftime("%Y-%m-%d")
+    log = config.LOG_DIR / f"notify-{today}.log"
+
+    log.write_text("[09:12:00] test-send type=wxmp ok=False msg=errcode=40037\n",
+                   encoding="utf-8")
+    after_test = bridge.Bridge().chain_sentence()["data"]
+    assert after_test["level"] == "ok", "一次故意的试探不许把侧栏打成红色"
+    assert "送到你手机" in after_test["text"]
+
+    log.write_text("[09:12:00] test-send type=wxmp ok=False msg=errcode=40037\n"
+                   "[09:13:00] channel=wxmp ok=False msg=errcode=40037\n",
+                   encoding="utf-8")
+    after_real = bridge.Bridge().chain_sentence()["data"]
+    assert after_real["level"] == "danger"
+    assert "最近一次没送到" in after_real["text"]
+
+
+def test_set_dirty_only_stores_a_flag():
+    """后端只存标志，不做判断。「什么算改动」只有前端一份。"""
+    b = bridge.Bridge()
+    assert b._unsaved is False
+    assert b.set_dirty(True)["data"] == {"dirty": True}
+    assert b._unsaved is True
+    assert b.set_dirty(False)["data"] == {"dirty": False}
+    assert b._unsaved is False
+
+
+def test_set_dirty_accepts_truthy_junk():
+    """JS 传过来的可能是 "true" / 1 / null，不许因此抛异常把窗口卡住。"""
+    b = bridge.Bridge()
+    b.set_dirty("true")
+    assert b._unsaved is True
+    b.set_dirty(None)
+    assert b._unsaved is False
+
+
 def test_read_only_methods_do_not_touch_disk(isolated_state):
     """三个方法都是只读的。写盘只允许发生在 config_save 里。"""
     config.save_default_if_missing()
@@ -784,6 +851,8 @@ def test_bridge_exposes_only_implemented_methods():
         # W3 通道页：结构 / 状态 / 两个异步动作
         "channels_meta", "channels_state",
         "channel_test", "channel_fetch_openid",
+        # W3.5 关窗拦截：前端只写不读，读的那一侧是私有的 `_unsaved`
+        "set_dirty",
     }
 
 

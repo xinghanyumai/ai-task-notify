@@ -1785,8 +1785,10 @@ class App:
             ).pack(fill="x", pady=(SP.sm, 0))
 
         # -- 最近通知：时间轴
+        # 副标题说清两件事：来源（今天的通知日志，和「今日通知」同一个文件）、
+        # 红点的含义（失败类事件，不是「没发出去」）。
         sec2 = W.Group(inner, p, "最近通知",
-                       "来自 logs/notifications.log，最新的在上面。"
+                       "最近两天真的发出去的通知，最新的在上面。"
                        "红点表示这次是失败类事件", bg=p.bg_app)
         sec2.pack(fill="x")
         recent = stats["recent"]

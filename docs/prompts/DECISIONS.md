@@ -411,3 +411,39 @@ W3.2 任务书写过「`ok`/`fail` 的算法一个字都不许动」，**这里�
 保存不再卡必填之后，丢数据的窗口只剩「改了不保存就关窗」。
 `isDirty()` 已经在算了，只是没人用。要接 `window.events.closing`：
 dirty 时 `cancel = True` + 确认框「有未保存的改动，确定关闭？」。
+
+---
+
+## D17 · 「最近通知」的数据源
+
+**问题**：`today` 在 W3.2 换掉了 `notifications.log`，`recent` 没换。
+而 `notifications.log` 全项目只有 `channels._send_log` 写——也就是「写入本地日志」
+通道。用户关掉它，「最近通知」永久为空，空态还写着「**还没收到通知**」。
+通知其实送到了。
+
+**裁定（2026-10-28）**：`recent` 与 `today` 同源，读 `notify-*.log` 的 `event=` 汇总行。
+
+| 项 | 取值 |
+|---|---|
+| 文件 | `notify-{今天}.log` + `notify-{昨天}.log`，两个都读 |
+| 行 | `_EVENT_LINE` 锚定 `event= kind= sent= remote_ok= elapsed= [title=]` |
+| 跳过 | `kind == "test"`（测试正文不是通知） |
+| 成败 | `remote_ok`（不是 `sent`，理由同 D14） |
+| 跨天 | 昨天那份带 `day="yesterday"`，前端拼「昨天 23:50」 |
+| 数字 | **一个都不许再喂给 `notifications.log`** |
+
+### 为什么读两天
+
+只读今天，跨零点之后界面上只剩凌晨那几条，昨晚的全部消失——用户会以为丢记录。
+读两天能把「昨晚跑到一半、今早来看」这个最常见的场景接住。
+
+### 为什么 `day` 由后端算
+
+前端只做字符串拼接（`dayLabel(day) + hhmm(time)`），不做日期比较。
+一旦前端自己算「这条是不是昨天」，时区、夏令时、跨月全部要自己处理一遍，
+而 Python 那边已经有 `datetime.date.today()`。
+
+### `notifications.log` 还留着
+
+它仍然是「写入本地日志」通道的产物，仍然供人肉排查用（正文完整、可 `tail`）。
+**只是不再是任何界面上数字的来源。** 写侧一行没改。

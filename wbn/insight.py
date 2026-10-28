@@ -28,7 +28,7 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 
 from . import channels, config, events, pipeline, render
@@ -49,8 +49,25 @@ _EMOJI_RANGES = (
     (0x2B00, 0x2BFF), (0xFE00, 0xFE0F), (0x1F000, 0x1FAFF),
 )
 
-_LOG_LINE = re.compile(
-    r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) \[([^\]]+)\] (\S+) \| (.*)$")
+# `notify-*.log` 里的**事件汇总行**，`pipeline.notify()` 每条事件写一行：
+#   [10:24:23] event=Stop kind=task_done sent=True remote_ok=True \
+#              elapsed=1.17s title=✅ WorkBuddy 任务完成
+#
+# 这一行同时供 `today` 和 `recent`（W3.5）。**一个正则，两个用途**——
+# 以前 `recent` 读 `notifications.log`（那是 `log` 通道的副产物，通道一关
+# 就永久为空），于是同一个界面上的两个数来自两个不同的宇宙。
+#
+# `title=` 是最后一个字段，可能含空格（`✅ WorkBuddy 任务完成`），所以用 `(.*)`
+# 收尾；老行没有 `title=`，那一段可选。字段全部锚定位置，不整行找子串。
+_EVENT_LINE = re.compile(
+    r"^\[(?P<time>\d{2}:\d{2}:\d{2})\] event=(?P<event>\S+) kind=(?P<kind>\S+)"
+    r" sent=(?P<sent>True|False) remote_ok=(?P<remote_ok>True|False)"
+    r" elapsed=\S+(?: title=(?P<title>.*))?$")
+
+# `kind` 里属于「这次任务不顺」的那几种，最近通知用红点标出来。
+# 注意这跟 `remote_ok` 是两件事：一条「任务失败」的通知**送到了**也是红点，
+# 因为红点说的是「这件事本身是坏消息」，不是「没发出去」。
+_BAD_KINDS = ("task_failed", "tool_failed")
 
 # `notify-*.log` 里的通道投递行：`[10:40:04] channel=wxmp ok=False msg=…`。
 # **连 `ok=` 一起锚定**，不留给 `"ok=True" in line` 这种子串判断：
@@ -129,9 +146,9 @@ def _is_delivered(line: str) -> bool:
 
     形如 `[10:24:23] event=Stop kind=task_done sent=True remote_ok=True …`。
 
-    判据是**时间戳后第一段就是 `event=`**，加上行内有 `remote_ok=True`：
+    判据是**整行按位置匹配 `_EVENT_LINE`**，再要求 `remote_ok=True`：
 
-    - `skip event=…`（被过滤链拦下）第一段是 `skip`，不算；
+    - `skip event=…`（被过滤链拦下）第一段是 `skip`，匹配不上；
     - `test-send type=…` 第一段是 `test-send`，手动测试不算通知；
     - `sent=False` / `remote_ok=False` 都不算。
 
@@ -139,30 +156,54 @@ def _is_delivered(line: str) -> bool:
     把 `log` 通道也算作成功——于是「只写进了本地文件」也会被数成一条通知。
     `remote_ok` 是 `pipeline.py` 里 `t not in ("log",)` 那一步算出来的，
     语义就是「至少一个远端通道成功」。`log` 是调试落盘，不是投递目标。
+
+    判据只此一份：`stats()` 里数 `today` 用的是同一个 `_EVENT_LINE` 的匹配结果，
+    不是另写一遍 `"remote_ok=True" in line`。子串判据是前四轮 bug 的共同形状。
     """
-    body = line.split("] ", 1)[-1]
-    return body.startswith("event=") and "remote_ok=True" in body
+    m = _EVENT_LINE.match(line)
+    return bool(m) and m.group("remote_ok") == "True"
+
+
+def _recent_row(m: re.Match, day: str) -> dict:
+    """一条事件汇总行 → 「最近通知」里的一行。"""
+    kind = m.group("kind")
+    raw = m.group("title") or ""
+    _emoji, plain = split_emoji(raw)
+    return {
+        "time": m.group("time"),
+        # `day` 让前端能区分「今天」和「昨天」。没有它，昨天 23:50 和今天
+        # 00:10 在界面上都是 `23:50` / `00:10`，用户会以为都是今天的。
+        "day": day,
+        "channel": "",
+        # 标题空（老行没有 `title=` 字段）就退回事件名，不显示空白行
+        "summary": (plain or events.KIND_LABELS.get(kind) or kind)[:52],
+        # 红点说的是「这次任务本身不顺」，不是「没发出去」——后者由 `today`
+        # 的计数体现。两者混用会让一条送达了的「任务失败」通知变成绿点。
+        "ok": kind not in _BAD_KINDS,
+    }
 
 
 def stats(cfg: dict) -> dict:
     """今日统计 + 最近 8 条通知。
 
-    返回 `{today, ok, fail, channels, recent: [{time, channel, summary, ok}]}`。
+    返回 `{today, ok, fail, channels, recent: [{time, day, channel, summary, ok}]}`。
 
     **三个数只算远端通道**（D14）。`log` 通道是调试落盘，不是投递目标：
     它既不该让 `today` +1，也不该让 `ok` +1，否则屏幕上会出现
     「16 条通知 / 16 次成功 / 14 次失败」——三个数不在同一个宇宙里。
 
-    两个数据源，用途别混：
+    **一个数据源**（W3.5）：`notify-*.log`。它由 `pipeline.notify()` 和
+    `channels.send_all()` 写，**和通道开关无关**——通道全关也照写。
 
-    - `notify-*.log` 供 `today` / `ok` / `fail`。它由 `pipeline.notify()` 和
-      `channels.send_all()` 写，**和通道开关无关**——通道全关也照写。
-      （`today` 曾经数 `notifications.log`，而那个文件全项目只有
-      `channels._send_log` 写；用户关掉「写入本地日志」通道，这个数就冻住，
-      而 `ok`/`fail` 继续涨，于是又是一次「几个数对不上」。）
-    - `notifications.log` 只供 `recent`，那是用户唯一能读的正文记录。
+    - `today` / `recent` 读同一种行：`pipeline` 写的事件汇总行
+      `event=… remote_ok=… title=…`。`recent` 曾经读 `notifications.log`，
+      而那个文件全项目只有 `channels._send_log` 写——用户关掉「写入本地日志」
+      通道，「最近通知」就永久为空，空态还写「还没收到通知」。同一个界面上
+      两个数来自两个宇宙，这是 W3.2 修 `today` 时漏掉的另一半。
+    - `ok` / `fail` 读通道投递行 `channel=… ok=…`。
+    - `notifications.log` **不再喂任何数字**，只作为正文存档给人翻。
 
-    三处判据，都是踩过的坑：
+    四处判据，都是踩过的坑：
 
     - `today` 看 `event=… remote_ok=True`（见 `_is_delivered`）。
     - `ok` / `fail` **一个子串判断都不用**：`_CHANNEL_LINE` 把通道名和
@@ -174,58 +215,50 @@ def stats(cfg: dict) -> dict:
       19 显示成 38）。
     - 以 `test ` / `test-send ` 开头的行是手动点「测试此通道」产生的，
       不算投递，跳过；历史行**不删**（复盘要看）。
-    - `recent` 跳过 `kind == "test"`：测试正文不是通知。`kind` 表达的就是
-      「这条记录是什么事件」，判断「是不是通知」正是它的本职。
+    - `recent` 只收 `remote_ok=True` 的事件：「通知」在这个项目里已经被 D14
+      定义成「到手机了」，列表里塞一条从没到过手机的条目，就是 W3.3 修掉的
+      同一个病。没送到的事件在「通道失败 N」和通道页里能看到原因。
       标题开头的 ✅/⚠️ 要剥掉——成败已经由 `ok` 字段表达，emoji 是重复信号，
       而且 Canvas 字体没有 emoji 字形。
     """
-    today = datetime.now().strftime("%Y-%m-%d")
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
     delivered, ok, fail = 0, 0, 0
-
-    lp = config.LOG_DIR / f"notify-{today}.log"
-    if lp.exists():
-        try:
-            for line in lp.read_text(encoding="utf-8",
-                                     errors="replace").splitlines():
-                if _is_delivered(line):
-                    delivered += 1
-                if _is_test_line(line):
-                    continue
-                m = _CHANNEL_LINE.match(line)
-                if not m or m.group(2) == "log":
-                    continue
-                if m.group(3) == "True":
-                    ok += 1
-                else:
-                    fail += 1
-        except Exception:
-            pass
-
     rows: list[dict] = []
-    np = config.LOG_DIR / "notifications.log"
-    if np.exists():
+
+    # 今天 + 昨天。`recent` 是「最近通知」，本来就该跨天；只读今天的话，
+    # 刚过零点打开程序会看到一片空白，而昨晚明明发过 20 条。
+    for day, tag in ((yesterday, "yesterday"), (today, "today")):
+        lp = config.LOG_DIR / f"notify-{day}.log"
+        if not lp.exists():
+            continue
         try:
-            for line in np.read_text(encoding="utf-8",
-                                     errors="replace").splitlines():
-                m = _LOG_LINE.match(line)
-                if not m:
-                    continue
-                kind = m.group(4)
-                if kind == "test":
-                    continue
-                _emoji, plain = split_emoji(m.group(5))
-                rows.append({
-                    "time": m.group(2),
-                    "channel": "",
-                    "summary": (plain or m.group(5))[:52],
-                    "ok": kind not in ("task_failed", "tool_failed"),
-                })
-        except Exception:
-            pass
+            text = lp.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in text.splitlines():
+            em = _EVENT_LINE.match(line)
+            if em:
+                if em.group("remote_ok") == "True":
+                    if tag == "today":
+                        delivered += 1
+                    rows.append(_recent_row(em, tag))
+                continue
+            if _is_test_line(line):
+                continue
+            m = _CHANNEL_LINE.match(line)
+            if not m or m.group(2) == "log":
+                continue
+            if m.group(3) == "True":
+                ok += 1
+            else:
+                fail += 1
 
     return {
         "today": delivered, "ok": ok, "fail": fail,
         "channels": len(config.enabled_channels(cfg)),
+        # 追加写的日志，最后一行最新；先截 8 条再倒序
         "recent": list(reversed(rows[-8:])),
     }
 
@@ -233,7 +266,7 @@ def stats(cfg: dict) -> dict:
 def delivery_health(remote: list[str], last: dict | None) -> str:
     """最近一次远端投递的整体结果，`"none" | "ok" | "partial" | "fail"`。
 
-    `last` 形如 `{ctype: {"time": "HH:MM", "ok": bool, "msg": str}}`
+    `last` 形如 `{ctype: {"time": "HH:MM", "ok": bool, "msg": str, "test": bool}}`
     （`bridge._last_send_times()` 的返回值）。
 
     **「没有记录」必须是 `none`，不能算成失败。** 首次启动、日志被清空、
@@ -242,8 +275,19 @@ def delivery_health(remote: list[str], last: dict | None) -> str:
 
     只统计**有记录**的远端通道：某个通道今天一次都没试过，就没资格参与
     这次判定，不该把它算成「失败」拉低整句话。
+
+    **测试发送不算投递**（W3.5）。理由不是洁癖，是测试用的是**表单里还没
+    保存的值**：用户想看看报错长什么样，故意填个错地址点一下「测试此通道」，
+    侧栏从此永久变红——而磁盘上的配置可能是对的，要等下一次真实发送成功
+    才恢复。D14 也已经把「测试」排除在投递之外，这里跟着同一条口径。
+
+    **和 `time` 故意不对称**：通道列表的「最后发送时间」仍然认测试行
+    （用户刚点完测试，列表显示刚刚是对的）。同一条记录，一个字段用来回答
+    「什么时候试过」，另一个用来回答「有没有送到」——问的不是一件事，
+    所以判定必须分开。这是全项目第三处刻意的不对称，改之前先读这段。
     """
-    recs = [last[t] for t in remote if last and t in last]
+    recs = [last[t] for t in remote
+            if last and t in last and not last[t].get("test")]
     if not recs:
         return "none"
     good = sum(1 for r in recs if r.get("ok"))

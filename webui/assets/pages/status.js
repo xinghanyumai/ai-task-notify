@@ -226,7 +226,10 @@
 
     if (!rows || !rows.length) {
       state.nodes.rcList.appendChild(emptyBox({
-        title: "还没收到通知。",
+        /* 「还没收到通知」是假话：它曾经读 `notifications.log`，而那个文件
+           只有「写入本地日志」通道在写，关掉之后这里永远为空，可用户明明
+           已经发了 20 条。现在数的是事件汇总行，空就是真的今天还没发过。 */
+        title: "今天还没有通知记录。",
         hint: "先确认通道配好了、事件勾上了，再发一条测试消息，看看链路通不通。",
         action: "去配置通道",
         iconPath: ICON_INBOX,
@@ -238,7 +241,7 @@
     var box = ctx.el("div", "list");
     rows.forEach(function (r) {
       var row = ctx.el("div", "row");
-      row.appendChild(ctx.el("span", "row-time", hhmm(r.time)));
+      row.appendChild(ctx.el("span", "row-time", hhmm(r)));
 
       var dot = ctx.el("span", "res-dot");
       dot.dataset.ok = r.ok ? "1" : "0";
@@ -266,9 +269,16 @@
     return box;
   }
 
-  function hhmm(t) {
-    var s = String(t || "");
-    return s.length >= 5 ? s.slice(0, 5) : s;
+  /** 「最近通知」的时间列。**跨天要标出来**（W3.5 / C 项）：
+   *
+   * 原来只取 `HH:MM`，昨天 23:50 和今天 00:10 在界面上看起来是同一类东西，
+   * 用户会把昨晚的通知当成刚才的。后端给了 `day` 字段（`today` / `yesterday`），
+   * 这里照着说人话。
+   */
+  function hhmm(r) {
+    var s = String((r && r.time) || "");
+    var t = s.length >= 5 ? s.slice(0, 5) : s;
+    return r && r.day === "yesterday" ? "昨天 " + t : t;
   }
 
   /* ---- 错误态 ------------------------------------------------------------

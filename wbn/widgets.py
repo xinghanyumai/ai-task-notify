@@ -2456,7 +2456,10 @@ class Timeline(tk.Frame):
                                width=STK.rule)
             cv.create_oval(lx - S(3), y - S(3), lx + S(3), y + S(3),
                            fill=color, outline=color)
-            t_txt = r.get("time", "")
+            # 跨天条目要标出来，否则昨晚 23:50 和今天 00:10 看起来是同一类
+            # 东西。列宽是实测的（见下），多两个汉字会自动把后面推开。
+            t_txt = ("昨天 " if r.get("day") == "yesterday" else "") + \
+                str(r.get("time", ""))
             cv.create_text(lx + S(14), y, anchor="w", text=t_txt,
                            fill=p.text_tertiary, font=f_time)
             # 时间列宽必须实测：写死 62px 在 9pt 等宽下刚好装不下

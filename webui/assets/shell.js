@@ -41,6 +41,7 @@
   var state = {
     route: null,
     mounted: {},
+    currentPage: null,   /* 当前页的模块对象，切走时调它的 destroy() */
     theme: "system",
     enabled: true,
     msgTimer: 0
@@ -313,6 +314,21 @@
     /* 给 CSS 一个「现在在哪一页」的钩子：通道页是双栏，要突破 .col 的
        720px 限宽，其他页维持阅读宽度。 */
     document.body.dataset.route = name;
+
+    /* 页面生命周期（W3.5 / F 项）。切走时让上一页收拾自己的烂摊子：
+       在飞的回调、还没到点的定时器。没有这一步，异步结果会写进已经
+       detach 的 DOM——不崩不报错，就是漏 + 幽灵更新。
+       页面可以不实现 destroy()，缺了就跳过，不是必须项。 */
+    var page = (window.WBN_PAGES || {})[name] || null;
+    var prev = state.currentPage;
+    if (changed && prev && prev !== page && typeof prev.destroy === "function") {
+      try {
+        prev.destroy();
+      } catch (e) {
+        /* 清理失败不许挡住切换：用户点的是导航，不是「让页面收拾干净」 */
+      }
+    }
+    state.currentPage = page;
 
     mount(name);
   }

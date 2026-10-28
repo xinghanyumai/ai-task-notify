@@ -76,6 +76,11 @@
     busyWhat: "",      /* "save" | "test" | "openid" */
     result: null,      /* {ctype, tone, text} 上一次测试结果，切页回来还在 */
     timer: 0,          /* 异步兜底 / 成功提示淡出，同一时刻只有一个异步动作 */
+    pending: {},       /* {cbId: true} 还在飞的回调，切页时要 dropCb（W3.5 / F 项） */
+    dirtySent: false,  /* 上一次发给后端的 dirty 值，用来避免重复调用。
+                          初始值必须和后端默认值（False）一致，否则页面一挂载
+                          就会白发一次 `set_dirty(false)`。 */
+    dirtyTimer: 0,     /* set_dirty 的 200ms 防抖 */
     nodes: {}
   };
 
@@ -138,6 +143,45 @@
       if (String(a[keys[i]]) !== String(b[keys[i]])) return true;
     }
     return false;
+  }
+
+  /** 任意通道有未保存的改动。关窗拦截看的是这个，不是当前通道。 */
+  function anyDirty() {
+    for (var i = 0; i < state.list.length; i++) {
+      if (isDirty(state.list[i].type)) return true;
+    }
+    return false;
+  }
+
+  /** 把「有没有未保存的改动」同步给后端，供关窗时判断（W3.5 / E 项）。
+   *
+   * 两条约束：
+   *   1. **不许每敲一个键调一次**。打字只会让 `anyDirty()` 从 false 变 true
+   *      一次，之后一直是 true——所以这里只在**值变了**的时候发。
+   *   2. 变脏要**立刻发**，变干净才防抖：脏是「别关窗，会丢东西」，
+   *      晚 200ms 送到就可能在这 200ms 里被关掉；干净只是恢复默认，
+   *      晚一点无所谓。合并成一个 200ms 防抖会把这个方向弄反。
+   */
+  function syncDirty() {
+    var now = anyDirty();
+    if (now === state.dirtySent) return;
+
+    if (state.dirtyTimer) {
+      window.clearTimeout(state.dirtyTimer);
+      state.dirtyTimer = 0;
+    }
+
+    function send() {
+      state.dirtyTimer = 0;
+      state.dirtySent = now;
+      state.ctx.call("set_dirty", now).catch(function () {
+        /* 同步不上不影响编辑；关窗时最多少问一句，不能因此打断用户 */
+        state.dirtySent = null;
+      });
+    }
+
+    if (now) send();
+    else state.dirtyTimer = window.setTimeout(send, 200);
   }
 
   function firstType() {
@@ -214,7 +258,7 @@
       state.meta = res[0];
       testTimeout = deriveTestTimeout(res[0]);
       state.labels = labelMap(res[0]);
-      adopt(res[1], null);
+      adopt(res[1]);
 
       if (!state.current || !metaOf(state.current)) state.current = firstType();
 
@@ -227,13 +271,31 @@
     });
   }
 
-  /** 把磁盘状态吃进本地。`keep` 指定哪个通道的 draft 要保留（用户正在改）。 */
-  function adopt(list, keep) {
-    state.list = list || [];
-    state.list.forEach(function (c) {
-      state.base[c.type] = copy(c.values);
-      if (c.type !== keep) state.draft[c.type] = copy(c.values);
+  /** 把磁盘状态吃进本地。
+   *
+   * **保住所有有未保存改动的通道**（W3.5 / D 项）。旧版签名是 `adopt(list, keep)`，
+   * 只保 `keep` 那一个：`saveChannel()` 传 `null` → 所有通道的草稿从磁盘重读，
+   * 用户在另一个通道里刚改还没保存的内容**静默消失**，「有未保存的改动」标记
+   * 也跟着灭。toggle() 传当前一个，同样的洞只是少踩一点。
+   *
+   * 判定必须在写 `base` **之前**算完：`isDirty()` 比的就是 `base` 和 `draft`，
+   * 先把 `base` 覆盖成磁盘值，所有通道立刻都变成「不脏」——这个顺序错了，
+   * 函数看起来对，行为跟旧版一模一样。
+   */
+  function adopt(list) {
+    var next = list || [];
+    var keep = {};
+    next.forEach(function (c) {
+      if (isDirty(c.type)) keep[c.type] = true;
     });
+
+    state.list = next;
+    next.forEach(function (c) {
+      state.base[c.type] = copy(c.values);
+      if (!keep[c.type]) state.draft[c.type] = copy(c.values);
+    });
+
+    syncDirty();
   }
 
   /* ---- 左列表 ------------------------------------------------------------ */
@@ -516,14 +578,16 @@
 
     var miss = missingInDraft(ctype);
     var ready = miss.length === 0;
-    /* 禁用必须写明缺什么，而且要写在按钮旁边：只塞 title 等于没写，
-       鼠标悬停才看得见（§3.3，上一版就踩过「按钮灰了不说为什么」）。 */
-    var msg = ready ? "" : "还需要填写：" + miss.join("、");
+    /* 缺字段的说明**继续显示**，但它现在是「测试按钮」的说明，不是保存的：
+       D16 定了保存不卡必填——半成品存不下来，用户填了 8 个字段差 1 个、
+       关掉窗口就全丢，这个损失比「存了一份不全的配置」大得多。
+       所以文案要写明「可以先保存」，否则用户看到红字就以为保存也被拦着。 */
+    var msg = ready ? "" : "还需要填写：" + miss.join("、") + "（可以先保存）";
 
-    save.disabled = !ready || state.busy;
-    save.title = msg;
+    save.disabled = state.busy;
+    save.title = ready ? "" : "可以先保存，填齐凭证后才能测试";
     test.disabled = !ready || state.busy;
-    test.title = msg;
+    test.title = ready ? "" : msg;
 
     why.textContent = msg;
     why.hidden = !msg;
@@ -540,6 +604,8 @@
       state.nodes.openid.disabled = !ok || state.busy;
       state.nodes.openid.title = ok ? "" : "填好 appID 和 appsecret 才能自动获取";
     }
+
+    syncDirty();
   }
 
   function setBusy(flag, what) {
@@ -575,14 +641,12 @@
 
   function saveChannel(ctype) {
     if (state.busy) return;
-    var miss = missingInDraft(ctype);
-    if (miss.length) {
-      state.ctx.notify("还需要填写：" + miss.join("、"));
-      return;
-    }
 
     /* 只提交**这一个通道**。merge_save 是读-改-写：它重新 load 磁盘，
-       只覆盖 patch 里出现的通道/字段，别的通道（可能被 hook 进程改过）原样保留。 */
+       只覆盖 patch 里出现的通道/字段，别的通道（可能被 hook 进程改过）原样保留。
+
+       **不再拦「必填没填完」**（D16 / W3.5）：保存按钮一直是可点的，
+       半成品也要能落盘。测试按钮仍然卡必填——测一半的凭证没有意义。 */
     var patch = { type: ctype };
     fieldsOf(ctype).forEach(function (f) {
       var v = (state.draft[ctype] || {})[f.key];
@@ -596,7 +660,7 @@
           /* §4：**用磁盘返回的那份覆盖本地**，不是用自己提交的那份。
              auto_enable 可能在保存过程中把某个通道自动开了/关了，
              不刷新的话用户看不到，会以为没生效。 */
-          adopt(list, null);
+          adopt(list);
           paintList();
           paintDetail();
           announceSave(ctype, res);
@@ -651,7 +715,7 @@
     state.ctx.call("config_save", { channels: [patch] })
       .then(function () {
         return state.ctx.call("channels_state").then(function (list) {
-          adopt(list, isDirty(state.current) ? state.current : null);
+          adopt(list);
           paintList();
           paintDetail();
           state.ctx.refreshChain();
@@ -680,6 +744,36 @@
 
   /* ---- 动作：测试（异步，窗口不许冻） ------------------------------------ */
 
+  /** 领一个回调 id 并登记，切页时 `destroy()` 才能把它 drop 掉。 */
+  function track(handler) {
+    var id = state.ctx.nextCb(handler);
+    state.pending[id] = true;
+    return id;
+  }
+
+  function untrack(id) {
+    delete state.pending[id];
+  }
+
+  /** 测试完把「最后发送时间」刷一遍（W3.5 / G 项）。
+   *
+   * **只刷时间，不刷健康**：`delivery_health()` 已经把测试行排掉了
+   * （见 `insight` 里那段「故意不对称」），所以侧栏颜色不该变。
+   * 如果刷完之后颜色变了，说明 A 那处没修干净——这次刷新是个免费的自检。
+   *
+   * 不调 `paintDetail()`：那会重建表单、丢掉输入焦点和滚动位置，
+   * 而这里要变的只有左列表那行的副标题和时间。
+   */
+  function refreshAfterTest() {
+    state.ctx.refreshChain();
+    state.ctx.call("channels_state").then(function (list) {
+      adopt(list);
+      paintList();
+    }).catch(function () {
+      /* 刷新失败不影响刚才那条测试结果，不打扰用户 */
+    });
+  }
+
   function testChannel(ctype) {
     if (state.busy) return;
     clearResult();
@@ -691,7 +785,8 @@
       fields[f.key] = (state.draft[ctype] || {})[f.key];
     });
 
-    var cb = state.ctx.nextCb(function (ok, data) {
+    var cb = track(function (ok, data) {
+      untrack(cb);
       stopTimer();
       setBusy(false);
       if (ok) {
@@ -704,17 +799,20 @@
         /* 这是远端返回的 body，不可信文本。只走 textContent。 */
         showResult(ctype, "bad", (data && data.msg) || "发送失败（没有返回原因）");
       }
+      refreshAfterTest();
     });
 
     setBusy(true, "test");
     state.timer = window.setTimeout(function () {
       state.timer = 0;
+      untrack(cb);
       state.ctx.dropCb(cb);
       setBusy(false);
       showResult(ctype, "bad", "等待超时，请检查网络或看日志");
     }, testTimeout);
 
     state.ctx.call("channel_test", ctype, fields, cb).catch(function (e) {
+      untrack(cb);
       stopTimer();
       state.ctx.dropCb(cb);
       setBusy(false);
@@ -729,7 +827,8 @@
     var v = state.draft[ctype] || {};
     var fields = { appid: String(v.appid || ""), secret: String(v.secret || "") };
 
-    var cb = state.ctx.nextCb(function (ok, data) {
+    var cb = track(function (ok, data) {
+      untrack(cb);
       stopTimer();
       setBusy(false);
 
@@ -751,12 +850,14 @@
     setBusy(true, "openid");
     state.timer = window.setTimeout(function () {
       state.timer = 0;
+      untrack(cb);
       state.ctx.dropCb(cb);
       setBusy(false);
       showResult(ctype, "bad", "等待超时，请检查网络或看日志");
     }, testTimeout);
 
     state.ctx.call("channel_fetch_openid", fields, cb).catch(function (e) {
+      untrack(cb);
       stopTimer();
       state.ctx.dropCb(cb);
       setBusy(false);
@@ -866,6 +967,40 @@
       if (!state.built) { build(); load(); return; }
       if (!state.meta) { load(); return; }
       refresh();
+    },
+    /** 切走这一页时由壳调用（W3.5 / F 项）。
+     *
+     * 不清的话会漏两样东西：
+     *   1. `cbMap` 里还在飞的回调。测试要跑 8 秒，这期间切到状态页，
+     *      结果回来时回调写进**已经不可见的 DOM**，不报错、不崩，
+     *      就是一次幽灵更新 + 一条永久留在 map 里的闭包。
+     *   2. `state.timer`。兜底超时 / 成功淡出的定时器会在死页面上再挂一个，
+     *      叠起来就是「切回来看到上一次的结果块」。
+     *
+     * 顺序：先停表、再 drop 回调、最后把 busy 放掉——放 busy 会触发
+     * `refreshGates()` 重画按钮，晚于 drop 也没关系，但不能在 drop 之前
+     * 让按钮停在「发送中…」。
+     */
+    destroy: function () {
+      stopTimer();
+      if (state.dirtyTimer) {
+        window.clearTimeout(state.dirtyTimer);
+        state.dirtyTimer = 0;
+      }
+      Object.keys(state.pending).forEach(function (id) {
+        state.ctx.dropCb(Number(id));
+      });
+      state.pending = {};
+
+      /* 结果块跟着页面走：切回来时该是空的，不是上一次的残留。
+         `state.result` 的清空必须走 clearResult()，它顺手 paintResult()。 */
+      state.result = null;
+      if (state.nodes.result) {
+        state.nodes.result.hidden = true;
+        state.nodes.result.textContent = "";
+      }
+
+      if (state.busy) setBusy(false);
     }
   };
 
@@ -874,7 +1009,7 @@
     if (state.loading) return;
     state.loading = true;
     state.ctx.call("channels_state").then(function (list) {
-      adopt(list, isDirty(state.current) ? state.current : null);
+      adopt(list);
       paintList();
       paintDetail();
     }).catch(function () {

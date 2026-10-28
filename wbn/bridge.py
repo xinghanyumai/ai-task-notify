@@ -33,12 +33,16 @@ from wbn import channels, config, insight, sanitize
 # （见 `insight._is_test_line`）。这里要**同时认两种**，否则「最后发送时间」会
 # 把测试发送漏掉——用户刚点完测试，列表上却还显示昨天的时间。
 #
-# 一次匹配取出四样：时间 / 通道名 / 成败 / 报错原文。全部锚在时间戳右侧的
-# 固定字段上，**不在整行里找子串**——`msg=` 是远端返回的原文，里面出现
-# `channel=log` 或 `ok=False` 都可能。前四轮统计 bug 全是这个形状。
+# 一次匹配取出五样：时间 / 通道名 / 成败 / 报错原文 / **是不是测试**。
+# 全部锚在时间戳右侧的固定字段上，**不在整行里找子串**——`msg=` 是远端返回的
+# 原文，里面出现 `channel=log` 或 `ok=False` 都可能。前四轮统计 bug 全是这个形状。
+#
+# `test` 那个分组是 W3.5 加的，用来把测试行和真实发送分开：
+# 时间可以认测试（「最后发送时间」显示刚刚是对的），成败判定不认
+# （测试用的是表单里未保存的值，见 `insight.delivery_health` 的 docstring）。
 _LOG_CHANNEL = re.compile(
-    r"^\[(\d{2}:\d{2}:\d{2})\] (?:test-send |test )?(?:channel|type)=(\S+)"
-    r" ok=(True|False)(?: msg=(.*))?$")
+    r"^\[(?P<time>\d{2}:\d{2}:\d{2})\] (?P<test>test-send |test )?"
+    r"(?:channel|type)=(?P<type>\S+) ok=(?P<ok>True|False)(?: msg=(?P<msg>.*))?$")
 
 
 def _ensure_json(value):
@@ -80,12 +84,23 @@ def _http_timeout() -> int:
 
 
 def _last_send_times() -> dict:
-    """今天每条通道最后一次投递，`{ctype: {"time": "HH:MM", "ok": bool, "msg": str}}`。
+    """今天每条通道最后一次投递，
+    `{ctype: {"time": "HH:MM", "ok": bool, "msg": str, "test": bool}}`。
 
-    时间、成败、报错原文一次读齐——W3.4 起通道列表要显示「最近一次失败：
-    errcode=…」，侧栏要按成败降级。**不许为这个再写第二个日志解析器**：
-    同一个文件开两个正则，迟早有一处忘了改（`_CHANNEL_LINE` 和
-    `_LOG_CHANNEL` 已经是两份，各自服务不同用途，别再加第三份）。
+    时间、成败、报错原文、是不是测试，一次读齐——W3.4 起通道列表要显示
+    「最近一次失败：errcode=…」，侧栏要按成败降级。**不许为这个再写第二个
+    日志解析器**：同一个文件开两个正则，迟早有一处忘了改（`_CHANNEL_LINE`
+    和 `_LOG_CHANNEL` 已经是两份，各自服务不同用途，别再加第三份）。
+
+    `test` 标出这条记录是不是「测试此通道」写的。**同一个字段服务两个
+    相反的用途**（W3.5）：
+
+    - `time` **认**测试行——用户刚点完测试，列表显示「刚刚」是对的；
+    - `ok` **不认**测试行——测试用的是表单里未保存的值，拿它判「这条链路
+      通不通」会让一次故意的试探把侧栏永久打成红色。
+
+    所以这里只负责**如实标注**，要不要采信由调用方决定（`delivery_health`
+    排掉 test，`channels_list` 的时间照用）。
 
     `msg` 在这里就 `redact`：它是远端返回的原文，可能回显带 key / token 的
     完整 URL。截断留给展示层（`insight.channel_state` 截 20 字），
@@ -102,10 +117,11 @@ def _last_send_times() -> dict:
         m = _LOG_CHANNEL.match(line)
         if not m:
             continue
-        out[m.group(2)] = {
-            "time": m.group(1)[:5],               # 只留 HH:MM，秒没用
-            "ok": m.group(3) == "True",
-            "msg": sanitize.redact(m.group(4) or "", 120),
+        out[m.group("type")] = {
+            "time": m.group("time")[:5],          # 只留 HH:MM，秒没用
+            "ok": m.group("ok") == "True",
+            "msg": sanitize.redact(m.group("msg") or "", 120),
+            "test": bool(m.group("test")),
         }
     return out
 
@@ -151,10 +167,26 @@ class Bridge:
     def __init__(self, on_activity=None, window=None):
         self._on_activity = on_activity
         self._window = window
+        # 前端有没有未保存的改动。**只存标志，不做判断**——「什么算改动」
+        # 是前端的事（草稿 vs 磁盘），后端不该再实现一遍比较逻辑。
+        # 关窗时 `app.py` 读它决定要不要拦。
+        self._dirty = False
 
     def _attach(self, window) -> None:
         """建完窗口再挂上。名字带下划线，不进 JS 的 API 面（见类注释）。"""
         self._window = window
+
+    @property
+    def _unsaved(self) -> bool:
+        """有没有未保存的改动。给 `app.py` 的关窗拦截用，**不给 JS 调**。
+
+        故意做成私有：`test_bridge_has_no_public_data_attributes` 钉着
+        「js_api 上只许有方法」。公开的 `is_dirty` 属性会被 pywebview 的
+        `get_functions()` 当成数据属性扫进去（就是 `self.window` 那个
+        「无限递归 → API 注入失败」的形状），而这个值本来也只有 Python 侧
+        的关窗回调要读。前端只该写，不该读。
+        """
+        return self._dirty
 
     def _touch(self) -> None:
         if self._on_activity is None:
@@ -163,6 +195,21 @@ class Bridge:
             self._on_activity()
         except Exception:
             pass      # 探针自己出错不许影响正常调用
+
+    # ------------------------------------------------------------ 窗口状态
+
+    @_guard
+    def set_dirty(self, dirty: bool) -> dict:
+        """前端把「有没有未保存的改动」告诉后端，供关窗时判断。
+
+        **只存标志，不做判断**：`app.py` 的 `closing` 回调读 `_unsaved`，
+        决定要不要弹确认框。判断「什么算改动」只有前端一份（草稿 vs 磁盘），
+        后端再实现一遍就是两份逻辑，迟早不一致。
+
+        前端调用频率受 200ms 防抖约束，见 `channels.js` 的 `syncDirty()`。
+        """
+        self._dirty = bool(dirty)
+        return {"dirty": self._dirty}
 
     # ------------------------------------------------------------ 配置
 
