@@ -52,6 +52,12 @@ _EMOJI_RANGES = (
 _LOG_LINE = re.compile(
     r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) \[([^\]]+)\] (\S+) \| (.*)$")
 
+# `notify-*.log` 里的通道投递行：`[10:40:04] channel=wxmp ok=False msg=…`。
+# **锚定时间戳右侧第一段**取通道名，不用 `"channel=log" in line`：
+# `msg=` 是通道返回的原文（不可信），里面出现 `channel=log` 的概率不为零，
+# 整行找子串会把一次真实失败当成 log 落盘排掉。和 `test` 那个坑同源。
+_CHANNEL_LINE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\] channel=(\S+)")
+
 # 模板预览用的样例 payload。放在这里而不是 UI 里：它是「数据」，
 # 两套 UI 要用同一份，否则预览出来的东西不一样。
 SAMPLE_PAYLOAD = {
@@ -115,19 +121,24 @@ def _is_test_line(line: str) -> bool:
     return body.startswith("test-send ") or body.startswith("test ")
 
 
-def _is_sent_event(line: str) -> bool:
-    """`pipeline.notify()` 写的「这条发出去了」汇总行。
+def _is_delivered(line: str) -> bool:
+    """`pipeline.notify()` 写的「这条真的到手机了」汇总行。
 
-    形如 `[10:24:23] event=Stop kind=task_done sent=True remote_ok=False …`。
+    形如 `[10:24:23] event=Stop kind=task_done sent=True remote_ok=True …`。
 
-    判据是**时间戳后第一段就是 `event=`**，加上行内有 `sent=True`：
+    判据是**时间戳后第一段就是 `event=`**，加上行内有 `remote_ok=True`：
 
     - `skip event=…`（被过滤链拦下）第一段是 `skip`，不算；
     - `test-send type=…` 第一段是 `test-send`，手动测试不算通知；
-    - `sent=False` 表示所有通道都失败，那不算「发出去了」，语义与旧版一致。
+    - `sent=False` / `remote_ok=False` 都不算。
+
+    **为什么看 `remote_ok` 而不是 `sent`**（D14）：`sent` 是 `any_ok`，
+    把 `log` 通道也算作成功——于是「只写进了本地文件」也会被数成一条通知。
+    `remote_ok` 是 `pipeline.py` 里 `t not in ("log",)` 那一步算出来的，
+    语义就是「至少一个远端通道成功」。`log` 是调试落盘，不是投递目标。
     """
     body = line.split("] ", 1)[-1]
-    return body.startswith("event=") and "sent=True" in body
+    return body.startswith("event=") and "remote_ok=True" in body
 
 
 def stats(cfg: dict) -> dict:
@@ -135,37 +146,50 @@ def stats(cfg: dict) -> dict:
 
     返回 `{today, ok, fail, channels, recent: [{time, channel, summary, ok}]}`。
 
-    **两个数据源，用途别混：**
+    **三个数只算远端通道**（D14）。`log` 通道是调试落盘，不是投递目标：
+    它既不该让 `today` +1，也不该让 `ok` +1，否则屏幕上会出现
+    「16 条通知 / 16 次成功 / 14 次失败」——三个数不在同一个宇宙里。
 
-    - `today` 数 `notify-*.log` 里 `event=… sent=True` 的汇总行。
-      它由 `pipeline.notify()` 写，**和通道开关无关**——通道全关也照写。
-      以前数的是 `notifications.log`，而那个文件全项目只有
+    两个数据源，用途别混：
+
+    - `notify-*.log` 供 `today` / `ok` / `fail`。它由 `pipeline.notify()` 和
+      `channels.send_all()` 写，**和通道开关无关**——通道全关也照写。
+      （`today` 曾经数 `notifications.log`，而那个文件全项目只有
       `channels._send_log` 写；用户关掉「写入本地日志」通道，这个数就冻住，
-      而 `ok`/`fail` 继续涨，于是又是一次「几个数对不上」。
-    - `ok` / `fail` 数同一个文件里的通道行，判据是**含 `channel=` 子串**
-      （`in`，**不是** `startswith`）。每个事件在通道行之后还有一行汇总
-      `… remote_ok=False`，那一行会被 "ok=False" 命中，失败数直接翻倍
-      （19 显示成 38）。这段 docstring 以前写「开头」，和代码对不上——
-      正因如此，测试发送那个 bug 一直没被发现。
-      以 `test ` / `test-send ` 开头的行是手动点「测试此通道」产生的，不算投递，
-      跳过；历史行**不删**（复盘要看）。
-    - `recent` 读 `notifications.log`，那是用户唯一能读的正文记录。
+      而 `ok`/`fail` 继续涨，于是又是一次「几个数对不上」。）
+    - `notifications.log` 只供 `recent`，那是用户唯一能读的正文记录。
+
+    三处判据，都是踩过的坑：
+
+    - `today` 看 `event=… remote_ok=True`（见 `_is_delivered`）。
+    - `ok` / `fail` **必须锚定时间戳右侧第一段**取通道名（`_CHANNEL_LINE`），
+      **不许写 `"channel=log" in line`**：`msg=` 是通道返回的原文，
+      里面出现 `channel=log` 的概率不为零，整行找子串就会把一次真实失败
+      当成 `log` 落盘排掉（和 `test` 那个坑同源）。
+      拿不到通道名的行一律跳过——每个事件后面那行
+      `event=… remote_ok=False` 含 `ok=False` 子串，不跳过失败数会翻倍
+      （19 显示成 38）。
+    - 以 `test ` / `test-send ` 开头的行是手动点「测试此通道」产生的，
+      不算投递，跳过；历史行**不删**（复盘要看）。
+    - `recent` 跳过 `kind == "test"`：测试正文不是通知。`kind` 表达的就是
+      「这条记录是什么事件」，判断「是不是通知」正是它的本职。
       标题开头的 ✅/⚠️ 要剥掉——成败已经由 `ok` 字段表达，emoji 是重复信号，
       而且 Canvas 字体没有 emoji 字形。
     """
     today = datetime.now().strftime("%Y-%m-%d")
-    sent, ok, fail = 0, 0, 0
+    delivered, ok, fail = 0, 0, 0
 
     lp = config.LOG_DIR / f"notify-{today}.log"
     if lp.exists():
         try:
             for line in lp.read_text(encoding="utf-8",
                                      errors="replace").splitlines():
-                if _is_sent_event(line):
-                    sent += 1
+                if _is_delivered(line):
+                    delivered += 1
                 if _is_test_line(line):
                     continue
-                if "channel=" not in line:
+                m = _CHANNEL_LINE.match(line)
+                if not m or m.group(2) == "log":
                     continue
                 if "ok=True" in line:
                     ok += 1
@@ -183,18 +207,21 @@ def stats(cfg: dict) -> dict:
                 m = _LOG_LINE.match(line)
                 if not m:
                     continue
+                kind = m.group(4)
+                if kind == "test":
+                    continue
                 _emoji, plain = split_emoji(m.group(5))
                 rows.append({
                     "time": m.group(2),
                     "channel": "",
                     "summary": (plain or m.group(5))[:52],
-                    "ok": m.group(4) not in ("task_failed", "tool_failed"),
+                    "ok": kind not in ("task_failed", "tool_failed"),
                 })
         except Exception:
             pass
 
     return {
-        "today": sent, "ok": ok, "fail": fail,
+        "today": delivered, "ok": ok, "fail": fail,
         "channels": len(config.enabled_channels(cfg)),
         "recent": list(reversed(rows[-8:])),
     }

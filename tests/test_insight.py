@@ -89,18 +89,71 @@ def test_stats_counts_only_channel_lines():
     """**这是「19 变 38」那个 bug 的回归测试。**
 
     每个事件在通道行之后还有一行汇总，里面 `remote_ok=False` 含子串
-    "ok=False"。如果不过滤 `channel=`，失败数直接翻倍。
+    "ok=False"。只认锚定在时间戳右侧的 `channel=` 行，汇总行就进不来。
     """
     today = datetime.now().strftime("%Y-%m-%d")
     _write(config.LOG_DIR / f"notify-{today}.log", [
-        f"{today} 10:00:00 channel=wxmp ok=True msg=1.2s",
-        f"{today} 10:00:00 channel=bark ok=False msg=timeout",
-        f"{today} 10:00:00 event=Stop kind=task_done sent=True "
-        f"remote_ok=False remote_fail=1 dedup=False",
+        "[10:00:00] channel=wxmp ok=True msg=1.2s",
+        "[10:00:01] channel=bark ok=False msg=timeout",
+        "[10:00:02] event=Stop kind=task_done sent=True "
+        "remote_ok=False remote_fail=1 dedup=False",
     ])
     s = insight.stats(config.load())
     assert s["ok"] == 1
     assert s["fail"] == 1, "汇总行的 remote_ok=False 不能被算成一次失败"
+
+
+def test_stats_excludes_log_channel_from_ok_and_fail():
+    """**D14 的核心：`log` 是调试落盘，不是投递目标。**
+
+    它落盘成功既不该让 `ok` +1，也不该让 `today` +1——否则屏幕上会出现
+    「16 条通知 / 16 次成功 / 14 次失败」这种读不出结论的卡。
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    _write(config.LOG_DIR / f"notify-{today}.log", [
+        "[10:00:00] channel=log ok=True msg=已记录",
+        "[10:00:00] channel=wxmp ok=False msg=errcode=40037 模板 ID 无效",
+        "[10:00:01] event=Stop kind=task_done sent=True remote_ok=False",
+    ])
+    s = insight.stats(config.load())
+    assert s["ok"] == 0, "log 落盘不算一次投递成功"
+    assert s["fail"] == 1, "远端那一次失败要留下"
+    assert s["today"] == 0, "只有 log 成功的事件不算到手机了"
+
+
+def test_stats_does_not_mistake_msg_for_channel_name():
+    """**验收第 6 条：假通道名不误伤。**
+
+    前三轮的 bug 全出在「整行找子串」。取通道名必须锚定时间戳右侧第一段：
+    `msg=` 是通道返回的原文，里面出现 `channel=log` 的概率不为零，
+    整行匹配会把一次**真实失败**当成 log 落盘排掉。
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    _write(config.LOG_DIR / f"notify-{today}.log", [
+        "[10:00:00] channel=wxmp ok=False msg=upstream said channel=log failed",
+        "[10:00:01] channel=log ok=True msg=已记录",
+        "[10:00:02] channel=bark ok=True msg=ok channel=log",
+    ])
+    s = insight.stats(config.load())
+    assert s["fail"] == 1, "msg 里含 channel=log 的真实失败必须计入 fail"
+    assert s["ok"] == 1, "只有 bark 那一行算成功（log 行被排除）"
+
+
+def test_stats_recent_skips_test_kind():
+    """「最近通知」里出现一条带绿色 ✓ 的「通知测试」，就是「看起来像真的」。
+
+    `kind` 表达的就是「这条记录是什么事件」，判断「是不是通知」是它的本职。
+    注意这个特判**只管 recent**，不参与 today / ok / fail 的计数。
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    _write(config.LOG_DIR / "notifications.log", [
+        f"{today} 10:00:00 [WorkBuddy] test | 🔔 通知测试",
+        "    通道工作正常。",
+        f"{today} 10:01:00 [WorkBuddy] task_done | ✅ WorkBuddy 任务完成",
+    ])
+    recent = insight.stats(config.load())["recent"]
+    assert len(recent) == 1
+    assert recent[0]["summary"] == "WorkBuddy 任务完成"
 
 
 def test_stats_ignores_test_send_lines():
@@ -148,7 +201,7 @@ def test_stats_today_comes_from_event_lines_not_notifications_log():
         "[09:03:00] skip event=Stop kind=task_done reason=耗时太短",
     ])
     s = insight.stats(config.load())
-    assert s["today"] == 2, "sent=False 表示全部失败、skip 表示没发，都不算"
+    assert s["today"] == 1, "只有 remote_ok=True 才算到手机；远端全失败不算"
     assert len(s["recent"]) == 3, "recent 仍然读 notifications.log"
 
 
@@ -165,13 +218,17 @@ def test_stats_today_survives_log_channel_being_off():
     assert s["recent"] == [], "没有正文记录就是空，不许凭空编"
 
 
-def test_is_sent_event_anchors_on_the_first_field():
-    """`sent=True` 只是子串判据，靠「第一段是 `event=`」把不相干的行挡掉。"""
-    assert insight._is_sent_event("[10:00:00] event=Stop sent=True remote_ok=False")
-    assert not insight._is_sent_event("[10:00:00] event=Stop sent=False")
-    assert not insight._is_sent_event("[10:00:00] skip event=Stop sent=True")
-    assert not insight._is_sent_event("[10:00:00] test-send type=log sent=True")
-    assert not insight._is_sent_event("garbage line without prefix")
+def test_is_delivered_anchors_on_the_first_field():
+    """`remote_ok=True` 只是子串判据，靠「第一段是 `event=`」把不相干的行挡掉。"""
+    assert insight._is_delivered(
+        "[10:00:00] event=Stop sent=True remote_ok=True")
+    # sent=True 但远端全失败 = 没到手机
+    assert not insight._is_delivered(
+        "[10:00:00] event=Stop sent=True remote_ok=False")
+    assert not insight._is_delivered("[10:00:00] event=Stop sent=False")
+    assert not insight._is_delivered("[10:00:00] skip event=Stop remote_ok=True")
+    assert not insight._is_delivered("[10:00:00] test-send type=log remote_ok=True")
+    assert not insight._is_delivered("garbage line without prefix")
 
 
 def test_is_test_line_only_looks_at_the_first_field():

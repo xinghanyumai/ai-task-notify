@@ -417,7 +417,7 @@ DPI（2.0）算出 2338 物理像素的窗口；WebView2 再按 2.4 把它折回
 | 字段 | 文件 | 判据 | 为什么 |
 |---|---|---|---|
 | `today` | `notify-*.log` | 时间戳后第一段是 `event=`，且行内有 **`remote_ok=True`** | 由 `pipeline.notify()` 写，**与通道开关无关**；`remote_ok` 已排除 `log`（`pipeline.py:92`），所以「今日通知」= 真的到手机了（D14） |
-| `ok` / `fail` | `notify-*.log` | 含 `channel=` 子串（`in`，不是 `startswith`），**且通道不是 `log`** | 汇总行 `remote_ok=False` 会被 `ok=False` 命中，失败数翻倍（19 变 38）。排除 `log` 是为了和 `today` 同一个单位 |
+| `ok` / `fail` | `notify-*.log` | `_CHANNEL_LINE` 锚定时间戳右侧第一段取出通道名，**`!= "log"` 才计数** | 汇总行 `remote_ok=False` 会被 `ok=False` 命中，失败数翻倍（19 变 38）。排除 `log` 是为了和 `today` 同一个单位。**不许写 `"channel=log" in line`**——`msg=` 是通道原文，见下 |
 | `ok` / `fail` | 同上 | 跳过时间戳后第一段是 `test-send ` / `test ` 的行 | 手动测试不算投递。只看第一段，不整行找 `test`——`msg=` 是通道原文，出现 test 很常见 |
 | `recent` | `notifications.log` | 跳过 `kind == "test"` 的行 | 测试正文不是通知。`kind` 表达的就是「这条记录是什么事件」，这是它的正确用法 |
 
@@ -442,8 +442,9 @@ DPI（2.0）算出 2338 物理像素的窗口；WebView2 再按 2.4 把它折回
 （"我又不看日志文件"），`today` 就冻住，`ok` / `fail` 继续涨——第三次
 「几个数对不上」。
 
-改成数 `notify-*.log` 的 `event=… sent=True` 汇总行之后，这个数**不再依赖
+改成数 `notify-*.log` 的 `event=…` 汇总行之后，这个数**不再依赖
 任何可被关闭的东西**：通道全关，`pipeline` 照样写那一行。
+（判据后来又收紧成 `remote_ok=True`，见下面 D14 那节。）
 
 **教训**：判断一个数该从哪取，先问「这个数据源会不会被用户关掉」。
 前两轮都在修过滤条件，只要数据源选错，过滤修多少次都会冒出第四次。
@@ -469,6 +470,22 @@ DPI（2.0）算出 2338 物理像素的窗口；WebView2 再按 2.4 把它折回
 
 **代价**：`log` 写盘失败（磁盘满）不再进统计。可接受——它是调试通道，
 失败原因在日志 tail 和它自己的「测试此通道」里都能看到。
+
+### 取通道名必须锚定首段，理由和 `test` 那个坑同源
+
+```python
+_CHANNEL_LINE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\] channel=(\S+)")
+```
+
+不能写 `"channel=log" in line`：`msg=` 后面是通道返回的原文，属于不可信文本。
+webhook 的上游报错里出现 `channel=log` 完全可能，整行找子串会把一次**真实失败**
+当成 log 落盘排掉——数字变小、故障被吞。回归测试见
+`tests/test_insight.py::test_stats_does_not_mistake_msg_for_channel_name`。
+
+**遗留（未改，同类）**：`ok=True` / `ok=False` 仍然是整行子串判据。
+`msg=` 里出现 `ok=False` 理论上会多算一次失败。真实通道的报错原文目前都是
+`errcode=` / `HTTP xxx` / 异常名，没命中过；要彻底消掉得把状态也纳入正则，
+属于改解析逻辑，单独评估。
 
 ## 超时口径：前端必须比后端长
 
@@ -504,7 +521,7 @@ DPI（2.0）算出 2338 物理像素的窗口；WebView2 再按 2.4 把它折回
 
 ## 测试与 CI
 
-`tests/` 下有 270 个 pytest 用例，覆盖折行、脱敏、事件归类、过滤链、平台差异，
+`tests/` 下有 273 个 pytest 用例，覆盖折行、脱敏、事件归类、过滤链、平台差异，
 以及 W0 抽取出来的 `insight` 纯函数、W1 的 bridge 返回值契约。
 默认跳过 `network` 标记的用例，`gui` 类用例靠 `sys.platform` 自己跳过，
 所以 Windows 上跑的是全量。
