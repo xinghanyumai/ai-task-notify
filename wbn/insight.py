@@ -28,10 +28,13 @@ import os
 import re
 import subprocess
 import sys
-from datetime import datetime, timedelta
 from pathlib import Path
 
-from . import channels, config, events, pipeline, render
+from . import channels, config, events, logs, pipeline, render
+
+# `split_emoji` / `is_test_line` 的实现搬去了 `logs`（唯一的日志解析层），
+# 这里 re-export：`ui.py` 和测试都直接调 `insight.split_emoji`。
+from .logs import split_emoji as split_emoji
 
 # 语义等级。UI 层把它映射成具体颜色，本模块不知道任何颜色。
 LEVEL_OK = "ok"
@@ -42,41 +45,10 @@ LEVEL_MUTED = "muted"
 # 表单里是逗号分隔的字符串，config 里是 list[str] 的三项
 _LIST_KEYS = ("projects_include", "projects_exclude", "keywords_include")
 
-# emoji 的码位区间。日志标题开头通常是 ✅ / ⚠️ 这类 emoji，
-# 前端拿到的是纯文本，剥掉之后用「结果点」表达成败，不重复。
-_EMOJI_RANGES = (
-    (0x2190, 0x21FF), (0x2300, 0x23FF), (0x25A0, 0x27BF),
-    (0x2B00, 0x2BFF), (0xFE00, 0xFE0F), (0x1F000, 0x1FAFF),
-)
-
-# `notify-*.log` 里的**事件汇总行**，`pipeline.notify()` 每条事件写一行：
-#   [10:24:23] event=Stop kind=task_done sent=True remote_ok=True \
-#              elapsed=1.17s title=✅ WorkBuddy 任务完成
-#
-# 这一行同时供 `today` 和 `recent`（W3.5）。**一个正则，两个用途**——
-# 以前 `recent` 读 `notifications.log`（那是 `log` 通道的副产物，通道一关
-# 就永久为空），于是同一个界面上的两个数来自两个不同的宇宙。
-#
-# `title=` 是最后一个字段，可能含空格（`✅ WorkBuddy 任务完成`），所以用 `(.*)`
-# 收尾；老行没有 `title=`，那一段可选。字段全部锚定位置，不整行找子串。
-_EVENT_LINE = re.compile(
-    r"^\[(?P<time>\d{2}:\d{2}:\d{2})\] event=(?P<event>\S+) kind=(?P<kind>\S+)"
-    r" sent=(?P<sent>True|False) remote_ok=(?P<remote_ok>True|False)"
-    r" elapsed=\S+(?: title=(?P<title>.*))?$")
-
 # `kind` 里属于「这次任务不顺」的那几种，最近通知用红点标出来。
 # 注意这跟 `remote_ok` 是两件事：一条「任务失败」的通知**送到了**也是红点，
 # 因为红点说的是「这件事本身是坏消息」，不是「没发出去」。
 _BAD_KINDS = ("task_failed", "tool_failed")
-
-# `notify-*.log` 里的通道投递行：`[10:40:04] channel=wxmp ok=False msg=…`。
-# **连 `ok=` 一起锚定**，不留给 `"ok=True" in line` 这种子串判断：
-# `msg=` 是通道返回的原文（不可信），里面出现 `ok=False` 完全可能，
-# 整行找子串会把一次成功数成失败。四轮统计 bug 全部出在「整行找子串」，
-# 留一处就还有下一次。
-# 写入格式固定（`channels.py` 的 `send_all`），`ok=` 后面永远是 True/False。
-_CHANNEL_LINE = re.compile(
-    r"^\[(\d{2}:\d{2}:\d{2})\] channel=(\S+) ok=(True|False)")
 
 # 模板预览用的样例 payload。放在这里而不是 UI 里：它是「数据」，
 # 两套 UI 要用同一份，否则预览出来的东西不一样。
@@ -95,20 +67,6 @@ SAMPLE_PAYLOAD = {
 # ---------------------------------------------------------------- 字符串工具
 
 
-def split_emoji(text: str) -> tuple[str, str]:
-    """把开头连续的 emoji 与后面的文字分开，返回 (emoji, 其余)。"""
-    i = 0
-    for ch in text or "":
-        o = ord(ch)
-        if any(a <= o <= b for a, b in _EMOJI_RANGES):
-            i += 1
-        elif ch == " " and i > 0:
-            i += 1
-        else:
-            break
-    return text[:i].strip(), text[i:].lstrip()
-
-
 def to_int(text, default: int) -> int:
     """转 int，失败回落默认值。空字符串、None、非数字都走回落。"""
     try:
@@ -125,20 +83,9 @@ def split_list(text) -> list[str]:
 # ---------------------------------------------------------------- 状态翻译
 
 
-def _is_test_line(line: str) -> bool:
-    """是不是手动点「测试此通道」写下的行。
-
-    两种写法都要认：
-
-    - `test-send type=bark ok=False …`（W3.1 起 `pipeline.send_test` 这么写）
-    - `test channel=bark ok=False …`（W3.1 之前的历史行，日志里还留着）
-
-    只判**时间戳之后的第一段**，不在整行里找 `test`：`msg=` 后面是通道返回的
-    原文，属于不可信文本，里面出现 "test" 很常见（`connection reset by test-host`
-    之类），整行匹配会误伤。
-    """
-    body = line.split("] ", 1)[-1]
-    return body.startswith("test-send ") or body.startswith("test ")
+# 「测试此通道」写下的行。实现搬到 `logs`（那里是唯一解析日志的地方），
+# 这里留别名：测试和 `ui.py` 都直接调 `insight._is_test_line`。
+_is_test_line = logs.is_test_line
 
 
 def _is_delivered(line: str) -> bool:
@@ -146,7 +93,7 @@ def _is_delivered(line: str) -> bool:
 
     形如 `[10:24:23] event=Stop kind=task_done sent=True remote_ok=True …`。
 
-    判据是**整行按位置匹配 `_EVENT_LINE`**，再要求 `remote_ok=True`：
+    判据是**整行按位置匹配事件行**（`logs.parse_event`），再要求 `remote_ok`：
 
     - `skip event=…`（被过滤链拦下）第一段是 `skip`，匹配不上；
     - `test-send type=…` 第一段是 `test-send`，手动测试不算通知；
@@ -157,30 +104,11 @@ def _is_delivered(line: str) -> bool:
     `remote_ok` 是 `pipeline.py` 里 `t not in ("log",)` 那一步算出来的，
     语义就是「至少一个远端通道成功」。`log` 是调试落盘，不是投递目标。
 
-    判据只此一份：`stats()` 里数 `today` 用的是同一个 `_EVENT_LINE` 的匹配结果，
+    判据只此一份：`stats()` 数 `today` 用的是同一个 `logs.read()` 的结果，
     不是另写一遍 `"remote_ok=True" in line`。子串判据是前四轮 bug 的共同形状。
     """
-    m = _EVENT_LINE.match(line)
-    return bool(m) and m.group("remote_ok") == "True"
-
-
-def _recent_row(m: re.Match, day: str) -> dict:
-    """一条事件汇总行 → 「最近通知」里的一行。"""
-    kind = m.group("kind")
-    raw = m.group("title") or ""
-    _emoji, plain = split_emoji(raw)
-    return {
-        "time": m.group("time"),
-        # `day` 让前端能区分「今天」和「昨天」。没有它，昨天 23:50 和今天
-        # 00:10 在界面上都是 `23:50` / `00:10`，用户会以为都是今天的。
-        "day": day,
-        "channel": "",
-        # 标题空（老行没有 `title=` 字段）就退回事件名，不显示空白行
-        "summary": (plain or events.KIND_LABELS.get(kind) or kind)[:52],
-        # 红点说的是「这次任务本身不顺」，不是「没发出去」——后者由 `today`
-        # 的计数体现。两者混用会让一条送达了的「任务失败」通知变成绿点。
-        "ok": kind not in _BAD_KINDS,
-    }
+    ev = logs.parse_event(line)
+    return ev is not None and ev.remote_ok
 
 
 def stats(cfg: dict) -> dict:
@@ -192,7 +120,7 @@ def stats(cfg: dict) -> dict:
     它既不该让 `today` +1，也不该让 `ok` +1，否则屏幕上会出现
     「16 条通知 / 16 次成功 / 14 次失败」——三个数不在同一个宇宙里。
 
-    **一个数据源**（W3.5）：`notify-*.log`。它由 `pipeline.notify()` 和
+    **一个数据源**（W3.5）：通道日志（`logs.read()`）。它由 `pipeline.notify()` 和
     `channels.send_all()` 写，**和通道开关无关**——通道全关也照写。
 
     - `today` / `recent` 读同一种行：`pipeline` 写的事件汇总行
@@ -210,8 +138,8 @@ def stats(cfg: dict) -> dict:
       这种没有结论的数字。`recent` 读今天 + 昨天，跨零点不能空。
       「最近一次」是另一件事，见 `bridge._last_send_times()`。
     - `today` 看 `event=… remote_ok=True`（见 `_is_delivered`）。
-    - `ok` / `fail` **一个子串判断都不用**：`_CHANNEL_LINE` 把通道名和
-      `ok=(True|False)` 一起锚定在时间戳右侧，取 `m.group(2)` / `m.group(3)`。
+    - `ok` / `fail` **一个子串判断都不用**：`logs` 里的投递行正则把通道名和
+      `ok=(True|False)` 一起锚定在时间戳右侧。
       `msg=` 是通道返回的原文，里面出现 `channel=log` 或 `ok=False` 都可能，
       整行找子串会把一次真实结果读反（前四轮 bug 全是这个形状）。
       匹配不上的行一律跳过——每个事件后面那行
@@ -225,50 +153,36 @@ def stats(cfg: dict) -> dict:
       标题开头的 ✅/⚠️ 要剥掉——成败已经由 `ok` 字段表达，emoji 是重复信号，
       而且 Canvas 字体没有 emoji 字形。
     """
-    now = datetime.now()
-    today = now.strftime("%Y-%m-%d")
-    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
-    delivered, ok, fail = 0, 0, 0
-    rows: list[dict] = []
+    facts = logs.read(days=2)
 
-    # 今天 + 昨天。`recent` 是「最近通知」，本来就该跨天；只读今天的话，
-    # 刚过零点打开程序会看到一片空白，而昨晚明明发过 20 条。
-    for day, tag in ((yesterday, "yesterday"), (today, "today")):
-        lp = config.LOG_DIR / f"notify-{day}.log"
-        if not lp.exists():
-            continue
-        try:
-            text = lp.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for line in text.splitlines():
-            em = _EVENT_LINE.match(line)
-            if em:
-                if em.group("remote_ok") == "True":
-                    if tag == "today":
-                        delivered += 1
-                    rows.append(_recent_row(em, tag))
-                continue
-            if _is_test_line(line):
-                continue
-            m = _CHANNEL_LINE.match(line)
-            if not m or m.group(2) == "log":
-                continue
-            # 通道成功/失败是「今日」卡上的数，昨天的投递不是今天的成绩（D18）。
-            # **位置不能提前**：放到 `_EVENT_LINE` 判断之前会把 `recent` 也断掉，
-            # 而 `recent` 就是要读两天。只截通道行，不动事件行。
-            if tag != "today":
-                continue
-            if m.group(3) == "True":
-                ok += 1
-            else:
-                fail += 1
+    # 三个数都只数今天（D18）：它们在同一张「今日」卡上，混进昨天的投递
+    # 就会读出「今日通知 2 / 通道失败 66」这种没有结论的数字。
+    today_events = facts.events_of("today")
+    remote = facts.deliveries_of("today", remote_only=True)
 
     return {
-        "today": delivered, "ok": ok, "fail": fail,
+        "today": sum(1 for e in today_events if e.remote_ok),
+        "ok": sum(1 for d in remote if d.ok),
+        "fail": sum(1 for d in remote if not d.ok),
         "channels": len(config.enabled_channels(cfg)),
-        # 追加写的日志，最后一行最新；先截 8 条再倒序
-        "recent": list(reversed(rows[-8:])),
+        # `recent` 读两天、只要送到手机的、最新在前——三条口径都在 `logs` 里。
+        "recent": [
+            {
+                "time": e.time,
+                # `day` 让前端能区分「今天」和「昨天」。没有它，昨天 23:50 和
+                # 今天 00:10 在界面上都是 `23:50` / `00:10`，用户会以为都是今天的。
+                "day": e.day,
+                "channel": "",
+                # 标题空（老行没有 `title=` 字段）就退回事件名，不显示空白行
+                "summary": (e.title or events.KIND_LABELS.get(e.kind)
+                            or e.kind)[:52],
+                # 红点说的是「这次任务本身不顺」，不是「没发出去」——后者由
+                # `today` 的计数体现。两者混用会让一条送达了的「任务失败」
+                # 通知变成绿点。
+                "ok": e.kind not in _BAD_KINDS,
+            }
+            for e in facts.recent(8)
+        ],
     }
 
 
@@ -433,7 +347,8 @@ def hooks_installed() -> bool:
                      Path.home() / ".codebuddy" / "settings.json"):
             if not path.exists():
                 continue
-            d = json.loads(path.read_text(encoding="utf-8"))
+            with path.open(encoding="utf-8") as fh:
+                d = json.load(fh)
             if "hook.py" in json.dumps(d.get("hooks", {}), ensure_ascii=False):
                 return True
     except Exception:

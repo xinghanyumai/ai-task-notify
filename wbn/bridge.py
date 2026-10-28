@@ -18,31 +18,9 @@ from __future__ import annotations
 
 import functools
 import json
-import re
 import threading
-from datetime import datetime, timedelta
 
-from wbn import channels, config, insight, sanitize
-
-# 日志行形如：
-#   [00:06:38] channel=wxmp ok=False msg=errcode=40037 模板 ID 无效
-#   [01:26:32] test-send type=webhook ok=False msg=TimeoutError: timed out
-#   [01:26:32] test channel=log ok=True msg=已记录        ← W3.1 之前的历史写法
-#
-# 字段名从 `channel=` 改成 `type=` 是为了让 `insight.stats()` 认不出来
-# （见 `insight._is_test_line`）。这里要**同时认两种**，否则「最后发送时间」会
-# 把测试发送漏掉——用户刚点完测试，列表上却还显示昨天的时间。
-#
-# 一次匹配取出五样：时间 / 通道名 / 成败 / 报错原文 / **是不是测试**。
-# 全部锚在时间戳右侧的固定字段上，**不在整行里找子串**——`msg=` 是远端返回的
-# 原文，里面出现 `channel=log` 或 `ok=False` 都可能。前四轮统计 bug 全是这个形状。
-#
-# `test` 那个分组是 W3.5 加的，用来把测试行和真实发送分开：
-# 时间可以认测试（「最后发送时间」显示刚刚是对的），成败判定不认
-# （测试用的是表单里未保存的值，见 `insight.delivery_health` 的 docstring）。
-_LOG_CHANNEL = re.compile(
-    r"^\[(?P<time>\d{2}:\d{2}:\d{2})\] (?P<test>test-send |test )?"
-    r"(?:channel|type)=(?P<type>\S+) ok=(?P<ok>True|False)(?: msg=(?P<msg>.*))?$")
+from wbn import channels, config, insight, logs, sanitize
 
 
 def _ensure_json(value):
@@ -84,70 +62,32 @@ def _http_timeout() -> int:
 
 
 def _last_send_times() -> dict:
-    """每条通道的**两件事实**（今天 + 昨天），一个 dict 两个时间轴：
+    """每条通道的**两件事实**（今天 + 昨天），`{ctype: {…}}`。
 
-    `{ctype: {"time", "day", "test", "ok", "msg", "ok_day"}}`
+    这是 `logs.read(days=2).last_by_channel()` 的**薄封装**：解析、分槽、
+    「今天的记录覆盖昨天的」全部在 `logs` 里，这里只把 `ChannelFacts`
+    摊平成前端契约要的普通 dict（`channels_list` / `channel_state` /
+    `delivery_health` 都按 dict 下标读，`ui.py` 的退路也走这条路）。
 
     | 字段 | 来源 | 消费者 |
     |---|---|---|
-    | `time` / `day` / `test` | **最近一条**记录（含测试） | 通道列表的「最后发送时间」、状态页的 `last` |
+    | `time` / `day` / `test` | **最近一条**记录（含测试） | 通道列表的「最后发送时间」、状态页 `last` |
     | `ok` / `msg` / `ok_day` | 最近一条**非测试**记录 | `delivery_health()` / `channel_state()` |
-
-    **为什么要两个槽**（D19）。W3.5 声明了「时间认测试、成败不认」，但那时候
-    返回的是一条记录——一个槽装不下两种事实，于是同一个界面上下一红一绿：
-
-    - 今天只点过一次测试失败 → `channel_state` 读到 `ok=False` 判红，
-      而 `delivery_health` 把这条 `test` 排掉 → `none` → 侧栏绿。
-    - 昨天真实失败 + 今天点一次测试 → 今天这条**覆盖**了昨天那条，
-      判定时又被当测试排掉，等于用一条无效记录**遮蔽**了一条有效记录。
-      R25 修好的「零点不失忆」，被「早上点一次测试」打回原形。
 
     **`ok` 是三态**：`True` / `False` / **`None`**。`None` 表示「真实投递
     一次都没发生过」，既不是成功也不是失败。消费者必须写 `is False` /
     `is not None`，**不许写 `not last.get("ok")`**——`None` 是 falsy，
-    那会把「没发生过」判成「失败」，正是这次要修的病。
+    那会把「没发生过」判成「失败」，正是 W3.7 要修的病。
 
-    `day` / `ok_day` 只在这里算。判定层（`delivery_health` / `channel_state`）
-    不该知道有几个文件、哪条是哪天的——它们只看 `ok` / `msg`。
-
-    `msg` 在这里就 `redact`：它是远端返回的原文，可能回显带 key / token 的
-    完整 URL。截断留给展示层（`insight.channel_state` 截 20 字），
-    顺序必须是**先脱敏再截断**——反过来会把敏感串的前半段留在界面上。
+    函数名保留：312 个测试直接调它，改名等于改契约。
     """
-    now = datetime.now()
-    recent: dict[str, dict] = {}     # 最近一条，含测试
-    real: dict[str, dict] = {}       # 最近一条非测试
-    for d, tag in ((now - timedelta(days=1), "yesterday"), (now, "today")):
-        path = config.LOG_DIR / f"notify-{d:%Y-%m-%d}.log"
-        try:
-            text = path.read_text(encoding="utf-8", errors="replace")
-        except OSError:
-            continue
-        for line in text.splitlines():
-            m = _LOG_CHANNEL.match(line)
-            if not m:
-                continue
-            rec = {
-                "time": m.group("time")[:5],          # 只留 HH:MM，秒没用
-                "day": tag,
-                "ok": m.group("ok") == "True",
-                "msg": sanitize.redact(m.group("msg") or "", 120),
-                "test": bool(m.group("test")),
-            }
-            recent[m.group("type")] = rec
-            if not rec["test"]:
-                real[m.group("type")] = rec
-
-    out: dict[str, dict] = {}
-    for ctype, r in recent.items():
-        truth = real.get(ctype)
-        out[ctype] = {
-            "time": r["time"], "day": r["day"], "test": r["test"],
-            "ok": truth["ok"] if truth else None,
-            "msg": truth["msg"] if truth else "",
-            "ok_day": truth["day"] if truth else None,
+    return {
+        ctype: {
+            "time": f.time, "day": f.day, "test": f.test,
+            "ok": f.ok, "msg": f.msg, "ok_day": f.ok_day,
         }
-    return out
+        for ctype, f in logs.read(days=2).last_by_channel().items()
+    }
 
 
 def _last_label(rec: dict | None) -> str | None:

@@ -198,6 +198,7 @@ Tkinter 是标准库，配置界面不用装 Qt 或 Electron，双击即开。
 │   ├── store.py       去重、限流计数、会话计时、失败队列
 │   ├── pipeline.py    流水线编排 + 测试发送
 │   ├── insight.py     config/日志 → 前端可直接渲染的数据（零 UI 依赖，两套界面共用）
+│   ├── logs.py        唯一的日志解析层：文本 → Facts（只做结构，不做业务判断）
 │   ├── bridge.py      暴露给 JS 的 API（config_get / config_save），返回值统一 {ok,data,error}
 │   ├── theme.py       设计令牌（配色 / 圆角 / 字体 / DPI / 对比度计算）
 │   ├── widgets.py     自绘控件（按钮/开关/竖脊导航/分节/时间轴/手机预览）
@@ -416,17 +417,60 @@ DPI（2.0）算出 2338 物理像素的窗口；WebView2 再按 2.4 把它折回
 
 | 字段 | 文件 | 判据 | 为什么 |
 |---|---|---|---|
-| `today` | `notify-{今天}.log` | 时间戳后第一段是 `event=`，且行内有 **`remote_ok=True`** | 由 `pipeline.notify()` 写，**与通道开关无关**；`remote_ok` 已排除 `log`（`pipeline.py:92`），所以「今日通知」= 真的到手机了（D14） |
-| `ok` / `fail` | `notify-{今天}.log` | `_CHANNEL_LINE` 锚定时间戳右侧第一段取出通道名，**`!= "log"` 才计数**；**且只数今天** | 汇总行 `remote_ok=False` 会被 `ok=False` 命中，失败数翻倍（19 变 38）。排除 `log` 是为了和 `today` 同一个单位。**不许写 `"channel=log" in line`**——`msg=` 是通道原文，见下。只数今天见「跨天边界」 |
-| `ok` / `fail` | 同上 | 跳过时间戳后第一段是 `test-send ` / `test ` 的行 | 手动测试不算投递。只看第一段，不整行找 `test`——`msg=` 是通道原文，出现 test 很常见 |
-| `recent` | `notify-*.log`（今天 + 昨天） | `_EVENT_LINE` 取 `kind` / `title` / `remote_ok`；跳过 `kind == "test"` | **W3.5 换的数据源**。旧实现读 `notifications.log`，而那个文件只有 `log` 通道写——关掉它「最近通知」永久为空，空态还说「还没收到通知」。见下 |
+| `today` | `notify-{今天}.log` | `facts.events_of("today")` 里 **`remote_ok=True`** 的条数 | 由 `pipeline.notify()` 写，**与通道开关无关**；`remote_ok` 已排除 `log`（`pipeline.py:92`），所以「今日通知」= 真的到手机了（D14） |
+| `ok` / `fail` | `notify-{今天}.log` | `facts.deliveries_of("today", remote_only=True)`，再数 `ok` 的 True / False | 汇总行 `remote_ok=False` 会被 `ok=False` 命中，失败数翻倍（19 变 38）。`remote_only` 排除 `log` 是为了和 `today` 同一个单位。**不许写 `"channel=log" in line`**——`msg=` 是通道原文，见下。只数今天见「跨天边界」 |
+| `ok` / `fail` | 同上 | `remote_only` 同时跳过 `test=True` 的行 | 手动测试不算投递。只看首段，不整行找 `test`——`msg=` 是通道原文，出现 test 很常见 |
+| `recent` | `notify-*.log`（今天 + 昨天） | `facts.recent(8)`：只留 `remote_ok` 的事件，倒序取前 8 | **W3.5 换的数据源**。旧实现读 `notifications.log`，而那个文件只有 `log` 通道写——关掉它「最近通知」永久为空，空态还说「还没收到通知」。见下 |
+
+**W3.8 起这四个判据只有一个定义处**：`wbn/logs.py` 的 `Facts` 四个方法
+（`events_of` / `deliveries_of` / `last_by_channel` / `recent`）。`insight` 和
+`bridge` 都是消费者，谁也不许再自己开文件、自己写正则、自己决定读几天——
+W3.1–W3.7 七轮全栽在这一层，就是因为它没有中间表示。
 
 写侧配合改成 `test-send type=bark ok=False msg=…`（不再含 `channel=`），
 但**历史行不删**——用户排查「我点了测试为什么没反应」要看它。
-`bridge._LOG_CHANNEL` 同时认 `channel=` 和 `type=` 两种字段名，
+`logs.parse_delivery()` 同时认 `channel=` 和 `type=` 两种字段名，
 否则「最后发送时间」会把测试漏掉。
 
-### 两处**故意**不对称，别去「统一」
+### 分层：`wbn/logs.py` 只做「文本 → 结构」
+
+W3.1 到 W3.7 七轮，7/7 改 `insight.py`、6/7 改 `bridge.py`，全在同一层。
+原因不是谁不小心，是**这一层没有中间表示**：两个消费者各自读同一批文件、
+用三份正则、各自决定读几天。每加一个消费者就漏一次。
+
+```
+notify-YYYY-MM-DD.log
+        │
+        │  logs.read(days=2)        ← 唯一读文件的地方，唯一决定读几天的地方
+        ▼
+      Facts(events, deliveries)     ← 纯数据，frozen dataclass
+        │
+        ├── events_of(day)                      只算今天
+        ├── deliveries_of(day, remote_only=…)   排除 log / 排除测试
+        ├── last_by_channel()                   今天+昨天，两个槽（D19）
+        └── recent(limit)                       今天+昨天，只留 remote_ok
+        │
+        ▼
+insight.stats() / bridge._last_send_times()   ← 都只是消费者
+```
+
+四个方法就是**全部口径的定义处**，四条口径各占一个参数或一个方法，
+不再散落在两个文件的 if 里：
+
+| 口径 | 定义在哪 | 消费者 |
+|---|---|---|
+| 只算今天（D18） | `events_of("today")` / `deliveries_of("today")` | `stats()` |
+| 排除 `log`（D14） | `deliveries_of(remote_only=True)` | `stats()` |
+| 排除测试（第一、二处不对称） | `deliveries_of(remote_only=True)` | `stats()` |
+| 时间认测试、成败不认（D19） | `last_by_channel()` | `bridge` → `channel_state` / `delivery_health` |
+
+**`logs.py` 里不许做业务判断**：它不知道「`log` 通道不算投递」，只接受
+`remote_only` 这个参数；它也不知道「测试不该算成功」，只把 `test` 标出来。
+业务判断留在消费者手里，解析层只负责**把行读对**。
+
+判据本身一条都没变——W3.8 只搬家。变的只是它现在**只写一次**。
+
+### 两处**故意**不对称，别去「统一」（第三处见下）
 
 |  | 测试发送算不算 |
 |---|---|
@@ -486,9 +530,17 @@ DPI（2.0）算出 2338 物理像素的窗口；WebView2 再按 2.4 把它折回
 
 ### 取通道名和状态必须锚定首段，理由和 `test` 那个坑同源
 
+> **W3.8 起，解析全部在 `wbn/logs.py`。** 下面的正则和「哪些行算投递」的
+> 判断都搬过去了（`_DELIVERY_LINE` / `parse_delivery`），`insight` 和 `bridge`
+> 只消费 `logs.read()` 返回的 `Facts`。这一节保留，因为**判据的语义**没变，
+> 变的是它现在只写一次。
+
 ```python
-_CHANNEL_LINE = re.compile(
-    r"^\[(\d{2}:\d{2}:\d{2})\] channel=(\S+) ok=(True|False)")
+# wbn/logs.py
+_DELIVERY_LINE = re.compile(
+    r"^\[(?P<time>\d{2}:\d{2}:\d{2})\] (?P<test>test-send |test )?"
+    r"(?:channel|type)=(?P<channel>\S+) ok=(?P<ok>True|False)"
+    r"(?: msg=(?P<msg>.*))?$")
 ```
 
 不能写 `"channel=log" in line`：`msg=` 后面是通道返回的原文，属于不可信文本。
@@ -541,7 +593,9 @@ W3.3 时这里还留着 `"ok=True" in line` 的子串判据，理由是「真实
 现在 `docs/prompts/README.md` §2.1 第 5 条要求：改取数的提交，验收必须跑
 **四种状态**——今天有数据 / 只有昨天有数据 / 两天都有 / 两天都没有。
 
-### 位置约束：`tag != "today"` 只能放在通道行匹配之后
+### 位置约束：W3.8 之前，`tag != "today"` 只能放在通道行匹配之后
+
+W3.6 时的写法是这样的（**已不存在，留作教训**）：
 
 ```python
 em = _EVENT_LINE.match(line)
@@ -560,6 +614,28 @@ if tag != "today":
 挪到 `_EVENT_LINE` 判断之前，`recent` 会被一起断掉——昨晚那 20 条凭空消失，
 「最近通知」只剩今天的。回归测试
 `test_stats_recent_still_reads_two_days_after_the_cut` 钉着这个边界。
+
+**W3.8 之后这个坑结构性地消失了。** 日期过滤从「解析循环里 continue」
+搬到了**查询方法**上：
+
+```python
+# logs.read()：两天全收，一个 continue 都不带
+for line in text.splitlines():
+    ev = parse_event(line, tag)
+    if ev is not None: events.append(ev); continue
+    dl = parse_delivery(line, tag)
+    if dl is not None: deliveries.append(dl)
+
+# 消费者自己说要哪一天
+facts.events_of("today")                       # 只今天
+facts.deliveries_of("today", remote_only=True) # 只今天 + 排 log + 排测试
+facts.recent(8)                                # 两天
+```
+
+`Facts` 里同时装着两天的记录，**「读几天」和「算哪天」是两个独立决定**。
+想给 `today` 截断，只能在查询时传 `"today"`，不可能顺手截断 `recent`——
+因为它俩拿的是同一个不可变的 `Facts`。原来那条「位置不能挪」的规矩，
+现在由类型系统兜着，不再靠注释提醒。
 
 ### 日期判断只在取数层
 

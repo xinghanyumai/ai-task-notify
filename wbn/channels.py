@@ -224,6 +224,11 @@ CHANNEL_GROUPS: list[tuple[str, list[str]]] = [
     ("本机", ["log"]),
 ]
 
+# 「本机落盘」的通道：写盘成功**不代表通知发出去了**（D14）。
+# 这是通道注册表的属性，不是某个消费者的判断——统计口径（`logs`）和
+# 「有没有远端通道」（`has_remote_channel`）都从这里取，别各自写一份。
+LOCAL_CHANNELS: frozenset[str] = frozenset({"log"})
+
 
 # ---------------------------------------------------------------- 完整性判定
 # 「填齐了才算配好」的必填字段。openid 不在里面——它会自动从关注者列表拉取。
@@ -1424,5 +1429,5 @@ def send_all(cfg: dict, title: str, content: str, fields: dict) -> list[tuple[st
 
 def has_remote_channel(cfg: dict) -> bool:
     """是否存在「会发到手机」的通道（log 只是本地落盘，不算）。"""
-    local = {"log"}
-    return any(c.get("type") not in local for c in config.enabled_channels(cfg))
+    return any(c.get("type") not in LOCAL_CHANNELS
+               for c in config.enabled_channels(cfg))

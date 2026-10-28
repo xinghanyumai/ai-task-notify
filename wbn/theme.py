@@ -449,8 +449,8 @@ def install_tk_exception_hook(root, on_error=None) -> None:
     NameError 被吞掉，界面上只表现为「提示弹出来了但没有背景」，
     没人会想到去查日志。这个坑活了 8 个提交、两轮人工审查、一套无障碍审查。
 
-    装了这个钩子之后，同类问题会以「Tk 回调异常」出现在
-    `logs/notify-YYYY-MM-DD.log`，`tools/audit.py` 也能把它算成失败项。
+    装了这个钩子之后，同类问题会以「Tk 回调异常」出现在当天那份通道日志里，
+    `tools/audit.py` 也能把它算成失败项。
 
     on_error：可选回调，收到格式化后的异常文本。审查脚本用它把异常计入失败，
     而不是只记日志。
