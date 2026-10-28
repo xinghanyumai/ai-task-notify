@@ -53,10 +53,13 @@ _LOG_LINE = re.compile(
     r"^(\d{4}-\d{2}-\d{2}) (\d{2}:\d{2}:\d{2}) \[([^\]]+)\] (\S+) \| (.*)$")
 
 # `notify-*.log` 里的通道投递行：`[10:40:04] channel=wxmp ok=False msg=…`。
-# **锚定时间戳右侧第一段**取通道名，不用 `"channel=log" in line`：
-# `msg=` 是通道返回的原文（不可信），里面出现 `channel=log` 的概率不为零，
-# 整行找子串会把一次真实失败当成 log 落盘排掉。和 `test` 那个坑同源。
-_CHANNEL_LINE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\] channel=(\S+)")
+# **连 `ok=` 一起锚定**，不留给 `"ok=True" in line` 这种子串判断：
+# `msg=` 是通道返回的原文（不可信），里面出现 `ok=False` 完全可能，
+# 整行找子串会把一次成功数成失败。四轮统计 bug 全部出在「整行找子串」，
+# 留一处就还有下一次。
+# 写入格式固定（`channels.py` 的 `send_all`），`ok=` 后面永远是 True/False。
+_CHANNEL_LINE = re.compile(
+    r"^\[(\d{2}:\d{2}:\d{2})\] channel=(\S+) ok=(True|False)")
 
 # 模板预览用的样例 payload。放在这里而不是 UI 里：它是「数据」，
 # 两套 UI 要用同一份，否则预览出来的东西不一样。
@@ -162,13 +165,13 @@ def stats(cfg: dict) -> dict:
     三处判据，都是踩过的坑：
 
     - `today` 看 `event=… remote_ok=True`（见 `_is_delivered`）。
-    - `ok` / `fail` **必须锚定时间戳右侧第一段**取通道名（`_CHANNEL_LINE`），
-      **不许写 `"channel=log" in line`**：`msg=` 是通道返回的原文，
-      里面出现 `channel=log` 的概率不为零，整行找子串就会把一次真实失败
-      当成 `log` 落盘排掉（和 `test` 那个坑同源）。
-      拿不到通道名的行一律跳过——每个事件后面那行
-      `event=… remote_ok=False` 含 `ok=False` 子串，不跳过失败数会翻倍
-      （19 显示成 38）。
+    - `ok` / `fail` **一个子串判断都不用**：`_CHANNEL_LINE` 把通道名和
+      `ok=(True|False)` 一起锚定在时间戳右侧，取 `m.group(2)` / `m.group(3)`。
+      `msg=` 是通道返回的原文，里面出现 `channel=log` 或 `ok=False` 都可能，
+      整行找子串会把一次真实结果读反（前四轮 bug 全是这个形状）。
+      匹配不上的行一律跳过——每个事件后面那行
+      `event=… remote_ok=False` 就不会被数成一次失败（否则失败数翻倍，
+      19 显示成 38）。
     - 以 `test ` / `test-send ` 开头的行是手动点「测试此通道」产生的，
       不算投递，跳过；历史行**不删**（复盘要看）。
     - `recent` 跳过 `kind == "test"`：测试正文不是通知。`kind` 表达的就是
@@ -191,9 +194,9 @@ def stats(cfg: dict) -> dict:
                 m = _CHANNEL_LINE.match(line)
                 if not m or m.group(2) == "log":
                     continue
-                if "ok=True" in line:
+                if m.group(3) == "True":
                     ok += 1
-                elif "ok=False" in line:
+                else:
                     fail += 1
         except Exception:
             pass
@@ -227,11 +230,37 @@ def stats(cfg: dict) -> dict:
     }
 
 
-def chain_sentence(cfg: dict) -> tuple[str, str]:
+def delivery_health(remote: list[str], last: dict | None) -> str:
+    """最近一次远端投递的整体结果，`"none" | "ok" | "partial" | "fail"`。
+
+    `last` 形如 `{ctype: {"time": "HH:MM", "ok": bool, "msg": str}}`
+    （`bridge._last_send_times()` 的返回值）。
+
+    **「没有记录」必须是 `none`，不能算成失败。** 首次启动、日志被清空、
+    今天还没发过——这些情况都该维持现状（`ok`）。把它们判成 `warn`/`danger`
+    就是拿一个不存在的失败去吓用户，比不显示更糟。
+
+    只统计**有记录**的远端通道：某个通道今天一次都没试过，就没资格参与
+    这次判定，不该把它算成「失败」拉低整句话。
+    """
+    recs = [last[t] for t in remote if last and t in last]
+    if not recs:
+        return "none"
+    good = sum(1 for r in recs if r.get("ok"))
+    if good == len(recs):
+        return "ok"
+    return "fail" if good == 0 else "partial"
+
+
+def chain_sentence(cfg: dict, last: dict | None = None) -> tuple[str, str]:
     """把配置翻译成一句人话 + 语义等级。
 
     这句话是给用户看的「现在这条链路通不通」，所以顺序是：
-    总开关 → 有没有通道 → 有没有勾事件 → 通道能不能到手机。
+    总开关 → 有没有通道 → 有没有勾事件 → 通道能不能到手机 → 最近一次到没到。
+
+    最后一环是 W3.4 加的：只读配置的话，「送到你手机」是**承诺**不是**状态**，
+    微信连续失败十几次它照样说这句、照样亮绿点，界面等于在替失败背书。
+    `last` 传进来才判，**不传就维持旧行为**（tkinter 版和测试都还这么调）。
     """
     if not cfg.get("enabled", True):
         return "已静音，任何事件都不会发出通知", LEVEL_WARN
@@ -263,26 +292,54 @@ def chain_sentence(cfg: dict) -> tuple[str, str]:
     names = "、".join(channels.short_label(t) for t in remote[:2])
     if len(remote) > 2:
         names += f"等 {len(remote)} 条通道"
+
+    # 后缀只允许 4–6 个字：侧栏 240px，`--fs-aux` 一行约 16 个汉字。
+    # 失败原因（errcode / 异常名）**不许**塞进来，那些去通道页看。
+    health = delivery_health(remote, last)
+    if health == "fail":
+        return f"{when}，经{names}，但最近一次没送到", LEVEL_DANGER
+    if health == "partial":
+        return f"{when}，经{names}，最近一次部分没送到", LEVEL_WARN
     return f"{when}，经{names}，送到你手机", LEVEL_OK
 
 
-def channel_state(ctype: str, ch: dict) -> tuple[str, str, bool]:
+def channel_state(
+    ctype: str, ch: dict, last: dict | None = None
+) -> tuple[str, str, bool]:
     """通道列表行的 `(副标题, 语义等级, 是否点亮)`。
 
     等级的含义：
-    - `ok`    已启用（点亮）
+    - `ok`    已启用，且最近一次没出问题（或今天还没发过）
     - `warn`  配好了但没启用（不点亮，提醒「你可以打开它」）
+    - `danger` 已启用，但最近一次投递失败（点亮，红色）
     - `muted` 还缺字段（不点亮）
+
+    `last` 是这条通道今天的最后一条投递记录
+    `{"time": "HH:MM", "ok": bool, "msg": str}`，没有记录就传 `None`。
+
+    **配置问题优先于运行时问题**：字段没填完连试都试不了，说「最近一次失败」
+    只会让人去查网络。所以顺序是「缺字段 → 运行时失败 → 正常」。
+
+    `msg` 是远端返回的原文，进这里之前必须已经 `redact` 过（bridge 负责）；
+    这里只做截断——列表行放不下 120 个字，也不该让一条报错撑破布局。
     """
     ch = ch or {}
-    if ch.get("enabled"):
-        return "已启用", LEVEL_OK, True
+    # 缺字段排第一：填都没填完，谈「最近一次失败」是误导。`enabled` 可能是
+    # 上一版配置留下的 True，也可能被手改 config.json 改成 True——那时字段
+    # 照样不全，照样发不出去，先让用户把字段补上。
     miss = channels.missing_keys(ctype, ch)
-    if not miss:
-        return "已配置，未启用", LEVEL_WARN, False
-    label = channels.FIELD_LABELS.get(ctype, {}).get(miss[0], miss[0])
-    more = f" 等 {len(miss)} 项" if len(miss) > 1 else ""
-    return f"待配置：缺 {label}{more}", LEVEL_MUTED, False
+    if miss:
+        label = channels.FIELD_LABELS.get(ctype, {}).get(miss[0], miss[0])
+        more = f" 等 {len(miss)} 项" if len(miss) > 1 else ""
+        return f"待配置：缺 {label}{more}", LEVEL_MUTED, False
+    if ch.get("enabled"):
+        if last and not last.get("ok"):
+            why = (last.get("msg") or "").strip()
+            if why:
+                return f"最近一次失败：{why[:20]}", LEVEL_DANGER, True
+            return "最近一次失败", LEVEL_DANGER, True
+        return "已启用", LEVEL_OK, True
+    return "已配置，未启用", LEVEL_WARN, False
 
 
 def pick_channel(cfg: dict) -> str:

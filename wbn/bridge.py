@@ -30,12 +30,15 @@ from wbn import channels, config, insight, sanitize
 #   [01:26:32] test channel=log ok=True msg=已记录        ← W3.1 之前的历史写法
 #
 # 字段名从 `channel=` 改成 `type=` 是为了让 `insight.stats()` 认不出来
-# （见 `_is_test_line`）。这里要**同时认两种**，否则「最后发送时间」会
+# （见 `insight._is_test_line`）。这里要**同时认两种**，否则「最后发送时间」会
 # 把测试发送漏掉——用户刚点完测试，列表上却还显示昨天的时间。
-# 匹配锚在时间戳右侧的第一段，不用 `.*?` 到处找：`msg=` 是通道返回的原文，
-# 里面出现 `channel=` 的概率不为零。
+#
+# 一次匹配取出四样：时间 / 通道名 / 成败 / 报错原文。全部锚在时间戳右侧的
+# 固定字段上，**不在整行里找子串**——`msg=` 是远端返回的原文，里面出现
+# `channel=log` 或 `ok=False` 都可能。前四轮统计 bug 全是这个形状。
 _LOG_CHANNEL = re.compile(
-    r"^\[(\d{2}:\d{2}:\d{2})\] (?:test-send |test )?(?:channel|type)=(\S+)")
+    r"^\[(\d{2}:\d{2}:\d{2})\] (?:test-send |test )?(?:channel|type)=(\S+)"
+    r" ok=(True|False)(?: msg=(.*))?$")
 
 
 def _ensure_json(value):
@@ -77,15 +80,19 @@ def _http_timeout() -> int:
 
 
 def _last_send_times() -> dict:
-    """今天每条通道最后一次发送的时间，`{ctype: "HH:MM"}`。
+    """今天每条通道最后一次投递，`{ctype: {"time": "HH:MM", "ok": bool, "msg": str}}`。
 
-    为什么读日志这件事在 bridge 里而不在 insight 里：W2 的任务书禁止改动
-    `insight.py` 的行为，而 insight 目前没有「每通道最后发送时间」这个查询。
-    挪进 insight 是 W3 的事（通道页要显示更细的发送历史，那时一起做，
-    顺便把 `notify-*.log` 的解析抽成一个函数，避免两处各写一份正则）。
+    时间、成败、报错原文一次读齐——W3.4 起通道列表要显示「最近一次失败：
+    errcode=…」，侧栏要按成败降级。**不许为这个再写第二个日志解析器**：
+    同一个文件开两个正则，迟早有一处忘了改（`_CHANNEL_LINE` 和
+    `_LOG_CHANNEL` 已经是两份，各自服务不同用途，别再加第三份）。
+
+    `msg` 在这里就 `redact`：它是远端返回的原文，可能回显带 key / token 的
+    完整 URL。截断留给展示层（`insight.channel_state` 截 20 字），
+    顺序必须是**先脱敏再截断**——反过来会把敏感串的前半段留在界面上。
     """
     path = config.LOG_DIR / f"notify-{datetime.now():%Y-%m-%d}.log"
-    out: dict[str, str] = {}
+    out: dict[str, dict] = {}
     try:
         text = path.read_text(encoding="utf-8", errors="replace")
     except OSError:
@@ -93,8 +100,13 @@ def _last_send_times() -> dict:
 
     for line in text.splitlines():
         m = _LOG_CHANNEL.match(line)
-        if m:
-            out[m.group(2)] = m.group(1)[:5]      # 只留 HH:MM，秒没用
+        if not m:
+            continue
+        out[m.group(2)] = {
+            "time": m.group(1)[:5],               # 只留 HH:MM，秒没用
+            "ok": m.group(3) == "True",
+            "msg": sanitize.redact(m.group(4) or "", 120),
+        }
     return out
 
 
@@ -209,9 +221,13 @@ class Bridge:
 
     @_guard
     def chain_sentence(self) -> dict:
-        """侧栏底部那句「现在这条链路通不通」，带语义等级。"""
+        """侧栏底部那句「现在这条链路通不通」，带语义等级。
+
+        `last` 一定要传：只读配置的话，微信连续失败十几次它照样说
+        「送到你手机」+ 绿点——界面在替失败背书（W3.4）。
+        """
         self._touch()
-        text, level = insight.chain_sentence(config.load())
+        text, level = insight.chain_sentence(config.load(), _last_send_times())
         return {"text": text, "level": level}
 
     @_guard
@@ -221,6 +237,9 @@ class Bridge:
         状态文案直接复用 `insight.channel_state`，和 tkinter 版一字不差——
         两套 UI 对「已启用 / 已配置未启用 / 待配置」的措辞必须一致，
         否则用户会以为是两个功能。
+
+        `last` 传进去之后，最近一次投递失败的通道会显示「最近一次失败：…」
+        并转 `danger`。`last` 字段本身仍然是时间字符串（前端契约不变）。
         """
         self._touch()
         cfg = config.load()
@@ -230,14 +249,15 @@ class Bridge:
             ctype = ch.get("type") or ""
             if not ctype:
                 continue
-            sub, level, lit = insight.channel_state(ctype, ch)
+            rec = last.get(ctype)
+            sub, level, lit = insight.channel_state(ctype, ch, rec)
             out.append({
                 "type": ctype,
                 "label": channels.short_label(ctype),
                 "state": sub,
                 "level": level,
                 "on": lit,
-                "last": last.get(ctype),
+                "last": (rec or {}).get("time"),
             })
         return out
 
@@ -297,10 +317,11 @@ class Bridge:
         """
         self._touch()
         cfg = config.load()
+        last = _last_send_times()
         out = []
         for ctype, m in channels.CHANNEL_META.items():
             ch = config.get_channel(cfg, ctype) or {}
-            subtitle, level, lit = insight.channel_state(ctype, ch)
+            subtitle, level, lit = insight.channel_state(ctype, ch, last.get(ctype))
 
             values = {}
             for key, _label, ftype, default, _hint in (m.get("fields") or []):

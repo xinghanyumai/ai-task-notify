@@ -276,6 +276,119 @@ def test_channels_list_survives_missing_log(isolated_state):
     assert all(r["last"] is None for r in rows)
 
 
+# --------------------------------------------------- W3.4 投递健康信号（bridge）
+
+
+def _ready_two_remote() -> None:
+    """把 wxmp / bark 填齐并启用，其余关掉——这样缺字段不会抢在前面说话。"""
+    cfg = config.load()
+    for ch in cfg["channels"]:
+        t = ch["type"]
+        if t == "wxmp":
+            ch.update({"appid": "a", "secret": "s", "template_id": "t", "enabled": True})
+        elif t == "bark":
+            ch.update({"key": "k", "enabled": True})
+        else:
+            ch["enabled"] = False
+    cfg["enabled"] = True
+    cfg["triggers"] = {k: (k == "task_done") for k in cfg["triggers"]}
+    config.save(cfg)
+
+
+def test_channels_list_marks_the_channel_that_failed(isolated_state):
+    """**W3.4 验收第 6 条：列表里失败的通道要自己说出来。**
+
+    微信连续失败十几次，列表还写「已启用」+ 绿点，就是界面替失败背书。
+    """
+    _ready_two_remote()
+    today = datetime.now().strftime("%Y-%m-%d")
+    (config.LOG_DIR / f"notify-{today}.log").write_text(
+        "[09:12:00] channel=wxmp ok=False "
+        "msg=errcode=40037 模板 ID 无效，请到公众平台核对\n"
+        "[09:12:30] channel=bark ok=True msg=ok\n",
+        encoding="utf-8",
+    )
+    by_type = {r["type"]: r for r in bridge.Bridge().channels_list()["data"]}
+    assert by_type["wxmp"]["level"] == "danger"
+    assert by_type["wxmp"]["on"] is True, "已启用就该点亮，失败不是「关掉」"
+    assert by_type["wxmp"]["state"].startswith("最近一次失败：")
+    assert by_type["bark"]["level"] == "ok"
+    assert by_type["bark"]["state"] == "已启用"
+
+
+def test_chain_sentence_reads_today_log(isolated_state):
+    """**W3.4 验收第 3 条：侧栏那句话要跟着日志走。**
+
+    配置没变，只有日志里多了一条失败——那句话必须降级。
+    """
+    _ready_two_remote()
+
+    before = bridge.Bridge().chain_sentence()["data"]
+    assert before["level"] == "ok", "空日志不该降级"
+    assert "送到你手机" in before["text"]
+
+    today = datetime.now().strftime("%Y-%m-%d")
+    (config.LOG_DIR / f"notify-{today}.log").write_text(
+        "[09:12:00] channel=wxmp ok=False msg=errcode=40037 模板 ID 无效\n",
+        encoding="utf-8",
+    )
+    after = bridge.Bridge().chain_sentence()["data"]
+    # 只有 wxmp 有记录、且它失败了 → 已记录的全挂 = fail。bark 今天没试过，
+    # 不参与判定（不是把它算成失败，也不是把它算成成功）。
+    assert after["level"] == "danger"
+    assert "最近一次没送到" in after["text"]
+    assert "errcode" not in after["text"], "报错原文只配去通道页"
+
+    (config.LOG_DIR / f"notify-{today}.log").write_text(
+        "[09:12:00] channel=wxmp ok=False msg=errcode=40037 模板 ID 无效\n"
+        "[09:12:30] channel=bark ok=True msg=ok\n",
+        encoding="utf-8",
+    )
+    part = bridge.Bridge().chain_sentence()["data"]
+    assert part["level"] == "warn", "一成一败才是部分"
+    assert "部分没送到" in part["text"]
+
+    (config.LOG_DIR / f"notify-{today}.log").write_text(
+        "[09:12:00] channel=wxmp ok=False msg=errcode=40037 模板 ID 无效\n"
+        "[09:12:30] channel=bark ok=False msg=TimeoutError: timed out\n",
+        encoding="utf-8",
+    )
+    both = bridge.Bridge().chain_sentence()["data"]
+    assert both["level"] == "danger"
+    assert "最近一次没送到" in both["text"]
+
+
+def test_last_send_times_redacts_before_truncating():
+    """**先脱敏再截断，顺序反了就是泄漏。**
+
+    `msg` 里可能带 token / key。如果先按 120 字截断，凭证正好跨在边界上
+    就会被切成半截——半截凭证照样是可用的线索。脱敏在前，截断在后。
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    pad = "a" * 100
+    secret = "S3CR3T-VALUE-9f8e7d6c5b4a"
+    (config.LOG_DIR / f"notify-{today}.log").write_text(
+        f"[09:12:00] channel=bark ok=False msg={pad} token={secret}\n",
+        encoding="utf-8",
+    )
+    rec = bridge._last_send_times()["bark"]
+    assert rec["ok"] is False
+    assert secret not in rec["msg"], "凭证原文漏出来了"
+    assert secret[:10] not in rec["msg"], f"截断切在半截凭证上：{rec['msg']}"
+    assert len(rec["msg"]) <= 120
+
+
+def test_last_send_times_keeps_spaces_in_msg():
+    """报错原文里有空格（`errcode=40037 模板 ID 无效`），不许按空白切碎。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    (config.LOG_DIR / f"notify-{today}.log").write_text(
+        "[09:12:00] channel=wxmp ok=False msg=errcode=40037 模板 ID 无效\n",
+        encoding="utf-8",
+    )
+    rec = bridge._last_send_times()["wxmp"]
+    assert "模板 ID 无效" in rec["msg"]
+
+
 def test_read_only_methods_do_not_touch_disk(isolated_state):
     """三个方法都是只读的。写盘只允许发生在 config_save 里。"""
     config.save_default_if_missing()

@@ -141,7 +141,10 @@
   white-space: nowrap;
 }
 
-/* 状态点：ok 实心品牌绿，warn 空心警告色，muted 不显示（§3.1） */
+/* 状态点：实心=有确定结论，空心=还没结论（§3.1）
+   ok / danger 都是实心：两者都是「已经发过、结果已知」，只是好坏不同。
+   warn 是空心：配置齐了但没启用，还没有投递结果可言。
+   muted 不显示：连配置都没齐，不该占一个状态位。 */
 .chan-dot {
   width: 8px;
   height: 8px;
@@ -150,9 +153,10 @@
   box-sizing: border-box;
 }
 
-.chan-dot[data-level="ok"]   { background: var(--brand); }
-.chan-dot[data-level="warn"] { border: 1.5px solid var(--warn); }
-.chan-dot[data-level="muted"] { display: none; }
+.chan-dot[data-level="ok"]     { background: var(--brand); }
+.chan-dot[data-level="danger"] { background: var(--danger); }
+.chan-dot[data-level="warn"]   { border: 1.5px solid var(--warn); }
+.chan-dot[data-level="muted"]  { display: none; }
 
 /* ---- 右表单 -------------------------------------------------------------- */
 

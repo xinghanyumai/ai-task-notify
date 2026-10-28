@@ -139,6 +139,32 @@ def test_stats_does_not_mistake_msg_for_channel_name():
     assert s["ok"] == 1, "只有 bark 那一行算成功（log 行被排除）"
 
 
+def test_stats_does_not_read_ok_from_msg():
+    """**W3.4 验收第 1 条：`ok=` 也必须锚定，不许整行找。**
+
+    `msg=` 是远端返回的原文。写它的是远端服务，不是我们——里面出现
+    `ok=False` 完全可能（比如上游把一段 JSON 回显出来）。前四轮统计 bug
+    全是「整行找子串」，`channel=` 锚定了、`ok=` 还留一处，就还有第五次。
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    _write(config.LOG_DIR / f"notify-{today}.log", [
+        # 一次**成功**的投递，但远端原文里带了 ok=False
+        "[10:00:00] channel=bark ok=True msg=upstream said ok=False but we won",
+        "[10:00:01] channel=wxmp ok=True msg=ok",
+    ])
+    s = insight.stats(config.load())
+    assert s["ok"] == 2, "两行都是成功的，msg 里的 ok=False 不许把谁数成失败"
+    assert s["fail"] == 0
+
+    # 反向：真失败的行，msg 里带 ok=True 也不许数成成功
+    _write(config.LOG_DIR / f"notify-{today}.log", [
+        "[10:00:00] channel=bark ok=False msg=server replied ok=True in body",
+    ])
+    s = insight.stats(config.load())
+    assert s["ok"] == 0
+    assert s["fail"] == 1
+
+
 def test_stats_recent_skips_test_kind():
     """「最近通知」里出现一条带绿色 ✓ 的「通知测试」，就是「看起来像真的」。
 
@@ -345,6 +371,93 @@ def test_chain_ok_names_channels():
     assert level == insight.LEVEL_OK
 
 
+# ------------------------------------------------ chain_sentence × 最近一次投递
+
+
+def _rec(ok, msg=""):
+    return {"time": "10:00", "ok": ok, "msg": msg}
+
+
+def test_chain_keeps_ok_when_there_is_no_record():
+    """**W3.4 验收第 4 条，必须和下面那条失败用例成对。**
+
+    只测「失败会降级」，你不知道自己是不是把「没发过」也算成了失败。
+    首次启动、日志被清空、今天还没发过——都该维持原样。
+    """
+    cfg = _cfg()
+    _enable(cfg, "wxmp")
+    for last in ({}, None):
+        text, level = insight.chain_sentence(cfg, last)
+        assert level == insight.LEVEL_OK, f"last={last!r} 不该降级"
+        assert "送到你手机" in text
+        assert "没送到" not in text
+
+
+def test_chain_degrades_when_last_delivery_failed():
+    """**W3.4 验收第 3 条：界面不许替失败背书。**
+
+    配置全绿、通道「已启用」，但最近一次投递全失败——这时候还说
+    「送到你手机」就是在承诺一件没发生的事。
+    """
+    cfg = _cfg()
+    _enable(cfg, "wxmp")
+    text, level = insight.chain_sentence(cfg, {"wxmp": _rec(False, "errcode=40037")})
+    assert level == insight.LEVEL_DANGER
+    assert "最近一次没送到" in text
+    assert "送到你手机" not in text
+
+
+def test_chain_failure_reason_never_leaks_into_sidebar():
+    """侧栏 240px，`--fs-aux` 一行约 16 个汉字。报错原文只配去通道页。
+
+    这里钉两件事：不出现 `errcode` / 异常名，且整句不超过 30 字。
+    """
+    cfg = _cfg()
+    _enable(cfg, "wxmp")
+    text, level = insight.chain_sentence(
+        cfg, {"wxmp": _rec(False, "errcode=40037 模板 ID 无效，请到公众平台核对")})
+    assert level == insight.LEVEL_DANGER
+    assert "errcode" not in text
+    assert "40037" not in text
+    assert len(text) <= 30, f"侧栏放不下：{text}"
+
+
+def test_chain_warns_when_partially_failed():
+    """**W3.4 验收第 5 条：一成一败 → warn，不是 danger 也不是 ok。**"""
+    cfg = _cfg()
+    _enable(cfg, "bark")
+    _enable(cfg, "wxmp")
+    text, level = insight.chain_sentence(
+        cfg, {"bark": _rec(True), "wxmp": _rec(False, "HTTP 500")})
+    assert level == insight.LEVEL_WARN
+    assert "部分没送到" in text
+
+
+def test_chain_ignores_channels_that_were_never_tried():
+    """今天没试过的通道没资格参与判定，不能算成失败拉低整句话。"""
+    cfg = _cfg()
+    _enable(cfg, "bark")
+    _enable(cfg, "wxmp")
+    text, level = insight.chain_sentence(cfg, {"bark": _rec(True)})
+    assert level == insight.LEVEL_OK
+    assert "送到你手机" in text
+
+
+def test_delivery_health_levels():
+    remote = ["bark", "wxmp"]
+    assert insight.delivery_health(remote, None) == "none"
+    assert insight.delivery_health(remote, {}) == "none"
+    # 只有 log 有记录 → 远端一个都没试过 → none
+    assert insight.delivery_health(remote, {"log": _rec(False)}) == "none"
+    assert insight.delivery_health(remote, {"bark": _rec(True)}) == "ok"
+    assert insight.delivery_health(
+        remote, {"bark": _rec(True), "wxmp": _rec(True)}) == "ok"
+    assert insight.delivery_health(
+        remote, {"bark": _rec(True), "wxmp": _rec(False)}) == "partial"
+    assert insight.delivery_health(
+        remote, {"bark": _rec(False), "wxmp": _rec(False)}) == "fail"
+
+
 # ---------------------------------------------------------------- channel_state
 
 
@@ -369,6 +482,47 @@ def test_channel_state_counts_missing_fields():
     subtitle, _, _ = insight.channel_state("wxmp", {"type": "wxmp"})
     assert "待配置：缺" in subtitle
     assert "等 3 项" in subtitle
+
+
+def test_channel_state_reports_last_failure():
+    """**W3.4 验收第 6 条：列表行要说出「最近一次失败」，不是一直「已启用」。**"""
+    wx = {"type": "wxmp", "enabled": True, "appid": "a", "secret": "s",
+          "template_id": "t", "openid": "o"}
+    subtitle, level, lit = insight.channel_state(
+        "wxmp", wx, _rec(False, "errcode=40037 模板 ID 无效，请到公众平台核对"))
+    assert level == insight.LEVEL_DANGER
+    assert lit is True, "已启用就该点亮，失败不是「关掉」"
+    assert subtitle.startswith("最近一次失败：")
+    # 7 字前缀 + 20 字报错原文，再多列表行放不下
+    assert len(subtitle) <= 27, f"截断失效：{subtitle}"
+
+
+def test_channel_state_failure_without_msg():
+    wx = {"type": "wxmp", "enabled": True, "appid": "a", "secret": "s",
+          "template_id": "t", "openid": "o"}
+    subtitle, level, _ = insight.channel_state("wxmp", wx, _rec(False, "   "))
+    assert subtitle == "最近一次失败", "没有原文时不许留一个空冒号"
+    assert level == insight.LEVEL_DANGER
+
+
+def test_channel_state_ok_after_successful_send():
+    wx = {"type": "wxmp", "enabled": True, "appid": "a", "secret": "s",
+          "template_id": "t", "openid": "o"}
+    subtitle, level, lit = insight.channel_state("wxmp", wx, _rec(True, "ok"))
+    assert (subtitle, level, lit) == ("已启用", insight.LEVEL_OK, True)
+
+
+def test_channel_state_missing_fields_wins_over_runtime_failure():
+    """缺字段连试都试不了，说「最近一次失败」只会让人去查网络。
+
+    `enabled` 可能是上一版配置留下的 True，也可能被手改 config.json 改成
+    True——那时字段照样不全。配置问题必须先说。
+    """
+    broken = {"type": "wxmp", "enabled": True, "appid": "a"}
+    subtitle, level, lit = insight.channel_state("wxmp", broken, _rec(False, "errcode=1"))
+    assert level == insight.LEVEL_MUTED
+    assert lit is False
+    assert subtitle.startswith("待配置：缺")
 
 
 # ---------------------------------------------------------------- pick_channel
