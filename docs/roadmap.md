@@ -201,9 +201,10 @@ tkinter UI 那部分（10-27 的三条）**只保留实测数据**，代码随 W
 | **R26** | **`channels_list` 与 `channels_state` 双形状** | 同一份 `channel_state()` 结果，一个叫 `state`、一个叫 `subtitle`，字段也不完全一致（一个有 `values` 一个没有）。两份并行 API，改一处忘另一处 | 中（维护成本，非 bug） | 记着不动。W5 收尾时评估合并 |
 | **R27** | **tkinter 退路的侧栏永远绿** | `ui.py:438` 调 `insight.chain_sentence(self.cfg)` **没传 `last`**，W3.4 的降级只覆盖了 web 侧。退路里微信全失败仍说「送到你手机」 | 低（退路，W5 要删） | W3.7：补 `bridge._last_send_times()`。**已修** |
 | **R28** | **一个槽位装两种事实** | `_last_send_times()` 返回一条记录，`time` 和 `ok` 在同一个槽。W3.5 声明「时间认测试、成败不认」，物理上做不到。后果：① 只点过测试 → 侧栏绿 + 列表红；② 昨天真失败 + 今天测试 → 测试记录**遮蔽**真实失败，R25 复发 | **必现**（每次点测试） | W3.7：两个槽 + `ok` 三态（`None` = 真实投递一次都没发生过），判定写 `is False` / `is not None`。**已修** |
-| **R29** | **日志解析层没有中间表示**（结构性） | 两个消费者（`insight.stats` / `bridge._last_send_times`）各自读同一批文件、用三份正则、各自决定读几天。W3.1–W3.7 七轮修复 7/7 落在这一层，`stats()` 里叠了十层 `if`，每层对应一次修复。每加一个消费者就暴露一次不一致 | **高**（已发生七次） | W3.8：抽出 `wbn/logs.py` + `Facts`，口径变成命名方法；32 格矩阵穷举验证；七个历史 bug 必须能被矩阵复现 |
-| **R30** | **`logs.py` 依赖 `channels.py`，方向反了** | `deliveries_of(remote_only=True)` 内部查 `channels.LOCAL_CHANNELS` 决定排除谁——「排不排除」的决定在解析层，而且底层文本层 import 了业务注册表。现在不循环，但 `channels` 一旦要用 logs 就成环 | 中（埋雷） | W3.8b：改成纯参数 `exclude` / `include_tests`，调用方传常量 |
-| **R31** | **新结构留了两扇后门** | `insight._is_delivered` / `insight._is_test_line` 生产代码零调用，只有测试用；`_is_delivered` 的 docstring 还写着「today 看这个」，而 today 已走 `Facts`。下一个人会以为它们是生产路径 | 中（结构债） | W3.8b：docstring 标注「生产代码不许调」；`logs.py` 顶部写明对外契约 |
+| **R29** | **日志解析层没有中间表示**（结构性） | 两个消费者（`insight.stats` / `bridge._last_send_times`）各自读同一批文件、用三份正则、各自决定读几天。W3.1–W3.7 七轮修复 7/7 落在这一层，`stats()` 里叠了十层 `if`，每层对应一次修复。每加一个消费者就暴露一次不一致 | **高**（已发生七次） | W3.8a 抽出 `wbn/logs.py` + `Facts`（`82e5b64`）；W3.8b 加 30 格矩阵 + 七个历史 bug 复现检验。**已修** |
+| **R30** | **`logs.py` 依赖 `channels.py`，方向反了** | `deliveries_of(remote_only=True)` 内部查 `channels.LOCAL_CHANNELS` 决定排除谁——「排不排除」的决定在解析层，而且底层文本层 import 了业务注册表。现在不循环，但 `channels` 一旦要用 logs 就成环 | 中（埋雷） | W3.8b：改成纯参数 `exclude` / `include_tests`，调用方传常量；`grep channels wbn/logs.py` 为空。**已修** |
+| **R31** | **新结构留了两扇后门** | `insight._is_delivered` / `insight._is_test_line` 生产代码零调用，只有测试用；`_is_delivered` 的 docstring 还写着「today 看这个」，而 today 已走 `Facts`。下一个人会以为它们是生产路径 | 中（结构债） | W3.8b：docstring 标注「生产代码不许调」；`logs.py` 顶部写明对外契约。**已修** |
+| **R32** | **矩阵少一列，对应的 bug 就漏网** | 30 格最初只有 `today/ok/fail/chain/state` 五列，而 W3.5 那个 bug 的症状在 `recent` 上——`verify_matrix_against_old.py` 一跑，那格在旧代码上是**绿**的 | 高（会让矩阵变装饰品） | W3.8b：补 `recent` 列；把「旧代码必须全红」做成可执行脚本而不是人工检查。**已修** |
 | **R28** | **一个槽位装两种事实** | `_last_send_times()` 返回一条记录，`time` 和 `ok` 绑在一起。今天点一次测试 → 侧栏绿「送到你手机」+ 列表红「最近一次失败」（上下矛盾）；昨天真实失败 + 今天测试 → 测试记录**遮蔽**真实失败，侧栏回绿（R25 复发） | **必现**（每天点测试都会） | W3.7：拆两个槽，`time` 认测试、`ok` 只认真实投递；`ok` 改三态（`None` = 没发生过） |
 
 ---

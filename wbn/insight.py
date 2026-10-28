@@ -83,13 +83,26 @@ def split_list(text) -> list[str]:
 # ---------------------------------------------------------------- 状态翻译
 
 
-# 「测试此通道」写下的行。实现搬到 `logs`（那里是唯一解析日志的地方），
-# 这里留别名：测试和 `ui.py` 都直接调 `insight._is_test_line`。
-_is_test_line = logs.is_test_line
+def _is_test_line(line: str) -> bool:
+    """是不是手动点「测试此通道」写下的行。
+
+    ⚠️ **只为旧测试保留，生产代码不许调；新代码一律走 `logs.Facts`。**
+    `Facts` 已经把 `test` 标在 `Delivery.test` 上，`deliveries_of(...,
+    include_tests=False)` 一句话就排掉了，不需要谁再拿原始行判一次。
+    直接调它等于绕过 `Facts` 自己解析，那就是这一层要消灭的东西（R31）。
+
+    实测生产调用方 0 处。判据（只锚定时间戳右侧第一段，不整行找 `test`）
+    见 `logs.is_test_line`，这里只做转发——两处各写一份就是 W3 那七轮的病因。
+    """
+    return logs.is_test_line(line)
 
 
 def _is_delivered(line: str) -> bool:
     """`pipeline.notify()` 写的「这条真的到手机了」汇总行。
+
+    ⚠️ **只为旧测试保留，生产代码不许调；新代码一律走 `logs.Facts`。**
+    `stats()` 数 `today` 用的是 `facts.events_of("today")` 里 `e.remote_ok`，
+    不经过这个函数。这里留着只是为了让 312 个旧测试不用改（R31）。
 
     形如 `[10:24:23] event=Stop kind=task_done sent=True remote_ok=True …`。
 
@@ -137,7 +150,8 @@ def stats(cfg: dict) -> dict:
       它们在同一张「今日」卡上，混进昨天的投递就会读出「今日通知 2 / 通道失败 66」
       这种没有结论的数字。`recent` 读今天 + 昨天，跨零点不能空。
       「最近一次」是另一件事，见 `bridge._last_send_times()`。
-    - `today` 看 `event=… remote_ok=True`（见 `_is_delivered`）。
+    - `today` 看 `event=… remote_ok=True`（`facts.events_of("today")`，
+      **不是** `_is_delivered`——那个函数只为旧测试保留）。
     - `ok` / `fail` **一个子串判断都不用**：`logs` 里的投递行正则把通道名和
       `ok=(True|False)` 一起锚定在时间戳右侧。
       `msg=` 是通道返回的原文，里面出现 `channel=log` 或 `ok=False` 都可能，
@@ -158,7 +172,11 @@ def stats(cfg: dict) -> dict:
     # 三个数都只数今天（D18）：它们在同一张「今日」卡上，混进昨天的投递
     # 就会读出「今日通知 2 / 通道失败 66」这种没有结论的数字。
     today_events = facts.events_of("today")
-    remote = facts.deliveries_of("today", remote_only=True)
+    # 「统计口径下的一次投递」由**这里**决定，不是由 `logs` 决定（R30）：
+    # 排除本机落盘的通道（D14）+ 排除手动测试。`logs` 只认参数。
+    remote = facts.deliveries_of(
+        "today", exclude=channels.LOCAL_CHANNELS, include_tests=False)
+
 
     return {
         "today": sum(1 for e in today_events if e.remote_ok),

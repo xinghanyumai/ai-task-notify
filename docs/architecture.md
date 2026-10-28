@@ -445,10 +445,11 @@ notify-YYYY-MM-DD.log
         ▼
       Facts(events, deliveries)     ← 纯数据，frozen dataclass
         │
-        ├── events_of(day)                      只算今天
-        ├── deliveries_of(day, remote_only=…)   排除 log / 排除测试
-        ├── last_by_channel()                   今天+昨天，两个槽（D19）
-        └── recent(limit)                       今天+昨天，只留 remote_ok
+        ├── events_of(day)                          只算今天
+        ├── deliveries_of(day, exclude=…,           排除 log / 排除测试
+        │                 include_tests=…)          ← 两个纯参数
+        ├── last_by_channel()                       今天+昨天，两个槽（D19）
+        └── recent(limit)                           今天+昨天，只留 remote_ok
         │
         ▼
 insight.stats() / bridge._last_send_times()   ← 都只是消费者
@@ -460,20 +461,20 @@ insight.stats() / bridge._last_send_times()   ← 都只是消费者
 | 口径 | 定义在哪 | 消费者 |
 |---|---|---|
 | 只算今天（D18） | `events_of("today")` / `deliveries_of("today")` | `stats()` |
-| 排除 `log`（D14） | `deliveries_of(remote_only=True)` | `stats()` |
-| 排除测试（第一、二处不对称） | `deliveries_of(remote_only=True)` | `stats()` |
+| 排除 `log`（D14） | `deliveries_of(exclude=channels.LOCAL_CHANNELS)` | `stats()` |
+| 排除测试（第一、二处不对称） | `deliveries_of(include_tests=False)` | `stats()` |
 | 时间认测试、成败不认（D19） | `last_by_channel()` | `bridge` → `channel_state` / `delivery_health` |
 
 **`logs.py` 里不许做业务判断**：它不该知道「`log` 通道不算投递」，
 也不该知道「测试不该算成功」，只负责**把行读对**。
 
-> **W3.8a 没做到这一条（R30）。** 当时 `deliveries_of(remote_only=True)` 内部
-> 查了 `channels.LOCAL_CHANNELS` 来决定排除谁——「排不排除」这个决定还在
+> **W3.8a 没做到这一条（R30），W3.8b 已修。** 当时 `deliveries_of(remote_only=True)`
+> 内部查了 `channels.LOCAL_CHANNELS` 来决定排除谁——「排不排除」这个决定还在
 > `logs` 层，而且让底层文本层 `import` 了业务注册表，依赖方向反了。
-> 现在不循环（`channels` 不 import `logs`），但 `channels` 将来只要用到 logs 就成环。
 >
-> W3.8b 改成纯参数：`deliveries_of(day, *, exclude=frozenset(), include_tests=True)`，
-> 调用方传 `channels.LOCAL_CHANNELS`。改完 `logs.py` 的 import 只剩 `config` / `sanitize`。
+> 现在签名是纯参数：`deliveries_of(day, *, exclude=frozenset(), include_tests=True)`，
+> 调用方 `stats()` 传 `channels.LOCAL_CHANNELS` + `include_tests=False`。
+> `logs.py` 的 import 只剩 `config` / `sanitize`（`grep channels wbn/logs.py` 为空）。
 
 判据本身一条都没变——W3.8 只搬家。变的只是它现在**只写一次**。
 
@@ -490,6 +491,51 @@ parse_* / is_test_line / split_emoji
 那就是这一层要消灭的东西。W3.8a 在 `insight` 里留了 `_is_delivered` /
 `_is_test_line` 两个只为旧测试存在的别名（R31），它们的 docstring 必须写明
 「生产代码不许调」，否则下一个人会以为那是生产路径。
+
+### 30 格矩阵：穷举，不是列举（W3.8b）
+
+`tests/test_logs_matrix.py`。三个维度：
+
+```
+今天的数据形态（5：空 / 只有测试 / 真实成功 / 真实失败 / 测试+真实失败）
+  × 昨天的数据形态（3：空 / 真实失败 / 真实成功）
+  × log 通道（2：关 / 开）                       = 30 格
+```
+
+每格断言 6 条**不变量** + 5 个**手算的常量**（`today` / `ok` / `fail` /
+`recent` / `chain` / `state` / `last`）。
+
+**期望值必须是字面量。** 用「跑一遍记下结果再写进表里」的方式生成期望值，
+矩阵就变成「记录当前行为」，永远绿，也永远抓不到回归。
+
+六条不变量（不看具体数字，只看四个出口之间自洽）：
+
+| # | 不变量 |
+|---|---|
+| ① | `today` = 今天 `remote_ok=True` 的事件数 |
+| ② | `ok + fail` = 今天的（排 log、排测试）投递数 |
+| ③ | `recent` 每一行都能在事件里找到原件（不许凭空造行） |
+| ④ | `ok` 非 `None` ⇒ 一定有一条**非测试**记录撑着它 |
+| ⑤ | 同一份文件读两次结果相同（无缓存漂移） |
+| ⑥ | `time` 一定来自某条记录（含测试）——和 ④ 成对，把 D19 两个槽都钉住 |
+
+**第七个不变量单独一条**（`test_log_switch_changes_nothing_but_its_own_row`）：
+`log` 开关不许影响 `today` / `ok` / `fail` / `recent` / 远端通道的 `state`。
+30 格里 15 格在守它——W3.2 和 W3.5 修的就是这个。单独写是因为它的表达力在
+「同一样本跑两遍再相减」，塞进格子里就变成两组互不相干的断言，看不出「相等」。
+
+**矩阵完整性的客观检验**：`tools/verify_matrix_against_old.py` 用
+`git show <commit>:wbn/insight.py` 把七个历史 bug 还在的那一版加载进来，
+跑同一批数据、同一张期望值表，要求**七行全「旧红」**。某格在旧代码上不红
+= 那一格没覆盖到，矩阵要补。
+
+**这条检验当场抓到过一次漏**：W3.5 那格守的是 `recent`，而最初的期望值表
+只有 `today/ok/fail/chain/state` 五列，`recent` 根本不在表里——旧代码于是
+「绿」了。补上 `recent` 列之后才红。**矩阵少一列，对应的那个 bug 就漏网。**
+
+另有一条 `test_multi_channel_health_is_partial`：30 格每格只启用一条远端通道
+（多通道会走 `partial`，那是第四个维度），这条单独补上，否则矩阵对
+「一条成功一条失败」是瞎的。
 
 ### 两处**故意**不对称，别去「统一」（第三处见下）
 
@@ -647,9 +693,11 @@ for line in text.splitlines():
     dl = parse_delivery(line, tag)
     if dl is not None: deliveries.append(dl)
 
-# 消费者自己说要哪一天
+# 消费者自己说要哪一天、排谁、排不排测试
 facts.events_of("today")                       # 只今天
-facts.deliveries_of("today", remote_only=True) # 只今天 + 排 log + 排测试
+facts.deliveries_of("today",
+                    exclude=channels.LOCAL_CHANNELS,
+                    include_tests=False)       # 只今天 + 排 log + 排测试
 facts.recent(8)                                # 两天
 ```
 
@@ -823,9 +871,10 @@ W3.5 把 `recent` 改成读今天+昨天，**其他所有「最近一次」语�
 
 ## 测试与 CI
 
-`tests/` 下有 312 个 pytest 用例，覆盖折行、脱敏、事件归类、过滤链、平台差异，
+`tests/` 下有 374 个 pytest 用例，覆盖折行、脱敏、事件归类、过滤链、平台差异，
 以及 W0 抽取出来的 `insight` 纯函数、W1 的 bridge 返回值契约、W3 的统计口径与
-投递健康信号、W3.5 的草稿保护与最近通知取数、W3.6 的跨天边界、W3.7 的两槽取数。
+投递健康信号、W3.5 的草稿保护与最近通知取数、W3.6 的跨天边界、W3.7 的两槽取数、
+W3.8b 的 30 格矩阵（含六条不变量、脏数据变异、多通道 partial）。
 默认跳过 `network` 标记的用例，`gui` 类用例靠 `sys.platform` 自己跳过，
 所以 Windows 上跑的是全量。
 

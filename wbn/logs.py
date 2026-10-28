@@ -8,8 +8,19 @@
 各自决定读几天。每加一个消费者就暴露一次不一致——W3.6 的
 「`ok`/`fail` 跨天累加」就是两份实现各有一套时间口径的直接后果。
 
-**这一层不知道「log 通道不算投递」**。那是 `deliveries_of(remote_only=True)`
-这个参数的含义，由调用方决定；这里只负责把 `channel=log` 如实读成一条投递。
+**这一层不知道「log 通道不算投递」**，也**不知道测试该不该算**。`deliveries_of`
+只接受 `exclude` / `include_tests` 两个**纯参数**，口径由调用方决定。
+
+对外契约
+    read()        ← 生产代码只许用这个
+    Facts.*       ← 生产代码只许用这些
+    parse_* / is_test_line / split_emoji
+                  ← 只给 logs 内部和旧测试用。生产代码直接用它们
+                    等于绕过 Facts 自己解析，那就是这一层要消灭的东西。
+
+**本模块不许 import 任何业务模块**（R30）：通道注册表属于业务层，依赖它就把
+方向反了（底层文本层指向业务层），而且它将来只要用到日志就成环。排除谁由
+调用方传 `frozenset` 进来。
 """
 
 from __future__ import annotations
@@ -18,7 +29,7 @@ import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 
-from . import channels, config, sanitize
+from . import config, sanitize
 
 # ---------------------------------------------------------------- 正则
 
@@ -119,19 +130,23 @@ class Facts:
         return tuple(e for e in self.events if e.day == day)
 
     def deliveries_of(
-        self, day: str, *, remote_only: bool = False
+        self, day: str, *, exclude: frozenset[str] = frozenset(),
+        include_tests: bool = True,
     ) -> tuple[Delivery, ...]:
         """某一天的投递尝试。
 
-        `remote_only=True` 是**统计口径**下的「一次投递」：排除本机落盘的
-        通道（`channels.LOCAL_CHANNELS`——那是通道注册表的属性，不是这一层
-        的判断）**并且**排除手动测试（测试发的是表单里没保存的值，
-        不是一次真实投递）。
+        `exclude` / `include_tests` 都是**纯参数**——这一层不知道哪个通道是
+        「本机落盘」，也不知道手动测试该不该算一次投递，那是调用方的口径。
+
+        「统计口径下的一次投递」= `exclude=<通道注册表的 LOCAL_CHANNELS>` +
+        `include_tests=False`，由 `insight.stats()` 传进来（D14）。
+        这里只负责把 `channel=log` 如实读成一条投递——**排除是调用方的决定**。
         """
         out = [d for d in self.deliveries if d.day == day]
-        if remote_only:
-            out = [d for d in out
-                   if d.channel not in channels.LOCAL_CHANNELS and not d.test]
+        if exclude:
+            out = [d for d in out if d.channel not in exclude]
+        if not include_tests:
+            out = [d for d in out if not d.test]
         return tuple(out)
 
     def last_by_channel(self) -> dict[str, ChannelFacts]:
