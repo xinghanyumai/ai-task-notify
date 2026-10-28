@@ -425,6 +425,37 @@ DPI（2.0）算出 2338 物理像素的窗口；WebView2 再按 2.4 把它折回
 `bridge._LOG_CHANNEL` 同时认 `channel=` 和 `type=` 两种字段名，
 否则「最后发送时间」会把测试漏掉。
 
+### 两处**故意**不对称，别去「统一」
+
+|  | 测试发送算不算 |
+|---|---|
+| `insight.stats()` 的 `today` / `ok` / `fail` | **不算**（统计的是投递，不是点按钮） |
+| `bridge._last_send_times()` 的「最后发送」 | **算**（用户刚点完测试，列表要显示「刚刚」，否则会以为没生效） |
+
+看起来矛盾，但两边服务的判断不同。谁要「统一」它们，先想清楚是哪一边的用户体验被牺牲了。
+
+### 还没解决：`today` 依赖「写入本地日志」通道
+
+`today` 数的是 `notifications.log` 的行，而**只有 `log` 通道写这个文件**
+（`channels._send_log` 是全项目唯一的写入方）。`ok` / `fail` 却数的是
+`notify-*.log`。两个数据源，其中一个能被用户关掉。
+
+复现（临时目录，不碰真实日志）：
+
+```
+关掉 log 通道（enabled=False, manual_off=True）
+真实发送一次 → notify-*.log 有 1 行，notifications.log 不存在
+stats → 今日通知=0  成功=0  失败=1
+```
+
+真实机器上表现为**冻结**而不是归零：关掉那一刻 `today` 停在 5，之后
+`通道成功` 继续涨、`今日通知` 不动。
+
+正确数据源是 `notify-*.log` 里每个事件一行汇总
+`event=Stop kind=task_done sent=True remote_ok=False`——**它由 pipeline 写，
+和通道开关无关**，`send_test` 也不经过它。今天的账两边恰好都是 12，是因为
+`log` 通道一直开着，掩盖了这条依赖。
+
 ## 超时口径：前端必须比后端长
 
 后端一次发送最坏要**串两次请求**：先换 `access_token`（`channels.TOKEN_TIMEOUT`
