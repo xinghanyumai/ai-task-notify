@@ -35,7 +35,29 @@
   var ICON_CHECK = "M4 12l5 5L20 6";
   var ICON_ALERT = "M12 3l9 17H3zM12 10v5M12 18v.5";
 
-  var TEST_TIMEOUT = 10000;   /* 前端兜底：Python 线程挂了不许让按钮永远转圈 */
+  /* ---- 前端兜底超时 ------------------------------------------------------
+     Python 线程真挂了，不许让按钮永远转圈（W3 §3.4）。但**必须比后端长**：
+     比后端短的话，后端还在跑、前端已经报「等待超时」，等真实结果回来时
+     cbMap 里已经没有这个 id，被 `_push()` 静默丢弃——用户看到的失败是假的
+     （W3.1 §2.1 那个反向说谎的 bug）。
+
+     后端一次发送最坏要串两次请求：先换 access_token（`TOKEN_TIMEOUT`），
+     再发消息（`advanced.http_timeout`）。两个值都由 `channels_meta().timeouts`
+     下发，这里只做加法和下限，**不写死、不读 config**。
+
+     下限 20s 而不是算式的 15s：http_timeout 被调小到 3 时，两段抖动叠起来
+     仍可能超 15s，兜底不能比默认配置还激进。 */
+  var TEST_TIMEOUT_FLOOR = 20000;
+  var TEST_TIMEOUT_MARGIN = 2000;
+  var testTimeout = TEST_TIMEOUT_FLOOR;   /* meta 到货前的保守值 */
+
+  function deriveTestTimeout(meta) {
+    var t = (meta && meta.timeouts) || null;
+    if (!t) return TEST_TIMEOUT_FLOOR;    /* 后端没下发：退回下限，不猜 */
+    var ms = ((Number(t.token) || 0) + (Number(t.send) || 0)) * 1000
+             + TEST_TIMEOUT_MARGIN;
+    return Math.max(TEST_TIMEOUT_FLOOR, ms);
+  }
 
   var state = {
     root: null,
@@ -190,6 +212,7 @@
       state.ctx.call("channels_state")
     ]).then(function (res) {
       state.meta = res[0];
+      testTimeout = deriveTestTimeout(res[0]);
       state.labels = labelMap(res[0]);
       adopt(res[1], null);
 
@@ -689,7 +712,7 @@
       state.ctx.dropCb(cb);
       setBusy(false);
       showResult(ctype, "bad", "等待超时，请检查网络或看日志");
-    }, TEST_TIMEOUT);
+    }, testTimeout);
 
     state.ctx.call("channel_test", ctype, fields, cb).catch(function (e) {
       stopTimer();
@@ -731,7 +754,7 @@
       state.ctx.dropCb(cb);
       setBusy(false);
       showResult(ctype, "bad", "等待超时，请检查网络或看日志");
-    }, TEST_TIMEOUT);
+    }, testTimeout);
 
     state.ctx.call("channel_fetch_openid", fields, cb).catch(function (e) {
       stopTimer();

@@ -194,10 +194,29 @@ svg { display: block; }
 
 [hidden] { display: none !important; }
 
-/* 键盘焦点：光环用 --ring，描边用 --brand-ink（对两种底色都 ≥3:1） */
+/* ---- 键盘焦点：全站唯一一处，不给任何组件单独覆盖 ------------------------
+ *
+ * 三层，只有第一层承担「能不能看见」的职责：
+ *   1. `outline: 2px solid var(--brand-ink)` + `outline-offset: 2px`
+ *      —— 实心环，**可测量**。对三种底色的实测值：
+ *            亮 #00795f → --bg 5.16 / --bg-card 5.38 / --bg-subtle 4.90
+ *            暗 #2ee6c0 → --bg 12.36 / --bg-card 11.45 / --bg-subtle 10.79
+ *          WCAG 2.4.11 要求 ≥3:1，最差 4.90，全部通过。
+ *   2. `box-shadow: 0 0 0 3px var(--ring)` —— 带 alpha 的柔光，纯装饰。
+ *      **它单独用是不合格的**：35% 透明度的品牌绿叠在白卡上约 1.6:1。
+ *      所以它永远和上面的 outline 一起出现，不单独承担对比度。
+ *   3. `outline-offset` 不是可选项：没有它，环会贴着元素边缘，看起来像
+ *      边框加粗，色觉障碍用户分不出「这是焦点」还是「这是描边」。
+ *
+ * 为什么全站只写一处而不是每个组件各写一遍：`outline: none` 只要在某个
+ * 组件里写了一次（W2 的 `.nav-item` 就写了），焦点环就在那里静默消失。
+ * 组件要调整位置只能改 `outline-offset`（贴边的列表行用 -2px 往内收），
+ * **不许碰 outline 本身**。
+ */
 :focus-visible {
   outline: 2px solid var(--brand-ink);
   outline-offset: 2px;
+  box-shadow: 0 0 0 3px var(--ring);
 }
 
 /* ---- 字体：Inter 拉丁子集（当前未随包，见下） ----------------------------

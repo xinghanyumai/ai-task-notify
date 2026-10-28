@@ -26,9 +26,16 @@ from wbn import channels, config, insight, sanitize
 
 # 日志行形如：
 #   [00:06:38] channel=wxmp ok=False msg=errcode=40037 模板 ID 无效
-#   [00:06:38] test channel=log ok=True msg=已记录
-# `channel=` 不一定紧跟时间戳（测试发送会多一个 `test`），所以中间用 .*?
-_LOG_CHANNEL = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\].*?\bchannel=(\S+)")
+#   [01:26:32] test-send type=webhook ok=False msg=TimeoutError: timed out
+#   [01:26:32] test channel=log ok=True msg=已记录        ← W3.1 之前的历史写法
+#
+# 字段名从 `channel=` 改成 `type=` 是为了让 `insight.stats()` 认不出来
+# （见 `_is_test_line`）。这里要**同时认两种**，否则「最后发送时间」会
+# 把测试发送漏掉——用户刚点完测试，列表上却还显示昨天的时间。
+# 匹配锚在时间戳右侧的第一段，不用 `.*?` 到处找：`msg=` 是通道返回的原文，
+# 里面出现 `channel=` 的概率不为零。
+_LOG_CHANNEL = re.compile(
+    r"^\[(\d{2}:\d{2}:\d{2})\] (?:test-send |test )?(?:channel|type)=(\S+)")
 
 
 def _ensure_json(value):
@@ -54,6 +61,19 @@ def _guard(fn):
             }
 
     return wrapper
+
+
+def _http_timeout() -> int:
+    """`config.advanced.http_timeout`，和 `pipeline.send_test` 读的是同一个键。
+
+    下发到前端只为一件事：让它算出比后端**更长**的兜底超时。这里不做
+    上下限裁剪——裁剪会让前端算出的值和后端实际用的值脱钩，那就白下发了。
+    """
+    try:
+        return int(config.load().get("advanced", {}).get("http_timeout") or
+                   channels.SEND_TIMEOUT)
+    except (TypeError, ValueError):
+        return channels.SEND_TIMEOUT
 
 
 def _last_send_times() -> dict:
@@ -259,6 +279,13 @@ class Bridge:
             "groups": groups,
             "meta": meta,
             "required": {k: list(v) for k, v in channels.REQUIRED.items()},
+            # 前端兜底超时**必须由这两个值派生**，不许自己写死（W3.1 §2.2）：
+            # 后端一次发送最坏要串两次请求（先换 token，再发消息），
+            # 前端比后端短就会「后端成功了、界面报超时」，然后真实结果被丢弃。
+            "timeouts": {
+                "token": channels.TOKEN_TIMEOUT,
+                "send": _http_timeout(),
+            },
         }
 
     @_guard

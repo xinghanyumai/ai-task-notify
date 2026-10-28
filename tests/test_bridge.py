@@ -248,22 +248,25 @@ def test_channels_list_covers_every_channel(isolated_state):
 def test_channels_list_reads_last_send_from_today_log(isolated_state):
     """「最后发送时间」取今天日志里该通道的**最后**一条，不是第一条。
 
-    三种行都要认：普通发送、测试发送（`test` 前缀让 channel= 不紧跟时间戳）、
-    以及 `event=Stop ... remote_ok=False` 那种不含 `channel=` 的汇总行（要跳过）。
+    三种行都要认：普通发送、测试发送（`test-send type=` 是 W3.1 起的写法，
+    `test channel=` 是历史写法，两种都得认——否则用户刚点完测试，
+    列表上还显示昨天的时间）、以及 `event=Stop … remote_ok=False`
+    那种不含通道字段的汇总行（要跳过）。
     """
     today = datetime.now().strftime("%Y-%m-%d")
     (config.LOG_DIR / f"notify-{today}.log").write_text(
         "[00:06:38] channel=wxmp ok=False msg=errcode=40037 模板 ID 无效\n"
         "[00:06:39] test channel=log ok=True msg=已记录\n"
         "[09:12:00] channel=wxmp ok=True msg=ok\n"
-        "[09:13:00] event=Stop kind=task_done sent=True remote_ok=False elapsed=1.0s\n",
+        "[09:13:00] test-send type=bark ok=False msg=TimeoutError: timed out\n"
+        "[09:14:00] event=Stop kind=task_done sent=True remote_ok=False elapsed=1.0s\n",
         encoding="utf-8",
     )
 
     by_type = {r["type"]: r for r in bridge.Bridge().channels_list()["data"]}
     assert by_type["wxmp"]["last"] == "09:12"
     assert by_type["log"]["last"] == "00:06"
-    assert by_type["bark"]["last"] is None
+    assert by_type["bark"]["last"] == "09:13", "新写法的测试发送也要认"
 
 
 def test_channels_list_survives_missing_log(isolated_state):
@@ -343,6 +346,43 @@ def test_required_comes_from_channels(isolated_state):
 
     data = bridge.Bridge().channels_meta()["data"]
     assert data["required"] == {k: list(v) for k, v in ch.REQUIRED.items()}
+
+
+def test_timeouts_are_dispatched_with_the_meta(isolated_state):
+    """前端兜底超时必须由后端下发，不许自己写死。
+
+    后端一次发送最坏要串两次请求（换 token + 发消息），前端比后端短就会
+    「后端成功了、界面报超时」，然后真实结果被 `_push()` 丢弃。
+    """
+    from wbn import channels as ch
+
+    t = bridge.Bridge().channels_meta()["data"]["timeouts"]
+    assert t == {"token": ch.TOKEN_TIMEOUT, "send": 8}
+
+
+def test_timeouts_follow_advanced_http_timeout(isolated_state):
+    """`advanced.http_timeout` 改了要立刻反映到下发的值上。
+
+    三个取值对应前端 20s / 20s（下限）/ 32s，见 W3.1 验收第 3 条。
+    """
+    for want in (3, 8, 20):
+        cfg = config.load()
+        cfg.setdefault("advanced", {})["http_timeout"] = want
+        config.save(cfg)
+        t = bridge.Bridge().channels_meta()["data"]["timeouts"]
+        assert t["send"] == want
+
+        # 前端那段算式的 Python 版：下限 20000，余量 2000
+        ms = max(20000, (t["token"] + t["send"]) * 1000 + 2000)
+        assert ms == {3: 20000, 8: 20000, 20: 32000}[want]
+
+
+def test_timeouts_fall_back_when_config_is_junk(isolated_state):
+    """config 里写了个字符串或 null，不许让整页崩掉。"""
+    cfg = config.load()
+    cfg.setdefault("advanced", {})["http_timeout"] = "不是数字"
+    config.save(cfg)
+    assert bridge.Bridge().channels_meta()["data"]["timeouts"]["send"] == 8
 
 
 def test_state_values_cover_exactly_the_schema_fields(isolated_state):

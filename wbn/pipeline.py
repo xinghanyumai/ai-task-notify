@@ -196,5 +196,9 @@ def send_test(cfg: dict | None = None, channel_types: list[str] | None = None) -
     for ch in targets:
         ok, msg = channels.send_one(ch, title, content, fields, timeout)
         out.append({"type": ch.get("type"), "ok": ok, "msg": msg})
-        store.log(f"test channel={ch.get('type')} ok={ok} msg={msg[:120]}")
+        # 写成 `test-send type=` 而不是 `test channel=`：后者含 `channel=` 子串，
+        # 会被 `insight.stats()` 当成一次真实发送数进去（「今日通知 7 / 成功 7 /
+        # 失败 6」就是这么来的）。日志本身照留——排查「点了测试为什么没反应」
+        # 要靠它，只是不许进统计。
+        store.log(f"test-send type={ch.get('type')} ok={ok} msg={msg[:120]}")
     return out

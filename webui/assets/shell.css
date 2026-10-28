@@ -121,7 +121,9 @@ html, body { overflow: hidden; }
 
 .nav-item:hover { background: var(--bg-hover); color: var(--fg); }
 
-.nav-item:focus-visible { box-shadow: 0 0 0 3px var(--ring); outline: none; }
+/* 焦点环不在这里写：全局 `:focus-visible`（tokens.css）已经覆盖导航项、
+   主题分段、按钮、开关。W2 这里原本写的是 `outline: none` + 3px 柔光，
+   等于把唯一可测量的那一层关掉了——柔光 35% 透明度对白卡只有约 1.6:1。 */
 
 .nav-item.is-active {
   background: var(--bg-subtle);

@@ -99,19 +99,44 @@ def split_list(text) -> list[str]:
 # ---------------------------------------------------------------- 状态翻译
 
 
+def _is_test_line(line: str) -> bool:
+    """是不是手动点「测试此通道」写下的行。
+
+    两种写法都要认：
+
+    - `test-send type=bark ok=False …`（W3.1 起 `pipeline.send_test` 这么写）
+    - `test channel=bark ok=False …`（W3.1 之前的历史行，日志里还留着）
+
+    只判**时间戳之后的第一段**，不在整行里找 `test`：`msg=` 后面是通道返回的
+    原文，属于不可信文本，里面出现 "test" 很常见（`connection reset by test-host`
+    之类），整行匹配会误伤。
+    """
+    body = line.split("] ", 1)[-1]
+    return body.startswith("test-send ") or body.startswith("test ")
+
+
 def stats(cfg: dict) -> dict:
     """今日统计 + 最近 8 条通知。
 
     返回 `{today, ok, fail, channels, recent: [{time, channel, summary, ok}]}`。
 
-    两处过滤都是踩过的坑，**不许简化**：
+    三处过滤都是踩过的坑，**不许简化**：
 
-    - `notify-*.log` 只数 `channel=` 开头的行。每个事件在通道行之后还有一行
-      汇总 `event=Stop kind=task_done sent=True remote_ok=False`，那一行里的
+    - `notify-*.log` 只数**含 `channel=` 子串**的行（判定用 `in`，**不是**
+      `startswith`）。每个事件在通道行之后还有一行汇总
+      `event=Stop kind=task_done sent=True remote_ok=False`，那一行里的
       `remote_ok=False` 会被 "ok=False" 命中，失败数直接翻倍（19 显示成 38），
-      和「今日通知 19」自相矛盾。
+      和「今日通知 19」自相矛盾。这段 docstring 以前写的是「开头」，和代码里的
+      `in` 对不上——正因如此，下面那条测试发送的 bug 一直没被发现。
+    - 以 `test ` / `test-send ` 开头的行**是手动点「测试此通道」产生的，不算通知**。
+      它和真实发送写同一个文件，所以必须在读取侧排掉：W3 之前
+      `send_test` 写的是 `test channel=bark …`，含 `channel=` 子串，
+      于是 7 条通知配出「成功 7 + 失败 6」这种 13 > 7 的账。
+      历史行**不删**（复盘要用），只在这里跳过。
     - `notifications.log` 的标题开头有 ✅/⚠️，要剥掉——成败已经由 `ok` 字段
       表达，emoji 是重复信号，而且 Canvas 字体没有 emoji 字形。
+    - `notifications.log` 里 `kind == "test"` 的行是测试发送（「写入本地日志」
+      这个通道把正文写进这个文件，测一次它就等于记一条通知），同样不算。
     """
     today = datetime.now().strftime("%Y-%m-%d")
     sent, ok, fail = 0, 0, 0
@@ -125,9 +150,14 @@ def stats(cfg: dict) -> dict:
                 m = _LOG_LINE.match(line)
                 if not m:
                     continue
+                kind = m.group(4)
+                if kind == "test":
+                    # 「写入本地日志」这个通道把正文追加到这里，所以**测试一次
+                    # 这个通道就等于写了一条通知**。kind 是 `render_message` 传的
+                    # 事件名，测试固定是 "test"，真实事件永远不会叫这个。
+                    continue
                 if m.group(1) == today:
                     sent += 1
-                kind = m.group(4)
                 _emoji, plain = split_emoji(m.group(5))
                 rows.append({
                     "time": m.group(2),
@@ -143,6 +173,8 @@ def stats(cfg: dict) -> dict:
         try:
             for line in lp.read_text(encoding="utf-8",
                                      errors="replace").splitlines():
+                if _is_test_line(line):
+                    continue
                 if "channel=" not in line:
                     continue
                 if "ok=True" in line:

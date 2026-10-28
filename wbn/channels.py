@@ -26,6 +26,19 @@ from .sanitize import check_http_url, clean_obj, clean_text, one_line, redact
 
 UA = "wbn-notifier/1.0 (+personal-use)"
 
+# ---------------------------------------------------------------- 超时口径
+#
+# 一次「微信测试号」发送最多打两次网络请求：先拿 access_token（GET），
+# 再发消息（POST）。两个超时是**串联**的，所以后端最坏耗时是两者之和。
+#
+# **改这两个值要同步改前端的兜底超时**：`webui/assets/pages/channels.js`
+# 的 TEST_TIMEOUT 由 `(TOKEN_TIMEOUT + http_timeout + 2) * 1000` 派生，
+# 常量通过 `bridge.channels_meta()["timeouts"]` 下发，前端不自己猜。
+# 前端比后端短 = 后端还在跑、前端已经报「等待超时」，然后真实结果被
+# `_push()` 静默丢弃（W3.1 §2.1 那个反向说谎的 bug）。
+TOKEN_TIMEOUT = 10   # 取 access_token / 换 openid 这类 GET
+SEND_TIMEOUT = 8     # 发消息的默认值，实际由 config.advanced.http_timeout 覆盖
+
 
 # ---------------------------------------------------------------- 元数据
 # 供设置中心自动生成表单：(字段名, 标签, 控件类型, 默认值, 提示)
@@ -301,7 +314,7 @@ def _http(
     data: bytes | None = None,
     headers: dict | None = None,
     method: str = "POST",
-    timeout: int = 8,
+    timeout: int = SEND_TIMEOUT,
 ) -> tuple[int, str]:
     """发一个 HTTP 请求。返回 (状态码, 响应文本)。状态码 0 表示请求本身没发出去。
 
@@ -333,7 +346,7 @@ def _http(
         return 0, redact(f"{type(e).__name__}: {e}", 300)
 
 
-def _post_json(url: str, body: dict, timeout: int = 8) -> tuple[int, str]:
+def _post_json(url: str, body: dict, timeout: int = SEND_TIMEOUT) -> tuple[int, str]:
     return _http(
         url,
         json.dumps(body, ensure_ascii=False).encode("utf-8"),
@@ -425,7 +438,7 @@ def _drop_token(key: str) -> None:
         _save_tokens(data)
 
 
-def _get_json(url: str, timeout: int = 10) -> tuple[dict, str]:
+def _get_json(url: str, timeout: int = TOKEN_TIMEOUT) -> tuple[dict, str]:
     code, text = _http(url, method="GET", timeout=timeout)
     if code == 0:
         return {}, text
@@ -1362,7 +1375,7 @@ def _send_log(c: dict, title: str, content: str, fields: dict) -> tuple[bool, st
 
 
 def send_one(
-    channel: dict, title: str, content: str, fields: dict, timeout: int = 8
+    channel: dict, title: str, content: str, fields: dict, timeout: int = SEND_TIMEOUT
 ) -> tuple[bool, str]:
     ctype = channel.get("type", "")
     # 兜底清洗：落单代理字符会让 json.dumps(...).encode("utf-8") 直接抛异常，

@@ -103,6 +103,58 @@ def test_stats_counts_only_channel_lines():
     assert s["fail"] == 1, "汇总行的 remote_ok=False 不能被算成一次失败"
 
 
+def test_stats_ignores_test_send_lines():
+    """**「今日通知 7 / 成功 7 / 失败 6」那个 bug 的回归测试。**
+
+    手动点「测试此通道」和真实发送写同一个 `notify-*.log`，所以测试行
+    必须在读取侧排掉，否则 7 条通知能配出 13 次通道结果。
+
+    两种写法都要认：
+    - `test-send type=…`（W3.1 起 `pipeline.send_test` 的写法）
+    - `test channel=…`（W3.1 之前的历史行，**日志里留着，不许删**）
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    _write(config.LOG_DIR / f"notify-{today}.log", [
+        "[10:00:00] channel=bark ok=False msg=timeout",
+        "[10:00:01] test-send type=bark ok=False msg=timeout",
+        "[10:00:02] test-send type=log ok=True msg=已记录",
+        "[10:00:03] test channel=log ok=True msg=已记录",
+        "[10:00:04] event=Stop kind=task_done sent=True remote_ok=False",
+    ])
+    s = insight.stats(config.load())
+    assert s["ok"] == 0, "测试发送不算通知，成功数不许被它撑起来"
+    assert s["fail"] == 1, "只剩那一行真实发送；真行不许被一起滤掉"
+
+
+def test_stats_ignores_test_rows_in_notifications_log():
+    """「写入本地日志」通道把正文写进 notifications.log，所以**测试它一次
+    就等于记一条通知**。kind 是 render_message 传的事件名，测试固定是
+    "test"，真实事件永远不会叫这个。
+    """
+    today = datetime.now().strftime("%Y-%m-%d")
+    _write(config.LOG_DIR / "notifications.log", [
+        f"{today} 10:00:00 [WorkBuddy] test | 🔔 通知测试",
+        "    通道工作正常。",
+        f"{today} 10:01:00 [WorkBuddy] task_done | ✅ WorkBuddy 任务完成",
+        "2020-01-01 09:10:00 [WorkBuddy] task_done | 去年那条",
+    ])
+    s = insight.stats(config.load())
+    assert s["today"] == 1, "只有那一条真实任务算通知"
+    # recent 是「最近 8 条」，不按日期截断（现有行为），但测试行不该混进去
+    assert "通知测试" not in "".join(r["summary"] for r in s["recent"])
+
+
+def test_is_test_line_only_looks_at_the_first_field():
+    """`msg=` 后面是通道返回的原文，出现 "test" 很常见，不能整行匹配。"""
+    assert insight._is_test_line("[10:00:00] test-send type=bark ok=False msg=x")
+    assert insight._is_test_line("[10:00:00] test channel=log ok=True msg=x")
+    assert not insight._is_test_line("[10:00:00] channel=bark ok=False "
+                                     "msg=connection reset by test-host")
+    assert not insight._is_test_line("[10:00:00] event=Stop kind=task_done")
+    # 没有 `] ` 前缀的畸形行不许炸
+    assert not insight._is_test_line("garbage line without prefix")
+
+
 def test_stats_counts_today_and_recent_newest_first():
     today = datetime.now().strftime("%Y-%m-%d")
     # 真实日志是追加写的，最后一行才是最新的

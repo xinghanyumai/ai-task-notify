@@ -99,9 +99,11 @@
   background: var(--brand);
 }
 
+/* 列表行贴着 `.chan-list` 的左右边（那个容器横向 padding 是 0），
+   外扩的环会被判成溢出、给列表加一条横向滚动条。所以这一处往内收 2px，
+   outline 本身仍然是全局那条（tokens.css），不在这里另写。 */
 .chan-row:focus-visible {
-  outline: none;
-  box-shadow: inset 0 0 0 2px var(--brand-ink);
+  outline-offset: -2px;
 }
 
 .chan-icon {
@@ -275,12 +277,12 @@
 .field input:hover,
 .field textarea:hover { border-color: var(--fg-subtle); }
 
-/* 焦点态：边框切 --brand-ink（5.16:1），外面再套 3px 光环 */
-.field input:focus,
-.field textarea:focus {
-  outline: none;
+/* 焦点态：边框切 --brand-ink（对输入框底色 4.90:1），外面由全局
+   `:focus-visible` 套实心环 + 柔光。这里**不许写 outline: none**——
+   输入框是最需要看清「光标在哪」的控件。 */
+.field input:focus-visible,
+.field textarea:focus-visible {
   border-color: var(--brand-ink);
-  box-shadow: 0 0 0 3px var(--ring);
 }
 
 .field input:disabled,
