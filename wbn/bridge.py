@@ -19,6 +19,7 @@ from __future__ import annotations
 import functools
 import json
 import threading
+from datetime import datetime, timedelta
 
 from wbn import channels, config, insight, logs, sanitize
 
@@ -61,13 +62,44 @@ def _http_timeout() -> int:
         return channels.SEND_TIMEOUT
 
 
-def _last_send_times() -> dict:
+def _log_stamp() -> tuple[int, ...]:
+    """昨天 + 今天两个日志文件的 mtime（纳秒）。文件不存在记 0。
+
+    用它而不是「距上次读过了几秒」：**时间是猜的，mtime 是事实**。
+    「缓存 5 秒」在「用户点完测试立刻刷新」这个最常见的动作上会读到旧数据——
+    测试刚写了一行日志，mtime 变了，缓存必须当场失效。反过来，日志没动的时候
+    重复读纯属浪费，而且三次读之间可能夹进一条新记录，三个出口就不一致。
+
+    跨零点时日期变了，stamp 里的两个 mtime 自然全变，缓存失效。
+
+    文件被删掉记 0 而不是报错：日志轮转 / 用户手动清理都不该让页面白屏。
+
+    路径问 `logs.log_path()`，不在这里拼文件名——文件名规则只许有一个
+    定义处（W3.8 收敛条件第 1 条：一处读日志）。
+    """
+    now = datetime.now()
+    out = []
+    for offset in (1, 0):
+        try:
+            out.append(logs.log_path(now - timedelta(days=offset)).stat().st_mtime_ns)
+        except OSError:
+            out.append(0)
+    return tuple(out)
+
+
+def _last_send_times(facts: logs.Facts | None = None) -> dict:
     """每条通道的**两件事实**（今天 + 昨天），`{ctype: {…}}`。
 
-    这是 `logs.read(days=2).last_by_channel()` 的**薄封装**：解析、分槽、
-    「今天的记录覆盖昨天的」全部在 `logs` 里，这里只把 `ChannelFacts`
-    摊平成前端契约要的普通 dict（`channels_list` / `channel_state` /
-    `delivery_health` 都按 dict 下标读，`ui.py` 的退路也走这条路）。
+    `facts` 给进来就只做「dataclass → 前端契约的普通 dict」这一步，**不再读文件**
+    （bridge 一次页面加载共用一份，W3.8c）；不给就自己 `logs.read()`。
+
+    **它不走缓存，这是有意的。** 它是模块级函数、没有 `self`，要缓存就得挂
+    全局变量——那是比「多读一次文件」坏得多的东西。而且 312 个测试直接调它，
+    它们要的是「读一次真数据」，不是「读一次别人留下的缓存」。
+
+    解析、分槽、「今天的记录覆盖昨天的」全部在 `logs` 里，这里只摊平——
+    `channels_list` / `channel_state` / `delivery_health` 都按 dict 下标读，
+    `ui.py` 的退路也走这条路。
 
     | 字段 | 来源 | 消费者 |
     |---|---|---|
@@ -81,12 +113,14 @@ def _last_send_times() -> dict:
 
     函数名保留：312 个测试直接调它，改名等于改契约。
     """
+    if facts is None:
+        facts = logs.read(days=2)
     return {
         ctype: {
             "time": f.time, "day": f.day, "test": f.test,
             "ok": f.ok, "msg": f.msg, "ok_day": f.ok_day,
         }
-        for ctype, f in logs.read(days=2).last_by_channel().items()
+        for ctype, f in facts.last_by_channel().items()
     }
 
 
@@ -148,6 +182,33 @@ class Bridge:
         # 是前端的事（草稿 vs 磁盘），后端不该再实现一遍比较逻辑。
         # 关窗时 `app.py` 读它决定要不要拦。
         self._dirty = False
+        # 一次页面加载共用的一份日志（W3.8c）。三个 bridge 方法各读一次文件
+        # 的时候，三次读之间只要夹进一条新投递，同一屏上就能出现
+        # 「今日通知 2 / 通道失败 3」这种互相矛盾的数——和 W3.7 那个
+        # 「侧栏绿、列表红」同类，只是触发条件更隐蔽。
+        self._facts: logs.Facts | None = None
+        self._facts_stamp: tuple[int, ...] | None = None
+
+    def _get_facts(self) -> logs.Facts:
+        """一次页面加载共用一份 `Facts`（W3.8c）。
+
+        **按文件 mtime 失效，不按时间。** 用「缓存 5 秒」会让用户点完
+        「测试此通道」立刻刷新时读到旧数据——测试刚写了一行日志，mtime 变了，
+        缓存必须当场失效。反过来，日志没动的时候重复读纯属浪费。
+
+        缓存放这里而不是 `logs.py`：那一层是纯函数（`Facts` 是 frozen
+        dataclass、`read()` 无副作用），加缓存就让它变成有状态；而且
+        「什么时候失效」是应用层的事，不是解析层的事。
+
+        `_facts` / `_facts_stamp` 必须是私有的：pywebview 的 `get_functions()`
+        会递归展开公开的非可调用属性（见类注释），一个 `Facts` 上去就是
+        无限递归 → API 注入失败 → 页面停在骨架屏。
+        """
+        stamp = _log_stamp()
+        if self._facts is None or self._facts_stamp != stamp:
+            self._facts = logs.read(days=2)
+            self._facts_stamp = stamp
+        return self._facts
 
     def _attach(self, window) -> None:
         """建完窗口再挂上。名字带下划线，不进 JS 的 API 面（见类注释）。"""
@@ -233,7 +294,7 @@ class Bridge:
         """
         self._touch()
         cfg = config.load()
-        s = insight.stats(cfg)
+        s = insight.stats(cfg, self._get_facts())
         return {
             "today": s["today"],
             "ok": s["ok"],
@@ -251,7 +312,8 @@ class Bridge:
         「送到你手机」+ 绿点——界面在替失败背书（W3.4）。
         """
         self._touch()
-        text, level = insight.chain_sentence(config.load(), _last_send_times())
+        text, level = insight.chain_sentence(
+            config.load(), _last_send_times(self._get_facts()))
         return {"text": text, "level": level}
 
     @_guard
@@ -267,7 +329,7 @@ class Bridge:
         """
         self._touch()
         cfg = config.load()
-        last = _last_send_times()
+        last = _last_send_times(self._get_facts())
         out = []
         for ch in cfg.get("channels") or []:
             ctype = ch.get("type") or ""
@@ -341,7 +403,7 @@ class Bridge:
         """
         self._touch()
         cfg = config.load()
-        last = _last_send_times()
+        last = _last_send_times(self._get_facts())
         out = []
         for ctype, m in channels.CHANNEL_META.items():
             ch = config.get_channel(cfg, ctype) or {}

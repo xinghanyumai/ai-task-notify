@@ -28,6 +28,7 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
+from pathlib import Path
 
 from . import config, sanitize
 
@@ -264,6 +265,18 @@ def parse_delivery(line: str, day: str = "") -> Delivery | None:
 # ---------------------------------------------------------------- 入口
 
 
+def log_path(day) -> Path:
+    """某一天的日志文件路径。**文件名规则只写在这里。**
+
+    `bridge._log_stamp()` 要拿这两个文件的 mtime 判断缓存失不失效，但它不该
+    再拼一遍 `notify-YYYY-MM-DD.log`——那样「日志文件叫什么」就有了两个定义处，
+    改一次漏一次（W3 那七轮的老形状）。这里只返回路径，不碰文件。
+
+    `day` 收 `date` / `datetime` 都行，只用到 `%Y-%m-%d`。
+    """
+    return config.LOG_DIR / f"notify-{day:%Y-%m-%d}.log"
+
+
 def read(days: int = 2) -> Facts:
     """读最近 `days` 天的日志。文件不存在就当那天没有数据，不抛。
 
@@ -281,8 +294,7 @@ def read(days: int = 2) -> Facts:
     deliveries: list[Delivery] = []
     for offset in range(days - 1, -1, -1):
         tag = "today" if offset == 0 else "yesterday"
-        d = now - timedelta(days=offset)
-        path = config.LOG_DIR / f"notify-{d:%Y-%m-%d}.log"
+        path = log_path(now - timedelta(days=offset))
         try:
             text = path.read_text(encoding="utf-8", errors="replace")
         except OSError:

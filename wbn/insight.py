@@ -124,8 +124,12 @@ def _is_delivered(line: str) -> bool:
     return ev is not None and ev.remote_ok
 
 
-def stats(cfg: dict) -> dict:
+def stats(cfg: dict, facts: logs.Facts | None = None) -> dict:
     """今日统计 + 最近 8 条通知。
+
+    `facts` 由调用方给时**不再自己读文件**（bridge 一次页面加载共用一份，
+    W3.8c）；不给就自己读——312 个旧测试和 `ui.py` 都按 `stats(cfg)` 调，
+    这个签名不能改，所以新参数只能默认 `None`。
 
     返回 `{today, ok, fail, channels, recent: [{time, day, channel, summary, ok}]}`。
 
@@ -167,7 +171,8 @@ def stats(cfg: dict) -> dict:
       标题开头的 ✅/⚠️ 要剥掉——成败已经由 `ok` 字段表达，emoji 是重复信号，
       而且 Canvas 字体没有 emoji 字形。
     """
-    facts = logs.read(days=2)
+    if facts is None:
+        facts = logs.read(days=2)
 
     # 三个数都只数今天（D18）：它们在同一张「今日」卡上，混进昨天的投递
     # 就会读出「今日通知 2 / 通道失败 66」这种没有结论的数字。
