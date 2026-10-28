@@ -194,6 +194,10 @@ tkinter UI 那部分（10-27 的三条）**只保留实测数据**，代码随 W
 | **R21** | **`recent` 仍依赖 `log` 通道** | R15 的孪生兄弟：`today` 修了，`recent` 没修。关掉 log → 「最近通知」永久为空，空态还说「还没收到通知」 | 高 | W3.5：`recent` 改从 `notify-*.log` 的 event 汇总行生成，读今天+昨天。**已修** |
 | **R22** | **跨天条目显示成今天** | `recent` 只给 `HH:MM`，昨晚 23:50 和今天 00:10 长得一模一样，用户以为刚刚发生过 | 中 | W3.5：`recent` 带 `day: "today" \| "yesterday"`，前端拼「昨天 23:50」。**已修** |
 | **R23** | **切页不清理在飞回调** | 通道页点测试后切走，回调晚到会打到已卸载的节点；timer 也不清，busy 状态残留 | 中 | W3.5：`destroy()` 清 timer / dirtyTimer / pending 回调 / result / busy。**已修** |
+| **R24** | **`ok`/`fail` 跨天累加** | 双日循环只给 `today` 加了 `tag == "today"` 判断，通道行没加 → 零点后「通道失败」含昨天的投递。真机实测 `fail=66`，今天真实 27 | **必现**（每天零点后） | W3.6：通道行判断前加 `if tag != "today": continue` |
+| **R25** | **零点后健康信号失忆** | `_last_send_times()` 只读今天 → 零点后返回 `{}` → `chain_sentence` 回绿、`channel_state` 回「已启用」、`last` 显示「未发送」。昨天连挂 15 次被彻底遗忘，而「昨晚跑了一夜早上来看」正是最常见场景 | **必现**（R16 复发） | W3.6：读今天+昨天，今天覆盖昨天；`last` 展示带「昨天」 |
+| **R26** | **`channels_list` 与 `channels_state` 双形状** | 同一份 `channel_state()` 结果，一个叫 `state`、一个叫 `subtitle`，字段也不完全一致（一个有 `values` 一个没有）。两份并行 API，改一处忘另一处 | 中（维护成本，非 bug） | 记着不动。W5 收尾时评估合并 |
+| **R27** | **tkinter 退路的侧栏永远绿** | `ui.py:438` 调 `insight.chain_sentence(self.cfg)` **没传 `last`**，W3.4 的降级只覆盖了 web 侧。退路里微信全失败仍说「送到你手机」 | 低（退路，W5 要删） | 记着。若 W5 前还要用退路，补一行 |
 
 ---
 
