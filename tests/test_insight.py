@@ -126,22 +126,52 @@ def test_stats_ignores_test_send_lines():
     assert s["fail"] == 1, "只剩那一行真实发送；真行不许被一起滤掉"
 
 
-def test_stats_ignores_test_rows_in_notifications_log():
-    """「写入本地日志」通道把正文写进 notifications.log，所以**测试它一次
-    就等于记一条通知**。kind 是 render_message 传的事件名，测试固定是
-    "test"，真实事件永远不会叫这个。
+def test_stats_today_comes_from_event_lines_not_notifications_log():
+    """**「关掉 log 通道 today 就冻结」那个 bug 的回归测试。**
+
+    `notifications.log` 全项目只有 `channels._send_log` 写，而那个通道有开关，
+    用户关掉它这个数就不动了。所以 `today` 必须数 `pipeline.notify()` 写的
+    `event=… sent=True` 汇总行——它和通道开关无关。
+
+    这里故意写 3 条 notifications.log 记录，today 一个都不许跟着动。
     """
     today = datetime.now().strftime("%Y-%m-%d")
     _write(config.LOG_DIR / "notifications.log", [
-        f"{today} 10:00:00 [WorkBuddy] test | 🔔 通知测试",
-        "    通道工作正常。",
-        f"{today} 10:01:00 [WorkBuddy] task_done | ✅ WorkBuddy 任务完成",
-        "2020-01-01 09:10:00 [WorkBuddy] task_done | 去年那条",
+        f"{today} 09:00:00 [WorkBuddy] task_done | ✅ 一",
+        f"{today} 09:01:00 [WorkBuddy] task_done | ✅ 二",
+        f"{today} 09:02:00 [WorkBuddy] task_done | ✅ 三",
+    ])
+    _write(config.LOG_DIR / f"notify-{today}.log", [
+        "[09:00:00] event=Stop kind=task_done sent=True remote_ok=False",
+        "[09:01:00] event=Stop kind=task_done sent=True remote_ok=True",
+        "[09:02:00] event=Stop kind=task_done sent=False remote_ok=False",
+        "[09:03:00] skip event=Stop kind=task_done reason=耗时太短",
     ])
     s = insight.stats(config.load())
-    assert s["today"] == 1, "只有那一条真实任务算通知"
-    # recent 是「最近 8 条」，不按日期截断（现有行为），但测试行不该混进去
-    assert "通知测试" not in "".join(r["summary"] for r in s["recent"])
+    assert s["today"] == 2, "sent=False 表示全部失败、skip 表示没发，都不算"
+    assert len(s["recent"]) == 3, "recent 仍然读 notifications.log"
+
+
+def test_stats_today_survives_log_channel_being_off():
+    """关掉「写入本地日志」通道后 notifications.log 根本不存在，today 照样要涨。"""
+    today = datetime.now().strftime("%Y-%m-%d")
+    assert not (config.LOG_DIR / "notifications.log").exists()
+    _write(config.LOG_DIR / f"notify-{today}.log", [
+        "[10:00:00] channel=webhook ok=True msg=HTTP 200",
+        "[10:00:00] event=Stop kind=task_done sent=True remote_ok=True",
+    ])
+    s = insight.stats(config.load())
+    assert s["today"] == 1
+    assert s["recent"] == [], "没有正文记录就是空，不许凭空编"
+
+
+def test_is_sent_event_anchors_on_the_first_field():
+    """`sent=True` 只是子串判据，靠「第一段是 `event=`」把不相干的行挡掉。"""
+    assert insight._is_sent_event("[10:00:00] event=Stop sent=True remote_ok=False")
+    assert not insight._is_sent_event("[10:00:00] event=Stop sent=False")
+    assert not insight._is_sent_event("[10:00:00] skip event=Stop sent=True")
+    assert not insight._is_sent_event("[10:00:00] test-send type=log sent=True")
+    assert not insight._is_sent_event("garbage line without prefix")
 
 
 def test_is_test_line_only_looks_at_the_first_field():
@@ -164,7 +194,8 @@ def test_stats_counts_today_and_recent_newest_first():
         f"{today} 09:05:00 [WorkBuddy] task_failed | ❌ 第二条",
     ])
     s = insight.stats(config.load())
-    assert s["today"] == 2, "只数今天的"
+    # today 已经不读这个文件了（它数 notify-*.log 的 event= 行），这里一条都没有
+    assert s["today"] == 0
     assert len(s["recent"]) == 3, "recent 不按日期过滤，只取最后 8 条"
     assert s["recent"][0]["summary"] == "第二条", "recent 是最新在前"
     assert s["recent"][0]["ok"] is False

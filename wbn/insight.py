@@ -115,64 +115,54 @@ def _is_test_line(line: str) -> bool:
     return body.startswith("test-send ") or body.startswith("test ")
 
 
+def _is_sent_event(line: str) -> bool:
+    """`pipeline.notify()` 写的「这条发出去了」汇总行。
+
+    形如 `[10:24:23] event=Stop kind=task_done sent=True remote_ok=False …`。
+
+    判据是**时间戳后第一段就是 `event=`**，加上行内有 `sent=True`：
+
+    - `skip event=…`（被过滤链拦下）第一段是 `skip`，不算；
+    - `test-send type=…` 第一段是 `test-send`，手动测试不算通知；
+    - `sent=False` 表示所有通道都失败，那不算「发出去了」，语义与旧版一致。
+    """
+    body = line.split("] ", 1)[-1]
+    return body.startswith("event=") and "sent=True" in body
+
+
 def stats(cfg: dict) -> dict:
     """今日统计 + 最近 8 条通知。
 
     返回 `{today, ok, fail, channels, recent: [{time, channel, summary, ok}]}`。
 
-    三处过滤都是踩过的坑，**不许简化**：
+    **两个数据源，用途别混：**
 
-    - `notify-*.log` 只数**含 `channel=` 子串**的行（判定用 `in`，**不是**
-      `startswith`）。每个事件在通道行之后还有一行汇总
-      `event=Stop kind=task_done sent=True remote_ok=False`，那一行里的
-      `remote_ok=False` 会被 "ok=False" 命中，失败数直接翻倍（19 显示成 38），
-      和「今日通知 19」自相矛盾。这段 docstring 以前写的是「开头」，和代码里的
-      `in` 对不上——正因如此，下面那条测试发送的 bug 一直没被发现。
-    - 以 `test ` / `test-send ` 开头的行**是手动点「测试此通道」产生的，不算通知**。
-      它和真实发送写同一个文件，所以必须在读取侧排掉：W3 之前
-      `send_test` 写的是 `test channel=bark …`，含 `channel=` 子串，
-      于是 7 条通知配出「成功 7 + 失败 6」这种 13 > 7 的账。
-      历史行**不删**（复盘要用），只在这里跳过。
-    - `notifications.log` 的标题开头有 ✅/⚠️，要剥掉——成败已经由 `ok` 字段
-      表达，emoji 是重复信号，而且 Canvas 字体没有 emoji 字形。
-    - `notifications.log` 里 `kind == "test"` 的行是测试发送（「写入本地日志」
-      这个通道把正文写进这个文件，测一次它就等于记一条通知），同样不算。
+    - `today` 数 `notify-*.log` 里 `event=… sent=True` 的汇总行。
+      它由 `pipeline.notify()` 写，**和通道开关无关**——通道全关也照写。
+      以前数的是 `notifications.log`，而那个文件全项目只有
+      `channels._send_log` 写；用户关掉「写入本地日志」通道，这个数就冻住，
+      而 `ok`/`fail` 继续涨，于是又是一次「几个数对不上」。
+    - `ok` / `fail` 数同一个文件里的通道行，判据是**含 `channel=` 子串**
+      （`in`，**不是** `startswith`）。每个事件在通道行之后还有一行汇总
+      `… remote_ok=False`，那一行会被 "ok=False" 命中，失败数直接翻倍
+      （19 显示成 38）。这段 docstring 以前写「开头」，和代码对不上——
+      正因如此，测试发送那个 bug 一直没被发现。
+      以 `test ` / `test-send ` 开头的行是手动点「测试此通道」产生的，不算投递，
+      跳过；历史行**不删**（复盘要看）。
+    - `recent` 读 `notifications.log`，那是用户唯一能读的正文记录。
+      标题开头的 ✅/⚠️ 要剥掉——成败已经由 `ok` 字段表达，emoji 是重复信号，
+      而且 Canvas 字体没有 emoji 字形。
     """
     today = datetime.now().strftime("%Y-%m-%d")
     sent, ok, fail = 0, 0, 0
-    rows: list[dict] = []
-
-    np = config.LOG_DIR / "notifications.log"
-    if np.exists():
-        try:
-            for line in np.read_text(encoding="utf-8",
-                                     errors="replace").splitlines():
-                m = _LOG_LINE.match(line)
-                if not m:
-                    continue
-                kind = m.group(4)
-                if kind == "test":
-                    # 「写入本地日志」这个通道把正文追加到这里，所以**测试一次
-                    # 这个通道就等于写了一条通知**。kind 是 `render_message` 传的
-                    # 事件名，测试固定是 "test"，真实事件永远不会叫这个。
-                    continue
-                if m.group(1) == today:
-                    sent += 1
-                _emoji, plain = split_emoji(m.group(5))
-                rows.append({
-                    "time": m.group(2),
-                    "channel": "",
-                    "summary": (plain or m.group(5))[:52],
-                    "ok": kind not in ("task_failed", "tool_failed"),
-                })
-        except Exception:
-            pass
 
     lp = config.LOG_DIR / f"notify-{today}.log"
     if lp.exists():
         try:
             for line in lp.read_text(encoding="utf-8",
                                      errors="replace").splitlines():
+                if _is_sent_event(line):
+                    sent += 1
                 if _is_test_line(line):
                     continue
                 if "channel=" not in line:
@@ -181,6 +171,25 @@ def stats(cfg: dict) -> dict:
                     ok += 1
                 elif "ok=False" in line:
                     fail += 1
+        except Exception:
+            pass
+
+    rows: list[dict] = []
+    np = config.LOG_DIR / "notifications.log"
+    if np.exists():
+        try:
+            for line in np.read_text(encoding="utf-8",
+                                     errors="replace").splitlines():
+                m = _LOG_LINE.match(line)
+                if not m:
+                    continue
+                _emoji, plain = split_emoji(m.group(5))
+                rows.append({
+                    "time": m.group(2),
+                    "channel": "",
+                    "summary": (plain or m.group(5))[:52],
+                    "ok": m.group(4) not in ("task_failed", "tool_failed"),
+                })
         except Exception:
             pass
 
