@@ -464,11 +464,32 @@ insight.stats() / bridge._last_send_times()   ← 都只是消费者
 | 排除测试（第一、二处不对称） | `deliveries_of(remote_only=True)` | `stats()` |
 | 时间认测试、成败不认（D19） | `last_by_channel()` | `bridge` → `channel_state` / `delivery_health` |
 
-**`logs.py` 里不许做业务判断**：它不知道「`log` 通道不算投递」，只接受
-`remote_only` 这个参数；它也不知道「测试不该算成功」，只把 `test` 标出来。
-业务判断留在消费者手里，解析层只负责**把行读对**。
+**`logs.py` 里不许做业务判断**：它不该知道「`log` 通道不算投递」，
+也不该知道「测试不该算成功」，只负责**把行读对**。
+
+> **W3.8a 没做到这一条（R30）。** 当时 `deliveries_of(remote_only=True)` 内部
+> 查了 `channels.LOCAL_CHANNELS` 来决定排除谁——「排不排除」这个决定还在
+> `logs` 层，而且让底层文本层 `import` 了业务注册表，依赖方向反了。
+> 现在不循环（`channels` 不 import `logs`），但 `channels` 将来只要用到 logs 就成环。
+>
+> W3.8b 改成纯参数：`deliveries_of(day, *, exclude=frozenset(), include_tests=True)`，
+> 调用方传 `channels.LOCAL_CHANNELS`。改完 `logs.py` 的 import 只剩 `config` / `sanitize`。
 
 判据本身一条都没变——W3.8 只搬家。变的只是它现在**只写一次**。
+
+### 谁能用哪些函数（W3.8b 加）
+
+```
+read()          ← 生产代码只许用这个
+Facts.*         ← 生产代码只许用这些
+parse_* / is_test_line / split_emoji
+                ← 只给 logs 内部和旧测试用
+```
+
+后三个函数是**后门**：生产代码直接调它们，等于绕过 `Facts` 自己解析，
+那就是这一层要消灭的东西。W3.8a 在 `insight` 里留了 `_is_delivered` /
+`_is_test_line` 两个只为旧测试存在的别名（R31），它们的 docstring 必须写明
+「生产代码不许调」，否则下一个人会以为那是生产路径。
 
 ### 两处**故意**不对称，别去「统一」（第三处见下）
 
