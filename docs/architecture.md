@@ -482,10 +482,21 @@ webhook 的上游报错里出现 `channel=log` 完全可能，整行找子串会
 当成 log 落盘排掉——数字变小、故障被吞。回归测试见
 `tests/test_insight.py::test_stats_does_not_mistake_msg_for_channel_name`。
 
-**遗留（未改，同类）**：`ok=True` / `ok=False` 仍然是整行子串判据。
+**遗留（W3.4 修）**：`ok=True` / `ok=False` 仍然是整行子串判据。
 `msg=` 里出现 `ok=False` 理论上会多算一次失败。真实通道的报错原文目前都是
-`errcode=` / `HTTP xxx` / 异常名，没命中过；要彻底消掉得把状态也纳入正则，
-属于改解析逻辑，单独评估。
+`errcode=` / `HTTP xxx` / 异常名，没命中过。
+
+**但这个理由不成立**——「目前没命中过」和「不会命中」是两件事，
+而写 `msg=` 的是**远端服务**，它返回什么不由我们决定。`channels.py:1420`
+的写入格式是固定的 `channel={type} ok={ok} msg={msg[:120]}`，
+所以状态字段完全可以和通道名一起锚定：
+
+```python
+_CHANNEL_LINE = re.compile(r"^\[(\d{2}:\d{2}:\d{2})\] channel=(\S+) ok=(True|False)")
+```
+
+改完之后 `stats()` 里**一个子串判断都不剩**。四轮 bug 全是"整行找子串"，
+留一处就还有第五次。
 
 ## 超时口径：前端必须比后端长
 
