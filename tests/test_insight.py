@@ -329,6 +329,68 @@ def test_stats_recent_marks_yesterday():
     assert insight.stats(config.load())["today"] == 1
 
 
+def _two_days(y_lines, t_lines):
+    """写昨天 + 今天两份日志，返回 (yesterday, today) 两个日期串。"""
+    from datetime import timedelta
+
+    now = datetime.now()
+    today = now.strftime("%Y-%m-%d")
+    yesterday = (now - timedelta(days=1)).strftime("%Y-%m-%d")
+    _write(config.LOG_DIR / f"notify-{yesterday}.log", y_lines)
+    _write(config.LOG_DIR / f"notify-{today}.log", t_lines)
+    return yesterday, today
+
+
+def test_stats_ok_fail_count_only_today():
+    """**D18：`ok` / `fail` 是「今日」卡上的数，昨天的投递不是今天的成绩。**
+
+    改前是两天都数：昨天 3 成功 2 失败 + 今天 1 成功 → `ok=4 fail=2`，
+    屏幕上出现「今日通知 1 / 通道成功 4」——同一张卡里两个时间范围。
+    """
+    _two_days(
+        ["[09:00:00] channel=wxmp ok=True msg=ok",
+         "[09:01:00] channel=wxmp ok=True msg=ok",
+         "[09:02:00] channel=wxmp ok=True msg=ok",
+         "[09:03:00] channel=wxmp ok=False msg=errcode=40037",
+         "[09:04:00] channel=wxmp ok=False msg=errcode=40037"],
+        ["[10:00:00] channel=wxmp ok=True msg=ok"],
+    )
+    s = insight.stats(config.load())
+    assert s["ok"] == 1, f"只数今天，实际 {s['ok']}"
+    assert s["fail"] == 0, f"昨天的失败不是今天的，实际 {s['fail']}"
+
+
+def test_stats_today_does_not_follow_ok_fail_to_two_days():
+    """`today` 不许跟着读两天——它叫「今日通知」（D18 §5 第 1 条）。
+
+    昨天有 `remote_ok=True` 的事件、今天没有：`today` 必须是 0。
+    """
+    _two_days(
+        ["[23:50:00] event=Stop kind=task_done sent=True remote_ok=True "
+         "elapsed=1.0s title=昨晚那条"],
+        ["[00:10:00] channel=wxmp ok=False msg=errcode=40037"],
+    )
+    s = insight.stats(config.load())
+    assert s["today"] == 0, "昨天到过手机不代表今天到过"
+    assert s["fail"] == 1, "今天的失败要数"
+
+
+def test_stats_recent_still_reads_two_days_after_the_cut():
+    """截通道行的 `tag != "today"` **不能**把 `recent` 一起断掉。
+
+    位置放错（挪到 `_EVENT_LINE` 之前）就会这样：`recent` 只剩今天的，
+    昨晚那 20 条凭空消失。这条钉住「只截通道行」这个边界。
+    """
+    _two_days(
+        ["[23:50:00] event=Stop kind=task_done sent=True remote_ok=True "
+         "elapsed=1.0s title=昨晚那条"],
+        [],
+    )
+    recent = insight.stats(config.load())["recent"]
+    assert len(recent) == 1, "recent 就是要读两天"
+    assert recent[0]["day"] == "yesterday"
+
+
 def test_stats_strips_leading_emoji_from_title():
     today = datetime.now().strftime("%Y-%m-%d")
     _write(config.LOG_DIR / f"notify-{today}.log", [

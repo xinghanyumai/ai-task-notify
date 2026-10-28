@@ -15,7 +15,7 @@ from __future__ import annotations
 import json
 import threading
 import time
-from datetime import datetime
+from datetime import datetime, timedelta
 
 import pytest
 
@@ -932,3 +932,86 @@ def test_merge_save_is_used_not_plain_save(isolated_state, monkeypatch):
     )
     assert bridge.Bridge().config_save({"enabled": False})["ok"] is True
     assert called["patch"] == {"enabled": False}
+
+
+# --------------------------------------------------- W3.6 跨天边界（D18）
+
+
+def _day_file(days_ago: int, lines: list[str]) -> None:
+    d = (datetime.now() - timedelta(days=days_ago)).strftime("%Y-%m-%d")
+    config.LOG_DIR.mkdir(parents=True, exist_ok=True)
+    (config.LOG_DIR / f"notify-{d}.log").write_text(
+        "\n".join(lines) + "\n", encoding="utf-8")
+
+
+def test_last_send_times_reads_yesterday():
+    """**零点之后不能失忆。** 只读今天的话，昨天连挂 15 次的失败在 00:00
+    被彻底遗忘，侧栏回到绿点「送到你手机」——而用户早上打开看到的正是这个。
+    """
+    _day_file(1, ["[23:50:00] channel=wxmp ok=False msg=errcode=40037"])
+    rec = bridge._last_send_times()["wxmp"]
+    assert rec["ok"] is False
+    assert rec["day"] == "yesterday"
+    assert rec["time"] == "23:50"
+
+
+def test_last_send_times_today_wins_over_yesterday():
+    """昨天先读、今天后读，同一条通道今天的记录覆盖昨天的。"""
+    _day_file(1, ["[23:50:00] channel=wxmp ok=False msg=errcode=40037"])
+    _day_file(0, ["[08:00:00] channel=wxmp ok=True msg=ok"])
+    rec = bridge._last_send_times()["wxmp"]
+    assert rec["day"] == "today"
+    assert rec["ok"] is True, "今天的成功要盖掉昨天的失败"
+
+
+def test_last_send_times_keeps_the_latest_line_within_a_day():
+    """同一份文件里，后面的行覆盖前面的行（日志是追加写的）。"""
+    _day_file(0, ["[08:00:00] channel=wxmp ok=False msg=errcode=40037",
+                  "[09:00:00] channel=wxmp ok=True msg=ok"])
+    assert bridge._last_send_times()["wxmp"]["ok"] is True
+
+
+def test_last_label_three_forms():
+    """**验收第 6 条：`last` 的三种文本。**"""
+    assert bridge._last_label(None) is None
+    assert bridge._last_label({"time": "22:39", "day": "today"}) == "22:39"
+    assert bridge._last_label(
+        {"time": "23:50", "day": "yesterday"}) == "昨天 23:50"
+    # 老记录没有 day（W3.6 之前写进 state 的），不许崩
+    assert bridge._last_label({"time": "22:39"}) == "22:39"
+
+
+def test_chain_sentence_still_danger_after_midnight(isolated_state):
+    """**R16 的复发点：昨天失败、今天没发过。**
+
+    这是验收第 3 条。和第 4 条必须成对——只测这条，你不知道自己是不是
+    把「昨天的成功」也一起判成了失败（那就是把「失忆」换成「记仇」）。
+    """
+    _ready_two_remote()
+    _day_file(1, ["[23:50:00] channel=wxmp ok=False msg=errcode=40037"])
+    got = bridge.Bridge().chain_sentence()["data"]
+    assert got["level"] == "danger", got
+    assert "最近一次没送到" in got["text"]
+
+
+def test_chain_sentence_does_not_punish_yesterday_success(isolated_state):
+    """验收第 4 条：昨天成功、今天没发过 → 仍是 ok。
+
+    不许因为「不是今天」就降级——那是把「失忆」换成「记仇」。
+    """
+    _ready_two_remote()
+    _day_file(1, ["[23:50:00] channel=wxmp ok=True msg=ok"])
+    got = bridge.Bridge().chain_sentence()["data"]
+    assert got["level"] == "ok", got
+    assert "送到你手机" in got["text"]
+
+
+def test_channels_list_shows_yesterday_in_last(isolated_state):
+    """通道列表的时间要标出「昨天」，否则用户以为 23:50 是刚才。"""
+    _ready_two_remote()
+    _day_file(1, ["[23:50:00] channel=wxmp ok=False msg=errcode=40037"])
+    by_type = {r["type"]: r for r in bridge.Bridge().channels_list()["data"]}
+    assert by_type["wxmp"]["last"] == "昨天 23:50"
+    assert by_type["wxmp"]["level"] == "danger"
+    assert by_type["wxmp"]["state"].startswith("最近一次失败")
+

@@ -205,6 +205,10 @@ def stats(cfg: dict) -> dict:
 
     四处判据，都是踩过的坑：
 
+    - **时间范围分两种，别混**（D18）：`today` / `ok` / `fail` **只数今天**——
+      它们在同一张「今日」卡上，混进昨天的投递就会读出「今日通知 2 / 通道失败 66」
+      这种没有结论的数字。`recent` 读今天 + 昨天，跨零点不能空。
+      「最近一次」是另一件事，见 `bridge._last_send_times()`。
     - `today` 看 `event=… remote_ok=True`（见 `_is_delivered`）。
     - `ok` / `fail` **一个子串判断都不用**：`_CHANNEL_LINE` 把通道名和
       `ok=(True|False)` 一起锚定在时间戳右侧，取 `m.group(2)` / `m.group(3)`。
@@ -249,6 +253,11 @@ def stats(cfg: dict) -> dict:
                 continue
             m = _CHANNEL_LINE.match(line)
             if not m or m.group(2) == "log":
+                continue
+            # 通道成功/失败是「今日」卡上的数，昨天的投递不是今天的成绩（D18）。
+            # **位置不能提前**：放到 `_EVENT_LINE` 判断之前会把 `recent` 也断掉，
+            # 而 `recent` 就是要读两天。只截通道行，不动事件行。
+            if tag != "today":
                 continue
             if m.group(3) == "True":
                 ok += 1

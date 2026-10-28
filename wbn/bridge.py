@@ -20,7 +20,7 @@ import functools
 import json
 import re
 import threading
-from datetime import datetime
+from datetime import datetime, timedelta
 
 from wbn import channels, config, insight, sanitize
 
@@ -84,8 +84,18 @@ def _http_timeout() -> int:
 
 
 def _last_send_times() -> dict:
-    """今天每条通道最后一次投递，
-    `{ctype: {"time": "HH:MM", "ok": bool, "msg": str, "test": bool}}`。
+    """每条通道**最近一次**投递（今天 + 昨天），
+    `{ctype: {"time": "HH:MM", "day": "today"|"yesterday",
+              "ok": bool, "msg": str, "test": bool}}`。
+
+    读两天而不是一天（D18）：零点之后「今天」的日志是空的，只读它会让
+    `channel_state` 回到「已启用」绿点、`chain_sentence` 回到「送到你手机」——
+    昨天连挂 15 次的失败在零点被彻底遗忘，而用户早上打开程序看到的正是这个。
+    这不是「时间显示为空」的小问题，是**界面替失败背书**（R16）的复发。
+
+    顺序：昨天先读，今天后读，同一条通道今天的记录覆盖昨天的。
+    `day` 只在这里算，判定层（`delivery_health` / `channel_state`）不该知道
+    有几个文件——它们只看 `ok` / `msg`，不看日期。
 
     时间、成败、报错原文、是不是测试，一次读齐——W3.4 起通道列表要显示
     「最近一次失败：errcode=…」，侧栏要按成败降级。**不许为这个再写第二个
@@ -106,24 +116,39 @@ def _last_send_times() -> dict:
     完整 URL。截断留给展示层（`insight.channel_state` 截 20 字），
     顺序必须是**先脱敏再截断**——反过来会把敏感串的前半段留在界面上。
     """
-    path = config.LOG_DIR / f"notify-{datetime.now():%Y-%m-%d}.log"
+    now = datetime.now()
     out: dict[str, dict] = {}
-    try:
-        text = path.read_text(encoding="utf-8", errors="replace")
-    except OSError:
-        return out
-
-    for line in text.splitlines():
-        m = _LOG_CHANNEL.match(line)
-        if not m:
+    for d, tag in ((now - timedelta(days=1), "yesterday"), (now, "today")):
+        path = config.LOG_DIR / f"notify-{d:%Y-%m-%d}.log"
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
             continue
-        out[m.group("type")] = {
-            "time": m.group("time")[:5],          # 只留 HH:MM，秒没用
-            "ok": m.group("ok") == "True",
-            "msg": sanitize.redact(m.group("msg") or "", 120),
-            "test": bool(m.group("test")),
-        }
+        for line in text.splitlines():
+            m = _LOG_CHANNEL.match(line)
+            if not m:
+                continue
+            out[m.group("type")] = {
+                "time": m.group("time")[:5],          # 只留 HH:MM，秒没用
+                "day": tag,
+                "ok": m.group("ok") == "True",
+                "msg": sanitize.redact(m.group("msg") or "", 120),
+                "test": bool(m.group("test")),
+            }
     return out
+
+
+def _last_label(rec: dict | None) -> str | None:
+    """「最后发送时间」的展示文本。
+
+    跨天必须标出来——昨天 23:50 和今天 00:10 只给 `23:50` / `00:10` 的话，
+    用户会以为是同一类东西，而它们隔了一整夜。零点后清一色「未发送」
+    更是直接说谎：昨天明明发过。
+    """
+    if not rec:
+        return None
+    t = rec.get("time") or ""
+    return f"昨天 {t}" if rec.get("day") == "yesterday" else t
 
 
 def _field_value(raw, ftype: str):
@@ -304,7 +329,7 @@ class Bridge:
                 "state": sub,
                 "level": level,
                 "on": lit,
-                "last": (rec or {}).get("time"),
+                "last": _last_label(rec),
             })
         return out
 
