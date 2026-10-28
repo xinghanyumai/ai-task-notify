@@ -416,10 +416,10 @@ DPI（2.0）算出 2338 物理像素的窗口；WebView2 再按 2.4 把它折回
 
 | 字段 | 文件 | 判据 | 为什么 |
 |---|---|---|---|
-| `today` | `notify-*.log` | 时间戳后第一段是 `event=`，且行内有 `sent=True` | 由 `pipeline.notify()` 写，**与通道开关无关**；`skip event=…` 和 `sent=False` 不算发出去了 |
-| `ok` / `fail` | `notify-*.log` | 含 `channel=` 子串（`in`，不是 `startswith`） | 汇总行 `remote_ok=False` 会被 `ok=False` 命中，失败数翻倍（19 变 38） |
+| `today` | `notify-*.log` | 时间戳后第一段是 `event=`，且行内有 **`remote_ok=True`** | 由 `pipeline.notify()` 写，**与通道开关无关**；`remote_ok` 已排除 `log`（`pipeline.py:92`），所以「今日通知」= 真的到手机了（D14） |
+| `ok` / `fail` | `notify-*.log` | 含 `channel=` 子串（`in`，不是 `startswith`），**且通道不是 `log`** | 汇总行 `remote_ok=False` 会被 `ok=False` 命中，失败数翻倍（19 变 38）。排除 `log` 是为了和 `today` 同一个单位 |
 | `ok` / `fail` | 同上 | 跳过时间戳后第一段是 `test-send ` / `test ` 的行 | 手动测试不算投递。只看第一段，不整行找 `test`——`msg=` 是通道原文，出现 test 很常见 |
-| `recent` | `notifications.log` | 不做过滤 | 用户唯一能读的正文记录；标题开头的 ✅/⚠️ 要剥掉 |
+| `recent` | `notifications.log` | 跳过 `kind == "test"` 的行 | 测试正文不是通知。`kind` 表达的就是「这条记录是什么事件」，这是它的正确用法 |
 
 写侧配合改成 `test-send type=bark ok=False msg=…`（不再含 `channel=`），
 但**历史行不删**——用户排查「我点了测试为什么没反应」要看它。
@@ -448,15 +448,27 @@ DPI（2.0）算出 2338 物理像素的窗口；WebView2 再按 2.4 把它折回
 **教训**：判断一个数该从哪取，先问「这个数据源会不会被用户关掉」。
 前两轮都在修过滤条件，只要数据源选错，过滤修多少次都会冒出第四次。
 
-### 仍然存在：`today` 的口径是「至少一个通道成功」，含只有 `log` 成功
+### 口径定案（D14）：三个数只算远端通道
 
-`pipeline` 里 `any_ok = any(o for _, o, _ in results)`——`log` 通道算在内。
-所以本机这种「微信全失败、只有 log 成功」的情况下，`today` 照样每条 +1，
-屏幕上「今日通知」里有相当一部分**从没到过手机**。
+```
+今日通知 = 有 remote_ok=True 的事件数      ← 真的到手机了
+通道成功 = 远端通道投递成功次数
+通道失败 = 远端通道投递失败次数
+```
 
-汇总行里其实已经写了 `remote_ok`（排除 `log` 后的成功），`stats()` 没用它。
-要改成「真的到手机了」就数 `remote_ok=True`，但那是**改语义**，
-会改变用户对「今日通知」的理解，得单独决策。
+`log` 通道**完全退出统计**：它写盘成功不代表通知发出去了。它仍然出现在
+「启用通道 N/10」里，仍然写 `notifications.log` 供「最近通知」用，
+仍然能在日志 tail 里看到——只是不再冒充投递。
+
+为什么三个数都要排除 `log`：现场是 `16 / 16 / 14`，而其中 **14 条从没到过手机**
+（`wxmp` 的 `errcode=40037 模板 ID 无效`）。三个数不在同一个宇宙里，
+用户就没法从卡片上读出"到底有没有收到"。排除后是 `2 / 2 / 14`。
+
+**只有 `log` 通道时三个数都是 0，这是对的。** `chain_sentence()` 会说
+「只写入本地日志，手机上收不到」——两句一致，不矛盾。
+
+**代价**：`log` 写盘失败（磁盘满）不再进统计。可接受——它是调试通道，
+失败原因在日志 tail 和它自己的「测试此通道」里都能看到。
 
 ## 超时口径：前端必须比后端长
 
@@ -500,6 +512,29 @@ DPI（2.0）算出 2338 物理像素的窗口；WebView2 再按 2.4 把它折回
 ```bash
 .venv\Scripts\python.exe -m pytest -q
 ```
+
+### 写验收脚本时：`CONFIG_PATH` 不等于隔离
+
+`config.LOG_DIR` / `STATE_DIR` / `SESSION_DIR` 是**模块级常量**（`ROOT/"logs"` 等），
+把 `CONFIG_PATH` 指到临时目录**不会**把日志一起隔离。W3.2 验收时就踩了这个：
+
+```
+第一次跑：只改了 CONFIG_PATH → today 起点是 14（读的还是仓库 logs/）
+补上三个目录 → 才拿到 0→1 的干净数据
+```
+
+要隔离就把四个一起改：
+
+```python
+config.CONFIG_PATH = tmp / "config.json"
+config.LOG_DIR     = tmp / "logs"
+config.STATE_DIR   = tmp / "state"
+config.SESSION_DIR = tmp / "sessions"
+```
+
+**这类错误的特征是「数字有值但起点不对」**——它不会报错，只会让你把
+`today=14` 当成"刚发了一条"。看到非 0 起点先怀疑隔离没做全，别怀疑逻辑。
+
 
 GitHub Actions 跑 2 个 OS 乘 3 个 Python 版本共 6 个 job，检查顺序是
 ruff、`compileall`、pytest，先快后慢。
