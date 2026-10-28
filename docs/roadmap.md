@@ -205,6 +205,8 @@ tkinter UI 那部分（10-27 的三条）**只保留实测数据**，代码随 W
 | **R30** | **`logs.py` 依赖 `channels.py`，方向反了** | `deliveries_of(remote_only=True)` 内部查 `channels.LOCAL_CHANNELS` 决定排除谁——「排不排除」的决定在解析层，而且底层文本层 import 了业务注册表。现在不循环，但 `channels` 一旦要用 logs 就成环 | 中（埋雷） | W3.8b：改成纯参数 `exclude` / `include_tests`，调用方传常量；`grep channels wbn/logs.py` 为空。**已修** |
 | **R31** | **新结构留了两扇后门** | `insight._is_delivered` / `insight._is_test_line` 生产代码零调用，只有测试用；`_is_delivered` 的 docstring 还写着「today 看这个」，而 today 已走 `Facts`。下一个人会以为它们是生产路径 | 中（结构债） | W3.8b：docstring 标注「生产代码不许调」；`logs.py` 顶部写明对外契约。**已修** |
 | **R32** | **矩阵少一列，对应的 bug 就漏网** | 30 格最初只有 `today/ok/fail/chain/state` 五列，而 W3.5 那个 bug 的症状在 `recent` 上——`verify_matrix_against_old.py` 一跑，那格在旧代码上是**绿**的 | 高（会让矩阵变装饰品） | W3.8b：补 `recent` 列；把「旧代码必须全红」做成可执行脚本而不是人工检查。**已修** |
+| **R33** | **`logs.read(days=1)` 是死分支** | 参数值域只允许 1/2，但全部调用方都用默认 2；`days=1` 既没调用方也没测试。留着是「为将来预留」，删了又改签名 | 低（观察项） | 不改。若 W5 收尾时仍无人用，删掉 `days` 参数改成 `read()` |
+| **R34** | **6 个代码变异体没落成脚本** | W3.8b 报的「不排测试 → 红 13 条」等 6 组结果是一次性实验，脚本没提交，下次无法复跑。矩阵强度目前由「7 个历史 bug 全红」证明，变异体是额外证据 | 低 | 不改。要复跑就写 `tools/mutate_matrix.py`；7 个历史 bug 已够证明矩阵有效 |
 | **R28** | **一个槽位装两种事实** | `_last_send_times()` 返回一条记录，`time` 和 `ok` 绑在一起。今天点一次测试 → 侧栏绿「送到你手机」+ 列表红「最近一次失败」（上下矛盾）；昨天真实失败 + 今天测试 → 测试记录**遮蔽**真实失败，侧栏回绿（R25 复发） | **必现**（每天点测试都会） | W3.7：拆两个槽，`time` 认测试、`ok` 只认真实投递；`ok` 改三态（`None` = 没发生过） |
 
 ---
