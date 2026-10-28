@@ -579,41 +579,56 @@ def test_delivery_health_levels():
 
 
 def test_delivery_health_ignores_test_records():
-    """**W3.5 验收第 4 条：一次「测试此通道」失败不许把侧栏永久打成红。**
+    """**W3.5 验收第 4 条 / D19：一次「测试此通道」失败不许把侧栏永久打成红。**
 
     测试用的是**表单里还没保存的值**。用户想看看报错长什么样，故意填个错地址
     点一下测试，侧栏从此变红——而磁盘上的配置可能是对的。
     D14 也早就把「测试」排除在投递之外了。
+
+    新结构里「只点过测试」表现为 **`ok=None`**（取数层把两个槽分开了，
+    见 `bridge._last_send_times()`）。判定层只需认这个三态——
+    它不看 `test`，也不看 `day`。
     """
     remote = ["wxmp"]
-    test_fail = {"wxmp": {"time": "10:00", "ok": False,
-                          "msg": "errcode=40037", "test": True}}
-    assert insight.delivery_health(remote, test_fail) == "none"
+    only_test = {"wxmp": {"time": "10:00", "day": "today", "test": True,
+                          "ok": None, "msg": "", "ok_day": None}}
+    assert insight.delivery_health(remote, only_test) == "none"
 
     cfg = _cfg()
     _enable(cfg, "wxmp")
-    text, level = insight.chain_sentence(cfg, test_fail)
+    text, level = insight.chain_sentence(cfg, only_test)
     assert level == insight.LEVEL_OK, "只有测试失败时侧栏必须维持 ok"
     assert "送到你手机" in text
 
     # 再来一条真实失败 → 立刻 danger
-    real_fail = {"wxmp": {"time": "10:01", "ok": False,
-                          "msg": "errcode=40037", "test": False}}
+    real_fail = {"wxmp": {"time": "10:01", "day": "today", "test": False,
+                          "ok": False, "msg": "errcode=40037",
+                          "ok_day": "today"}}
     assert insight.delivery_health(remote, real_fail) == "fail"
     _text2, level2 = insight.chain_sentence(cfg, real_fail)
     assert level2 == insight.LEVEL_DANGER
 
 
-def test_delivery_health_keeps_test_time_but_not_test_result():
-    """两处**故意不对称**：时间认测试，成败不认。
+def test_delivery_health_reads_ok_not_time():
+    """两段事实分开：`time` 可以是测试的，`ok` 只来自真实记录。
 
-    用户刚点完测试，列表显示「刚刚」是对的；但「有没有送到」不能用一次
-    故意的试探来回答。改这里之前先读 `delivery_health` 的 docstring。
+    今天 08:00 点过一次测试（`time` / `test` 来自它），但真实投递最后一次是
+    昨天 23:50 的失败（`ok` / `ok_day` 来自它）。判定必须用后者。
+
+    旧结构（一个槽）在这里会说 `none`——今天的测试记录把昨天的真实失败
+    **遮蔽**了，R25 修好的「零点不失忆」被「早上点一次测试」打回原形。
     """
-    last = {"wxmp": {"time": "10:00", "ok": True, "msg": "", "test": True}}
-    # 时间照用（这条由 channels_list 负责，这里只钉 delivery_health 不采信）
-    assert last["wxmp"]["time"] == "10:00"
-    assert insight.delivery_health(["wxmp"], last) == "none"
+    last = {"wxmp": {"time": "08:00", "day": "today", "test": True,
+                     "ok": False, "msg": "errcode=40037 模板 ID 无效",
+                     "ok_day": "yesterday"}}
+    assert last["wxmp"]["time"] == "08:00", "时间用最近一条，含测试"
+    assert insight.delivery_health(["wxmp"], last) == "fail", "成败用真实那条"
+
+    cfg = _cfg()
+    _enable(cfg, "wxmp")
+    text, level = insight.chain_sentence(cfg, last)
+    assert level == insight.LEVEL_DANGER
+    assert "最近一次没送到" in text
 
 
 # ---------------------------------------------------------------- channel_state
@@ -667,6 +682,22 @@ def test_channel_state_ok_after_successful_send():
     wx = {"type": "wxmp", "enabled": True, "appid": "a", "secret": "s",
           "template_id": "t", "openid": "o"}
     subtitle, level, lit = insight.channel_state("wxmp", wx, _rec(True, "ok"))
+    assert (subtitle, level, lit) == ("已启用", insight.LEVEL_OK, True)
+
+
+def test_channel_state_treats_none_as_no_conclusion():
+    """**`ok=None` 是「真实投递一次都没发生过」，不是失败**（D19）。
+
+    只点过测试时，取数层给出 `ok=None` + `test=True`。判定必须落到「已启用」
+    绿点——否则侧栏说送到了、列表说最近一次失败，同一个界面上下矛盾。
+
+    判据必须是 `is False`：`not None` 是 True，用 `not` 写就会把这里判成红。
+    """
+    wx = {"type": "wxmp", "enabled": True, "appid": "a", "secret": "s",
+          "template_id": "t", "openid": "o"}
+    only_test = {"time": "08:00", "day": "today", "test": True,
+                 "ok": None, "msg": "", "ok_day": None}
+    subtitle, level, lit = insight.channel_state("wxmp", wx, only_test)
     assert (subtitle, level, lit) == ("已启用", insight.LEVEL_OK, True)
 
 

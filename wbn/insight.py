@@ -275,31 +275,38 @@ def stats(cfg: dict) -> dict:
 def delivery_health(remote: list[str], last: dict | None) -> str:
     """最近一次远端投递的整体结果，`"none" | "ok" | "partial" | "fail"`。
 
-    `last` 形如 `{ctype: {"time": "HH:MM", "ok": bool, "msg": str, "test": bool}}`
+    `last` 形如
+    `{ctype: {"time", "day", "test", "ok", "msg", "ok_day"}}`
     （`bridge._last_send_times()` 的返回值）。
 
     **「没有记录」必须是 `none`，不能算成失败。** 首次启动、日志被清空、
     今天还没发过——这些情况都该维持现状（`ok`）。把它们判成 `warn`/`danger`
     就是拿一个不存在的失败去吓用户，比不显示更糟。
 
-    只统计**有记录**的远端通道：某个通道今天一次都没试过，就没资格参与
-    这次判定，不该把它算成「失败」拉低整句话。
+    只统计**有真实投递记录**的远端通道：某个通道一次都没真发过，就没资格
+    参与这次判定，不该把它算成「失败」拉低整句话。
 
-    **测试发送不算投递**（W3.5）。理由不是洁癖，是测试用的是**表单里还没
-    保存的值**：用户想看看报错长什么样，故意填个错地址点一下「测试此通道」，
+    **测试发送不算投递**（W3.5 / D19）。理由不是洁癖，是测试用的是**表单里
+    还没保存的值**：用户想看看报错长什么样，故意填个错地址点一下「测试此通道」，
     侧栏从此永久变红——而磁盘上的配置可能是对的，要等下一次真实发送成功
     才恢复。D14 也已经把「测试」排除在投递之外，这里跟着同一条口径。
 
+    判据是 **`ok is not None`**，不是 `not rec["test"]`：`ok` 只来自非测试
+    记录（取数层已经分好槽），`None` 表示「真实投递一次都没发生过」。
+    用 `test` 标记排除的话，「昨天真失败 + 今天点一次测试」会让今天那条把
+    昨天那条覆盖掉，判定时再被排掉——等于用无效记录**遮蔽**了有效记录。
+
     **和 `time` 故意不对称**：通道列表的「最后发送时间」仍然认测试行
-    （用户刚点完测试，列表显示刚刚是对的）。同一条记录，一个字段用来回答
-    「什么时候试过」，另一个用来回答「有没有送到」——问的不是一件事，
-    所以判定必须分开。这是全项目第三处刻意的不对称，改之前先读这段。
+    （用户刚点完测试，列表显示刚刚是对的）。一个字段回答「什么时候试过」，
+    另一个回答「有没有送到」——问的不是一件事，所以判定必须分开。
     """
     recs = [last[t] for t in remote
-            if last and t in last and not last[t].get("test")]
+            if last and t in last and last[t].get("ok") is not None]
     if not recs:
         return "none"
-    good = sum(1 for r in recs if r.get("ok"))
+    # `is True` 而不是 `r.get("ok")`：`ok` 是三态，上面已经把 None 滤掉了，
+    # 这里再写死「只有 True 算成功」，将来谁挪动那行过滤也不会把 None 数成成功。
+    good = sum(1 for r in recs if r.get("ok") is True)
     if good == len(recs):
         return "ok"
     return "fail" if good == 0 else "partial"
@@ -367,8 +374,14 @@ def channel_state(
     - `danger` 已启用，但最近一次投递失败（点亮，红色）
     - `muted` 还缺字段（不点亮）
 
-    `last` 是这条通道今天的最后一条投递记录
-    `{"time": "HH:MM", "ok": bool, "msg": str}`，没有记录就传 `None`。
+    `last` 是这条通道的**两段事实**（`bridge._last_send_times()` 的返回值）：
+    `time` / `day` / `test` 来自最近一条记录（含测试），
+    `ok` / `msg` / `ok_day` 来自最近一条**非测试**记录。
+
+    **判失败写 `ok is False`，不许写 `not last.get("ok")`**：`ok` 是三态，
+    `None` 表示「真实投递一次都没发生过」——它也是 falsy，用 `not` 判会把
+    「只点过测试」当成失败，于是侧栏说送到了、列表说最近一次失败，
+    同一个界面上下一红一绿（D19）。
 
     **配置问题优先于运行时问题**：字段没填完连试都试不了，说「最近一次失败」
     只会让人去查网络。所以顺序是「缺字段 → 运行时失败 → 正常」。
@@ -386,7 +399,7 @@ def channel_state(
         more = f" 等 {len(miss)} 项" if len(miss) > 1 else ""
         return f"待配置：缺 {label}{more}", LEVEL_MUTED, False
     if ch.get("enabled"):
-        if last and not last.get("ok"):
+        if last and last.get("ok") is False:
             why = (last.get("msg") or "").strip()
             if why:
                 return f"最近一次失败：{why[:20]}", LEVEL_DANGER, True

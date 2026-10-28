@@ -44,7 +44,7 @@ import sys
 import threading
 import tkinter as tk
 
-from wbn import anim, channels, config, events, insight, pipeline, store, theme
+from wbn import anim, bridge, channels, config, events, insight, pipeline, store, theme
 from wbn import splash as splash_mod
 from wbn import widgets as W
 from wbn.channels import CHANNEL_GROUPS
@@ -435,7 +435,7 @@ class App:
 
         等级 → 颜色由 `_level_color` 映射。业务层不该知道 `brand` 是什么颜色。
         """
-        return insight.chain_sentence(self.cfg)
+        return insight.chain_sentence(self.cfg, bridge._last_send_times())
 
     def _level_color(self, level: str, ok_color: str | None = None) -> str:
         """语义等级 → 具体颜色。**颜色只在 UI 层出现。**

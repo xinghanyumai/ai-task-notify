@@ -1015,3 +1015,72 @@ def test_channels_list_shows_yesterday_in_last(isolated_state):
     assert by_type["wxmp"]["level"] == "danger"
     assert by_type["wxmp"]["state"].startswith("最近一次失败")
 
+
+
+# --------------------------------------------------- W3.7 两个槽（D19）
+
+
+def test_last_send_times_only_test_gives_ok_none():
+    """**一个槽装不下两种事实。** 只点过测试时，`ok` 必须是 `None`。
+
+    `None` 的含义是「真实投递一次都没发生过」——不是成功也不是失败。
+    时间仍然是那条测试的（用户刚点完，列表显示刚刚是对的）。
+    """
+    _day_file(0, ["[08:00:00] test-send type=wxmp ok=False msg=errcode=40037"])
+    rec = bridge._last_send_times()["wxmp"]
+    assert rec["time"] == "08:00", "时间认测试"
+    assert rec["test"] is True
+    assert rec["ok"] is None, f"只点过测试时 ok 必须是 None，实际 {rec['ok']!r}"
+    assert rec["ok_day"] is None
+    assert rec["msg"] == "", "没有真实记录就没有真实报错原文"
+
+
+def test_last_send_times_test_does_not_shadow_yesterday_failure():
+    """今天点一次测试，不许把昨天的真实失败**遮蔽**掉。
+
+    旧结构里今天那条覆盖昨天那条，判定时又被当测试排掉 → `none` → 侧栏回绿，
+    R25 修好的「零点不失忆」被「早上点一次测试」打回原形。
+    """
+    _day_file(1, ["[23:50:00] channel=wxmp ok=False msg=errcode=40037"])
+    _day_file(0, ["[08:00:00] test-send type=wxmp ok=True msg=ok"])
+    rec = bridge._last_send_times()["wxmp"]
+    assert rec["time"] == "08:00" and rec["day"] == "today" and rec["test"] is True
+    assert rec["ok"] is False, "ok 来自昨天那条真实失败"
+    assert rec["ok_day"] == "yesterday"
+    assert "errcode" in rec["msg"]
+
+
+def test_last_send_times_test_failure_does_not_override_yesterday_success():
+    """反向：昨天真实成功 + 今天测试失败 → `ok` 仍是 True。
+
+    只测「昨天失败 + 今天测试」那一面，你不知道自己是不是把测试彻底忽略了；
+    两面一起看才说明两个槽真的分开。
+    """
+    _day_file(1, ["[23:50:00] channel=wxmp ok=True msg=ok"])
+    _day_file(0, ["[08:00:00] test-send type=wxmp ok=False msg=TimeoutError"])
+    rec = bridge._last_send_times()["wxmp"]
+    assert rec["test"] is True and rec["time"] == "08:00"
+    assert rec["ok"] is True, "昨天的成功仍是最近一次真实投递"
+    assert rec["ok_day"] == "yesterday"
+
+
+def test_last_send_times_today_real_wins_over_yesterday_real():
+    """两槽各自独立推进：今天真实成功 → `ok=True` + `ok_day='today'`。"""
+    _day_file(1, ["[23:50:00] channel=wxmp ok=False msg=errcode=40037"])
+    _day_file(0, ["[09:00:00] channel=wxmp ok=True msg=ok"])
+    rec = bridge._last_send_times()["wxmp"]
+    assert rec["ok"] is True
+    assert rec["ok_day"] == "today"
+    assert rec["test"] is False
+
+
+def test_last_send_times_only_test_does_not_break_channel_list(isolated_state):
+    """只点过测试 → 列表绿「已启用」，和侧栏一致（不再一红一绿）。"""
+    _ready_two_remote()
+    _day_file(0, ["[08:00:00] test-send type=wxmp ok=False msg=errcode=40037"])
+    by_type = {r["type"]: r for r in bridge.Bridge().channels_list()["data"]}
+    assert by_type["wxmp"]["level"] == "ok", by_type["wxmp"]
+    assert by_type["wxmp"]["state"] == "已启用"
+    assert by_type["wxmp"]["last"] == "08:00", "时间仍显示测试那条"
+    assert bridge.Bridge().chain_sentence()["data"]["level"] == "ok"
+

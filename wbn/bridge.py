@@ -84,40 +84,39 @@ def _http_timeout() -> int:
 
 
 def _last_send_times() -> dict:
-    """每条通道**最近一次**投递（今天 + 昨天），
-    `{ctype: {"time": "HH:MM", "day": "today"|"yesterday",
-              "ok": bool, "msg": str, "test": bool}}`。
+    """每条通道的**两件事实**（今天 + 昨天），一个 dict 两个时间轴：
 
-    读两天而不是一天（D18）：零点之后「今天」的日志是空的，只读它会让
-    `channel_state` 回到「已启用」绿点、`chain_sentence` 回到「送到你手机」——
-    昨天连挂 15 次的失败在零点被彻底遗忘，而用户早上打开程序看到的正是这个。
-    这不是「时间显示为空」的小问题，是**界面替失败背书**（R16）的复发。
+    `{ctype: {"time", "day", "test", "ok", "msg", "ok_day"}}`
 
-    顺序：昨天先读，今天后读，同一条通道今天的记录覆盖昨天的。
-    `day` 只在这里算，判定层（`delivery_health` / `channel_state`）不该知道
-    有几个文件——它们只看 `ok` / `msg`，不看日期。
+    | 字段 | 来源 | 消费者 |
+    |---|---|---|
+    | `time` / `day` / `test` | **最近一条**记录（含测试） | 通道列表的「最后发送时间」、状态页的 `last` |
+    | `ok` / `msg` / `ok_day` | 最近一条**非测试**记录 | `delivery_health()` / `channel_state()` |
 
-    时间、成败、报错原文、是不是测试，一次读齐——W3.4 起通道列表要显示
-    「最近一次失败：errcode=…」，侧栏要按成败降级。**不许为这个再写第二个
-    日志解析器**：同一个文件开两个正则，迟早有一处忘了改（`_CHANNEL_LINE`
-    和 `_LOG_CHANNEL` 已经是两份，各自服务不同用途，别再加第三份）。
+    **为什么要两个槽**（D19）。W3.5 声明了「时间认测试、成败不认」，但那时候
+    返回的是一条记录——一个槽装不下两种事实，于是同一个界面上下一红一绿：
 
-    `test` 标出这条记录是不是「测试此通道」写的。**同一个字段服务两个
-    相反的用途**（W3.5）：
+    - 今天只点过一次测试失败 → `channel_state` 读到 `ok=False` 判红，
+      而 `delivery_health` 把这条 `test` 排掉 → `none` → 侧栏绿。
+    - 昨天真实失败 + 今天点一次测试 → 今天这条**覆盖**了昨天那条，
+      判定时又被当测试排掉，等于用一条无效记录**遮蔽**了一条有效记录。
+      R25 修好的「零点不失忆」，被「早上点一次测试」打回原形。
 
-    - `time` **认**测试行——用户刚点完测试，列表显示「刚刚」是对的；
-    - `ok` **不认**测试行——测试用的是表单里未保存的值，拿它判「这条链路
-      通不通」会让一次故意的试探把侧栏永久打成红色。
+    **`ok` 是三态**：`True` / `False` / **`None`**。`None` 表示「真实投递
+    一次都没发生过」，既不是成功也不是失败。消费者必须写 `is False` /
+    `is not None`，**不许写 `not last.get("ok")`**——`None` 是 falsy，
+    那会把「没发生过」判成「失败」，正是这次要修的病。
 
-    所以这里只负责**如实标注**，要不要采信由调用方决定（`delivery_health`
-    排掉 test，`channels_list` 的时间照用）。
+    `day` / `ok_day` 只在这里算。判定层（`delivery_health` / `channel_state`）
+    不该知道有几个文件、哪条是哪天的——它们只看 `ok` / `msg`。
 
     `msg` 在这里就 `redact`：它是远端返回的原文，可能回显带 key / token 的
     完整 URL。截断留给展示层（`insight.channel_state` 截 20 字），
     顺序必须是**先脱敏再截断**——反过来会把敏感串的前半段留在界面上。
     """
     now = datetime.now()
-    out: dict[str, dict] = {}
+    recent: dict[str, dict] = {}     # 最近一条，含测试
+    real: dict[str, dict] = {}       # 最近一条非测试
     for d, tag in ((now - timedelta(days=1), "yesterday"), (now, "today")):
         path = config.LOG_DIR / f"notify-{d:%Y-%m-%d}.log"
         try:
@@ -128,13 +127,26 @@ def _last_send_times() -> dict:
             m = _LOG_CHANNEL.match(line)
             if not m:
                 continue
-            out[m.group("type")] = {
+            rec = {
                 "time": m.group("time")[:5],          # 只留 HH:MM，秒没用
                 "day": tag,
                 "ok": m.group("ok") == "True",
                 "msg": sanitize.redact(m.group("msg") or "", 120),
                 "test": bool(m.group("test")),
             }
+            recent[m.group("type")] = rec
+            if not rec["test"]:
+                real[m.group("type")] = rec
+
+    out: dict[str, dict] = {}
+    for ctype, r in recent.items():
+        truth = real.get(ctype)
+        out[ctype] = {
+            "time": r["time"], "day": r["day"], "test": r["test"],
+            "ok": truth["ok"] if truth else None,
+            "msg": truth["msg"] if truth else "",
+            "ok_day": truth["day"] if truth else None,
+        }
     return out
 
 
