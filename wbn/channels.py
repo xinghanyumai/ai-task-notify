@@ -378,15 +378,100 @@ def _truncate_bytes(text: str, limit: int) -> str:
     return raw[: limit - 20].decode("utf-8", "ignore") + "\n…（已截断）"
 
 
+# ---------------------------------------------------------------- markdown 剥离
+#
+# **只许住在这里。** 判据：`grep -n "re.sub" wbn/render.py` 里不该出现处理
+# markdown 标记的语句（R36 的收口）。两套规则必然分叉——2026-10-29 真机上
+# 表格被原样发出去，就是因为这里只剥了 `**粗体**`。
+
+_MD_FENCE = re.compile(r"^\s*```")
+_MD_HEADING = re.compile(r"^\s{0,3}#{1,6}\s+")
+# 列表：行首的 - * + 或 1. / 1)。`2 * 3` 不算——星号前面是数字不是行首。
+_MD_LIST = re.compile(r"^\s{0,3}(?:[-*+]|\d{1,9}[.)])\s+")
+# 表格分隔行：整行只有空格、竖线、冒号、横线，且至少有一个横线
+_MD_TABLE_SEP = re.compile(r"^\s*\|?[\s:|\-]*-[\s:|\-]*\|?\s*$")
+# 表格数据行：行首行尾都得是竖线。正文里的 `a | b` 不算，不许被吃掉。
+_MD_TABLE_ROW = re.compile(r"^\s*\|.*\|\s*$")
+_MD_IMAGE = re.compile(r"!\[([^\]]*)\]\([^)]*\)")
+_MD_LINK = re.compile(r"\[([^\]]*)\]\([^)]*\)")
+_MD_BOLD = re.compile(r"\*\*(.+?)\*\*")
+_MD_STRIKE = re.compile(r"~~(.+?)~~")
+# 斜体 `*x*`。要求星号内侧不是空白：`2 * 3 * 4` 里的 `* 3 *` 不是斜体，
+# 剥掉就等于把乘号吃了。
+_MD_EM = re.compile(r"\*([^\s*](?:[^*]*[^\s*])?)\*")
+_MD_CODE = re.compile(r"`([^`]+)`")
+
+
+def _table_rows(lines: list[str]) -> set[int]:
+    """找出哪些行是表格行（下标集合）。
+
+    **不能只看「行首行尾有竖线」。** 真机上那张表被切段之后，表头行是
+    `手机上详情显示 | 结论`——没有首尾竖线，但它确实是表头。所以按 markdown
+    的语义来判：**分隔行（`--- | ---`）上一行是表头，下一串含竖线的行是数据行。**
+
+    正文里的 `a | b` 没有分隔行跟着，就不算表格——过度剥离和漏剥离一样是 bug。
+    """
+    rows: set[int] = set()
+    for i, line in enumerate(lines):
+        # 分隔行必须含竖线：`---` 是水平线，不是表格分隔行
+        if "|" not in line or not _MD_TABLE_SEP.match(line):
+            continue
+        rows.add(i)
+        if i and "|" in lines[i - 1]:
+            rows.add(i - 1)                  # 表头
+        j = i + 1
+        while j < len(lines) and "|" in lines[j] and lines[j].strip():
+            rows.add(j)                      # 数据行
+            j += 1
+    # 没有分隔行的表（少见）退回到「行首行尾都是竖线」这个保守判据
+    rows |= {i for i, ln in enumerate(lines) if _MD_TABLE_ROW.match(ln)}
+    return rows
+
+
 def plain_text(title: str, content: str) -> str:
-    """把 markdown 粗体符号去掉，给纯文本通道用。
+    """把 markdown 摊成纯文本。**全项目唯一的剥离处**，别在别处再写一套。
+
+    纯文本通道（bark / ntfy / 企业微信 / 钉钉 / 飞书 / webhook / smtp）和微信
+    模板字段都从这里过。之前这里只剥了 `**粗体**`，于是表格、列表、标题、代码
+    围栏原样发到手机上——真机实测「补充」两行是 `…： |` 和
+    `手机上详情显示 | 结论 || --- | |…`，完全读不了。
+
+    逐行处理的四类块级语法：
+        ```` ``` ```` 围栏       整行丢（围栏里的内容照常保留）
+        `|---|` 分隔行            整行丢（它是排版，不是内容）
+        `| a | b |` 数据行        `a · b`（竖线换成间隔号）
+        `- ` `* ` `+ ` `1. `      `· `
+        `#+ `                    去掉井号，保留文字
+
+    行内语法在拼好的整段上做：图片 → alt、链接 → 文字、粗体 / 斜体 / 删除线
+    → 文字、行内代码 → 内容。
+
+    **只认行首的块级标记。** 正文里的 `2 * 3` 不是列表，`a | b` 不是表格行，
+    两者都必须原样留着——过度剥离和漏剥离一样是 bug。
 
     标题为空时不能直接拼，否则正文前面会多出两个空行（微信里看就是
     消息开头空了两行）。
     """
     parts = [p for p in (title, content) if p and p.strip()]
-    text = "\n\n".join(parts)
-    return re.sub(r"\*\*(.+?)\*\*", r"\1", text)
+    lines = "\n\n".join(parts).splitlines()
+    table = _table_rows(lines)
+
+    out: list[str] = []
+    for i, line in enumerate(lines):
+        if _MD_FENCE.match(line):
+            continue                      # 围栏行是排版，不是内容
+        if i in table:
+            if _MD_TABLE_SEP.match(line):
+                continue                  # 分隔行整行丢
+            cells = [c.strip() for c in line.strip().strip("|").split("|")]
+            out.append(" · ".join(c for c in cells if c))
+            continue
+        out.append(_MD_LIST.sub("· ", _MD_HEADING.sub("", line)))
+
+    text = "\n".join(out)
+    for pattern in (_MD_IMAGE, _MD_LINK, _MD_BOLD, _MD_STRIKE, _MD_EM, _MD_CODE):
+        text = pattern.sub(r"\1", text)
+    return text
 
 
 # ---------------------------------------------------------------- 凭证缓存
