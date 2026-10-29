@@ -692,29 +692,22 @@ def wxmp_template(appid: str, secret: str, tpl: str, force: bool = False) -> dic
     return info
 
 
-def _clip_line(text: str, limit: int = 20) -> str:
-    """按微信卡片一行的宽度截断，尽量断在句读处，不留半句话。
+def _clip_line(text: str, limit: int = 40) -> str:
+    """按**半角宽度**截断一行，超出部分用 `…` 收尾。
 
-    模板消息的字段值在卡片里只占一行，约 20 个汉字宽（40 个半角字符），
-    超出部分微信自己会加 "..." 截掉，而且是从字符中间硬切。
+    **`limit` 的单位是半角位**：1 个汉字 = 2，1 个 ASCII = 1。和
+    `_wrap_detail` 的 `width` 是同一把尺子——这里以前数 `len()`（字符数），
+    于是「`…` 要按 3 预留」这种改动得在两处各改一遍，改一处忘一处就是
+    R39 那类 bug。
 
-    这里的原则是「先把这一行填满，再考虑断得好看」：
-    只有当标点落在行尾 70% 之后时，才为了断句牺牲几个字；
-    否则宁可硬切，也不要把 20 字的空间浪费成 13 字。
+    断句偏好交给 `_take_width`：它已经会在标点处收口、不劈英文词。这里只负责
+    「留出 `…` 的位置，然后接上 `…`」。
     """
     t = (text or "").strip()
-    if len(t) <= limit:
+    if _width(t) <= limit:
         return t
-    head = t[:limit]
-    floor = max(1, int(limit * 0.7))
-
-    cut = max(head.rfind(c) for c in "。！？；!?;")
-    if cut >= floor:
-        return head[: cut + 1]
-    cut = max(head.rfind(c) for c in "，,、 ")
-    if cut >= floor:
-        return head[:cut] + "…"
-    return head[: limit - 1] + "…"
+    head = _take_width(t, max(1, limit - _ELLIPSIS_W))
+    return head.rstrip(" 　") + "…"
 
 
 def _on(value) -> bool:
@@ -733,6 +726,11 @@ def _char_w(ch: str) -> int:
     return 2 if unicodedata.east_asian_width(ch) in ("W", "F", "A") else 1
 
 
+def _width(text: str) -> int:
+    """一段文本占几个半角位。**全模块只此一把尺子。**"""
+    return sum(_char_w(c) for c in text)
+
+
 def _in_word(ch: str) -> bool:
     """算英文单词 / 数字的一部分——这类字符不该被折行劈开。"""
     return ch.isascii() and (ch.isalnum() or ch in "._-/:@%")
@@ -747,12 +745,22 @@ _BREAK_AFTER = " \t(/.,-_:;@"
 _NO_LINE_START = "，,、。．.；;：:！!？?）)］]｝}」』》〉”’"
 
 
+# 微信把 `…` 渲染成 `...`，占 **3** 个半角位，而 `unicodedata` 按 Ambiguous 只算 2。
+# 所以末行要按 3 预留，否则每行比预算宽 1，最坏把最后一个字顶出去被微信硬切。
+_ELLIPSIS_W = 3
+
+
 def _take_width(text: str, budget: int, break_at: float = 0.7) -> str:
     """取一段文本里能放进 budget 个半角单位的最长前缀。
 
     先硬切出一个装满的前缀，再回头找句读：只有当标点落在前缀 70%
     之后时才为断句少放几个字，否则宁可切在字中间——把一行的空间
     浪费掉比断在逗号后面更难看。
+
+    **英文词不劈开。** 切点落在词中间时退回最近的断点（空格或 `/ . : - _ , ; ( @`），
+    退完可能只剩半行——**认了**。实测：宁可短行，也不要把 `pyside6` 切成
+    `pysi` / `de6`，手机上一眼看不出这是什么。只有整段里一个断点都没有
+    （比如一长串没有空格的 hash）时才真的切在词中间。
     """
     w = 0
     cut = 0
@@ -765,12 +773,9 @@ def _take_width(text: str, budget: int, break_at: float = 0.7) -> str:
     if cut >= len(text):
         return text
 
-    # 英文单词不劈开：切点落在词中间时退回最近的断点。
-    # 只退不超过 12 个字符——超长单词（比如 UnicodeEncodeError）该切还是得切，
-    # 否则那一行会空掉一大半。
     if _in_word(text[cut - 1]) and _in_word(text[cut]):
         sp = max(text.rfind(c, 0, cut) for c in _BREAK_AFTER)
-        if sp > 0 and cut - sp <= 12:
+        if sp >= 0 and text[: sp + 1].strip():
             cut = sp + 1               # 断点符号留在行尾，读起来才连贯
 
     head = text[:cut]
@@ -824,9 +829,9 @@ def _wrap_detail(text: str, width: int = 34, max_lines: int = 4) -> str:
             head = rest[:1]
         tail = rest[len(head):].lstrip(" 　" + _NO_LINE_START)
 
-        # 到了最后一行还有内容没放下 → 按窄两格重切，腾出位置给省略号
+        # 到了最后一行还有内容没放下 → 先留出 `…` 的 3 个半角位再切
         if last and tail:
-            head = _take_width(rest, width - 2) or rest[:1]
+            head = _take_width(rest, width - _ELLIPSIS_W) or rest[:1]
             tail = rest[len(head):].lstrip(" 　" + _NO_LINE_START)
             head = head.rstrip(" 　") + "…"
 
@@ -864,7 +869,7 @@ def _label_width(content: str, var: str) -> int:
     for line in (content or "").splitlines():
         m = _VAR_RE.search(line)
         if m and m.group(1) == var:
-            return sum(_char_w(c) for c in line[: m.start()])
+            return _width(line[: m.start()])
     return 6          # 拿不到定义就按「详情：」三字算
 
 
@@ -915,13 +920,13 @@ def _wxmp_values(
     elif slots >= 2:
         segs = _wrap_detail(flat_detail, width, slots).split("\n")
     else:
-        segs = [_clip_line(flat_detail, max(10, width // 2))]
+        segs = [_clip_line(flat_detail, width)]
     while len(segs) < len(_DETAIL_SLOTS):
         segs.append("")
 
     return {
-        "headline": _clip_line(headline, 20),
-        "project": _clip_line(str(f.get("project") or "—"), 20),
+        "headline": _clip_line(headline, 40),
+        "project": _clip_line(str(f.get("project") or "—"), 40),
         "duration": str(f.get("duration") or "—"),
         "detail": segs[0],
         "detail2": segs[1],
@@ -929,9 +934,9 @@ def _wxmp_values(
         "detail4": segs[3],
         "time": now,
         "date": str(f.get("date") or now[:10]),
-        "host": _clip_line(str(f.get("host") or "—"), 20),
+        "host": _clip_line(str(f.get("host") or "—"), 40),
         "kind_label": label or "通知",
-        "content": _clip_line(_flatten(content), 200),
+        "content": _clip_line(_flatten(content), 400),
     }
 
 
