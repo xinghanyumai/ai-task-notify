@@ -287,7 +287,10 @@ html, body { overflow: hidden; }
   cursor: default;
 }
 
-.switch:disabled { opacity: .5; }
+/* 这里原来有一条 `.switch:disabled { opacity: .5; }`，W6.4 删了。
+   总开关从来不会真的设 `disabled`（W6.3 起走 aria-disabled），所以它一条
+   元素都命中不了；留着它的坏处是**看着像「开关可以用 disabled」**，
+   下一个人照着它写回去，焦点丢失就复发了。 */
 
 .switch::after {
   content: "";
@@ -538,7 +541,14 @@ body[data-route="channels"] .col { max-width: none; }
 }
 .btn-secondary:hover { background: var(--bg-hover); }
 
+/* 两种「按不动」在视觉上要一样淡，但语义不同，所以两条规则都得留：
+   - `:disabled`：**语义禁用**（凭证没填完不能测），元素被移出 Tab 序列
+   - `[aria-disabled]`：**临时禁用**（保存中），元素还在 Tab 序列里、焦点不动
+   只用 `opacity` + `cursor`，**不加 `pointer-events: none`**：那会把鼠标事件
+   一起掐掉，看起来「拦住了」，实际拦不住键盘（回车照样触发），而且点击穿透
+   的边界很难说清。真正的重入拦截由处理函数开头的 `if (busy) return;` 负责。 */
 .btn:disabled { opacity: .5; }
+.btn[aria-disabled="true"] { opacity: .5; cursor: default; }
 
 /* 一组并排的按钮（错误态里的「重试」等） */
 .row-actions {

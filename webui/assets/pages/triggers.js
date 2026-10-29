@@ -562,7 +562,9 @@
     });
 
     state.saving = true;
-    state.nodes.save.disabled = true;
+    /* 同模板页：临时禁用走 aria-disabled，保住焦点；重入靠上面的
+       `if (state.saving) return;`。 */
+    window.WBN_UI.setBusyAttr(state.nodes.save, true);
     state.nodes.save.textContent = "保存中…";
 
     state.ctx.call("triggers_save", triggers, raw).then(function (res) {
@@ -584,7 +586,7 @@
       state.ctx.notify("没保存成功：" + String((e && e.message) || e), "danger");
     }).then(function () {
       state.saving = false;
-      state.nodes.save.disabled = false;
+      window.WBN_UI.setBusyAttr(state.nodes.save, false);
       state.nodes.save.textContent = "保存配置";
       paintDirty();
     });

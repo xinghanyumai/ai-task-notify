@@ -247,6 +247,36 @@
     else if (mql.addListener) mql.addListener(onChange);
   }
 
+  /* ---- 临时"禁用"的唯一入口 ----------------------------------------------
+   *
+   * **给一个已聚焦的元素设 `disabled = true`，浏览器会把它 blur 掉**，焦点
+   * 回退到 `body`。键盘用户按一下回车保存，下一个 Tab 就从页面开头重走 30 个
+   * 元素（W6 第 10 条基线「Tab 走一圈」测的是**没点保存**的状态，所以这条
+   * 一直没被暴露）。W6.3 只修了总开关，W6.4 收口成一类。
+   *
+   * 所以「程序正忙」这种临时禁用一律走这里：只改 `aria-disabled`，元素留在
+   * Tab 序列里、焦点不动。
+   *
+   * **`aria-disabled` 不阻止点击**，调用方仍然必须在事件处理开头写
+   * `if (busy) return;`——省了守卫就是连点几次发几次请求。
+   * **不许用 `pointer-events: none` 代替**：它挡得住鼠标、挡不住键盘回车，
+   * 而且光标不变会让人以为界面卡了。
+   *
+   * 注意区分：**语义禁用**（「没填完不能测」）继续用 `disabled`。那种情况下
+   * 按钮本来就该 Tab 不到，用户也能理解「现在不能点」——一刀切换成
+   * `aria-disabled` 会让用户 Tab 到一个点了没反应的按钮，比丢焦点更困惑。
+   */
+  function setBusyAttr(el, busy) {
+    if (!el) return;
+    if (busy) el.setAttribute("aria-disabled", "true");
+    else el.removeAttribute("aria-disabled");
+  }
+
+  /* 三页共用这一个，不许各写一份。放在这里而不是每个 pages/*.js 里，
+     是因为「改一处忘两处」正是这次要收口的病本身。 */
+  window.WBN_UI = window.WBN_UI || {};
+  window.WBN_UI.setBusyAttr = setBusyAttr;
+
   /* ---- 顶栏：总开关 ------------------------------------------------------ */
 
   function paintSwitch() {
@@ -271,18 +301,14 @@
     var busy = false;
 
     sw.addEventListener("click", function () {
-      /* **不用 `sw.disabled = true`。** 给一个已聚焦的元素设 `disabled`，
-         浏览器会把它 blur 掉，焦点掉到 `body`——键盘用户按一下空格切总开关，
-         下一个 Tab 就要从页面开头重走 30 个元素。W6 第 10 条基线要求
-         「Tab 走一圈、焦点可见」，丢焦点就是在这条线上开了一个口子。
-
-         改成 `aria-disabled` + 重入守卫：元素留在 Tab 序列里，焦点不动，
-         重复点击在这里被 `busy` 挡住。`aria-disabled` 本身不阻止点击，
-         所以守卫不能省——省了就是连点几次发几次 `config_save`。
-         **不许用 `tabindex="-1"` 绕过去**：那是把控件踢出 Tab 序列，比丢焦点更糟。 */
+      /* 焦点这一条见上面 `setBusyAttr` 的说明。这里补另一件事：
+         **`aria-disabled` 不阻止点击**，所以 `busy` 守卫不能省——
+         省了就是连点几次发几次 `config_save`。
+         **不许用 `tabindex="-1"` 绕过去**：那是把控件踢出 Tab 序列，
+         比丢焦点更糟。 */
       if (busy) return;
       busy = true;
-      sw.setAttribute("aria-disabled", "true");
+      setBusyAttr(sw, true);
 
       var next = !state.enabled;
       call("config_save", { enabled: next }).then(function () {
@@ -297,7 +323,7 @@
         showMsg("没保存成功：" + e.message);
       }).then(function () {
         busy = false;
-        sw.setAttribute("aria-disabled", "false");
+        setBusyAttr(sw, false);
       });
     });
   }

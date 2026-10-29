@@ -361,6 +361,18 @@
 
   /* ---- 右表单 ------------------------------------------------------------ */
 
+  /** 重建整块详情区。
+   *
+   *  **它会把 pane 里的节点全部销毁**（`pane.textContent = ""`）。所以调用方
+   *  必须自己负责一件事：**如果此刻焦点在 pane 里，重建后要还回去**——
+   *  节点被删，焦点掉到 `body`，键盘用户下一个 Tab 从页首重走。
+   *
+   *  这跟 `disabled` 引起的 blur 是**两回事**：`aria-disabled` 能挡住后者
+   *  （不设 `disabled` 就不会 blur），挡不住前者（节点没了，焦点无处可留）。
+   *  W6.4 实测：保存后 `document.contains(旧按钮) === false`、
+   *  `activeElement === BODY`。现有的三处还原在 `saveChannel` / `toggle` 里，
+   *  写法都是「重建前记 `hadFocus`，重建后 `focus()` 新节点」。
+   *  以后再加调用点，照这个写。 */
   function paintDetail() {
     var ctx = state.ctx;
     var pane = state.nodes.pane;
@@ -584,9 +596,18 @@
        所以文案要写明「可以先保存」，否则用户看到红字就以为保存也被拦着。 */
     var msg = ready ? "" : "还需要填写：" + miss.join("、") + "（可以先保存）";
 
-    save.disabled = state.busy;
+    /* 两种禁用必须分开，**不许写成一行 `!ready || state.busy`**（W6.4）：
+       - 语义禁用：凭证没填完，`disabled` 留着——Tab 跳过它是正确的
+       - 临时禁用：程序正忙，走 `setBusyAttr` 只改 aria-disabled，
+         否则给已聚焦的按钮设 `disabled` 会把它 blur 掉、焦点掉到 body
+       混在一行的时候，保存中也会走 `disabled`，焦点就丢了。
+
+       保存按钮**从来没有**语义禁用（D16：半成品也要能落盘），所以它只有
+       临时禁用这一半，不需要 `save.disabled = ...` 那一行。 */
+    window.WBN_UI.setBusyAttr(save, state.busy);
     save.title = ready ? "" : "可以先保存，填齐凭证后才能测试";
-    test.disabled = !ready || state.busy;
+    test.disabled = !ready;                     /* 语义禁用，保留 */
+    window.WBN_UI.setBusyAttr(test, state.busy); /* 临时禁用 */
     test.title = ready ? "" : msg;
 
     why.textContent = msg;
@@ -601,7 +622,10 @@
     if (state.nodes.openid) {
       var v = state.draft[ctype] || {};
       var ok = !!(String(v.appid || "").trim() && String(v.secret || "").trim());
-      state.nodes.openid.disabled = !ok || state.busy;
+      /* 同上：`!ok` 是语义禁用（没填凭证，Tab 跳过它是对的），
+         `state.busy` 是临时禁用（正忙，只改 aria-disabled，别把焦点打掉）。 */
+      state.nodes.openid.disabled = !ok;
+      window.WBN_UI.setBusyAttr(state.nodes.openid, state.busy);
       state.nodes.openid.title = ok ? "" : "填好 appID 和 appsecret 才能自动获取";
     }
 
@@ -653,6 +677,8 @@
       patch[f.key] = v === undefined ? "" : v;
     });
 
+    var hadFocus = document.activeElement === state.nodes.save;
+
     setBusy(true, "save");
     state.ctx.call("config_save", { channels: [patch] })
       .then(function (res) {
@@ -663,6 +689,7 @@
           adopt(list);
           paintList();
           paintDetail();
+          if (hadFocus && state.nodes.save) state.nodes.save.focus();
           announceSave(ctype, res);
           state.ctx.refreshChain();
         });
@@ -712,12 +739,16 @@
     patch.manual_off = next ? false : true;
 
     setBusy(true, "save");
+    /* 通道开关也在 pane 里，`paintDetail()` 一样会把它换掉（W6.4：W6.3 只修了
+       总开关 `#master-switch`，每通道这个开关是同一个病的另一个实例）。 */
+    var hadFocus = document.activeElement === state.nodes.switch;
     state.ctx.call("config_save", { channels: [patch] })
       .then(function () {
         return state.ctx.call("channels_state").then(function (list) {
           adopt(list);
           paintList();
           paintDetail();
+          if (hadFocus && state.nodes.switch) state.nodes.switch.focus();
           state.ctx.refreshChain();
           var m = metaOf(ctype);
           state.ctx.notify(
@@ -728,6 +759,7 @@
       .catch(function (e) {
         state.ctx.notify("没保存成功：" + String((e && e.message) || e), "danger");
         paintDetail();
+        if (hadFocus && state.nodes.switch) state.nodes.switch.focus();
       })
       .then(function () { setBusy(false); });
   }

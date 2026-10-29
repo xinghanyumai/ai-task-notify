@@ -443,7 +443,10 @@
     }
 
     state.saving = true;
-    state.nodes.save.disabled = true;
+    /* 临时禁用：只改 aria-disabled，不动 `disabled`——给已聚焦的按钮设 `disabled`
+       会立刻 blur，焦点掉到 body，键盘用户保存完就丢了位置（W6.4）。
+       重入由函数第一行的 `if (state.saving) return;` 挡住，不靠禁用按钮。 */
+    window.WBN_UI.setBusyAttr(state.nodes.save, true);
     state.nodes.save.textContent = "保存中…";
 
     var patch = {};
@@ -460,7 +463,7 @@
       state.ctx.notify("没保存成功：" + String((e && e.message) || e), "danger");
     }).then(function () {
       state.saving = false;
-      state.nodes.save.disabled = false;
+      window.WBN_UI.setBusyAttr(state.nodes.save, false);
       state.nodes.save.textContent = "保存配置";
     });
   }
