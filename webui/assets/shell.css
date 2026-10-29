@@ -229,6 +229,7 @@ html, body { overflow: hidden; }
 /* 主题分段：跟随 / 浅色 / 深色 */
 .seg {
   display: flex;
+  flex-wrap: wrap;      /* 模板页有 7 个类型，窄窗口下必须能换行而不是溢出 */
   gap: var(--s1);
   padding: var(--s1);
   border-radius: var(--r-input);
@@ -651,3 +652,453 @@ body[data-route="channels"] .col { max-width: none; }
     transition-duration: 1ms !important;
   }
 }
+
+/* ============================================================================
+   表单三件套：.group / .row / .field —— 触发页、模板页共用（W4 §4）
+
+   **只许在这里写一份。** 每页各抄一遍的话，改一个间距要改三处，
+   漏一处就是「这两页看着不太一样」——那正是 W2 要消灭的东西。
+
+   `.field` 原来长在 channels.css 里（W3 只有通道页用），W4 起三页都要用，
+   所以搬到这里，channels.css 里不再保留副本。
+   ========================================================================== */
+
+/* ---- Group：标题 + 说明 + 内容 + 底部 1px -------------------------------- */
+
+.group { margin-bottom: var(--s6); }
+
+/* 页面第一段说明和第一个分组之间要有一档留白，否则「决定什么情况下给你发通知」
+   和「推送哪些消息」贴在一起，读起来像同一段的两行。
+   两种结构都要覆盖：教程页把分组直接挂在根上（`.page-sub + .group`），
+   触发页/模板页中间多一层容器（`.page-body`），因为那两页的提示条/骨架屏
+   要整块替换。 */
+.page-sub + .group { margin-top: var(--s5); }
+.page-body { margin-top: var(--s5); }
+
+/* 分段控件（模板页的类型切换）和下面第一个分组之间 */
+.seg-wrap { margin-bottom: var(--s5); }
+
+/* 组内相邻字段之间要有一档留白：`.field` 自己的 gap 只管「标签-控件-提示」，
+   管不到字段与字段之间，不加这条两个字段会粘在一起。 */
+.group > .body > .field + .field { margin-top: var(--s4); }
+.group > .body > .row-actions { margin-top: var(--s4); }
+
+.group > h2 {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-semibold);
+  color: var(--fg);
+}
+
+.group > .desc {
+  margin-top: var(--s1);
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--fg-muted);
+}
+
+.group > .body {
+  margin-top: var(--s4);
+  padding-bottom: var(--s4);
+  border-bottom: 1px solid var(--border);
+}
+
+/* ---- Row：一行设置（左文右控件） ----------------------------------------
+   `min-height` 用 --row-h（52），和 tkinter 版 ROW_H 一致。
+   这里要盖掉 shell.css 上半部分那条「时间线行」的 `.row`（48 高、带左右
+   padding、相邻行有分隔线）——同一个类名干两件事，所以用 `.group .row`
+   提一级作用域，并且显式把分隔线去掉。 */
+.group .row {
+  min-height: var(--row-h);
+  padding: 0;
+  gap: var(--s4);
+}
+
+.group .row + .row { border-top: 0; }
+
+.row .text { flex: 1 1 auto; min-width: 0; }
+
+.row .title {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--fg);
+}
+
+.row .desc {
+  margin-top: 2px;
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--fg-muted);
+}
+
+/* ---- Field：标签 + 控件 + 提示 ------------------------------------------- */
+
+/* 两列网格：数字这类短字段并排，长文本用 data-span="2" 占满 */
+.fields {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: var(--s4);
+}
+
+@media (max-width: 760px) {
+  .fields { grid-template-columns: minmax(0, 1fr); }
+}
+
+.field {
+  display: flex;
+  flex-direction: column;
+  gap: var(--s1);
+  min-width: 0;
+}
+
+.field[data-span="2"] { grid-column: 1 / -1; }
+
+.field-label {
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  font-weight: var(--fw-medium);
+  color: var(--fg-muted);
+}
+
+/* 必填星号：不靠颜色表达（色盲看不见），加文字给读屏 */
+.field-req {
+  margin-left: 2px;
+  font-style: normal;
+  color: var(--danger);
+}
+
+.field-input { position: relative; display: flex; }
+
+.field input,
+.field textarea {
+  width: 100%;
+  min-width: 0;
+  height: 40px;
+  padding: 0 var(--s3);
+  font-family: var(--font);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--fg);
+  background: var(--bg-subtle);
+  /* 输入框边框**只能**用 --border-input：对三种底色都 ≥3:1。
+     --border 是 1.25:1，用它等于用户看不出这里有输入框（W3 §6.3）。 */
+  border: 1px solid var(--border-input);
+  border-radius: var(--r-input);
+  transition: border-color var(--dur-fast) var(--ease),
+              box-shadow var(--dur-fast) var(--ease);
+}
+
+.field textarea {
+  height: auto;
+  min-height: 88px;
+  padding: var(--s2) var(--s3);
+  resize: vertical;
+  line-height: var(--lh-body);
+}
+
+.field input::placeholder,
+.field textarea::placeholder { color: var(--fg-subtle); }
+
+.field input:hover,
+.field textarea:hover { border-color: var(--fg-subtle); }
+
+/* 焦点态：边框切 --brand-ink（对输入框底色 4.90:1），外面由全局
+   `:focus-visible` 套实心环 + 柔光。这里**不许写 outline: none**——
+   输入框是最需要看清「光标在哪」的控件。 */
+.field input:focus-visible,
+.field textarea:focus-visible { border-color: var(--brand-ink); }
+
+.field input:disabled,
+.field textarea:disabled {
+  opacity: .6;
+  cursor: default;
+}
+
+/* 密码框：右侧「显示」按钮。tkinter 版没有，用户没法核对自己粘的 secret */
+.field-input input { padding-right: var(--s7); }
+
+.field-reveal {
+  position: absolute;
+  right: var(--s1);
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
+  height: 32px;
+  border-radius: var(--r-input);
+  color: var(--fg-subtle);
+}
+
+.field-reveal:hover { color: var(--fg); background: var(--bg-hover); }
+.field-reveal:focus-visible { outline: 2px solid var(--brand-ink); outline-offset: -2px; }
+.field-reveal svg { width: 18px; height: 18px; }
+
+.field-hint {
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  color: var(--fg-subtle);
+  word-break: break-word;
+}
+
+/* 校验失败的那一行说明。**不弹窗**（§3.4），就在字段下面说一句。
+   `data-level="warn"` 用于「值合法、但看着像手滑」——比如超上限，
+   这时**不改用户的值**，只提醒（W4 审计 A4）。 */
+.field-error {
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  color: var(--danger);
+  word-break: break-word;
+}
+
+.field-error[data-level="warn"] { color: var(--warn); }
+
+/* ---- 独立勾选项 ----------------------------------------------------------
+   「把等你确认当需要输入」是**一次性选项**，不是持续状态，所以用 checkbox
+   而不是 switch（W4 §1.2①）。原生控件 + accent-color，不自己画——
+   自己画的 checkbox 在 100%/125% 缩放下会糊，而且键盘行为要重写一遍。 */
+.checkbox {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  min-height: var(--row-h);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--fg);
+  cursor: pointer;
+}
+
+.checkbox input {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  accent-color: var(--brand-ink);
+  cursor: pointer;
+}
+
+/* 「有未保存的改动」——和通道页 .chan-dirty 同一档字号与颜色 */
+.dirty-tag {
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  color: var(--fg-subtle);
+}
+
+/* bool 字段：开关 + 说明。用 .switch 复用顶栏那套，不另造一个控件 */
+.field-toggle {
+  display: flex;
+  align-items: center;
+  gap: var(--s3);
+  height: 40px;
+}
+
+.field-toggle-text {
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--fg);
+}
+
+/* ---- 提示条：页面级「现在这套设置不会生效」 ------------------------------
+   只表达两种等级：warn（能发，但被某处拦着）/ danger（存不下来）。 */
+.notice {
+  display: flex;
+  align-items: flex-start;
+  gap: var(--s3);
+  margin-top: var(--s4);
+  padding: var(--s3) var(--s4);
+  border-radius: var(--r-input);
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+}
+
+.notice[data-level="warn"]   { background: var(--warn-soft);   color: var(--warn); }
+.notice[data-level="danger"] { background: var(--danger-soft); color: var(--danger); }
+
+.notice-text { flex: 1 1 auto; min-width: 0; }
+
+.notice-icon {
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  margin-top: 2px;
+}
+
+.notice-action {
+  flex: 0 0 auto;
+  font-size: var(--fs-aux);
+  color: inherit;
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* ---- 占位符 chip --------------------------------------------------------
+   底色 --bg-subtle + 等宽 + 品牌墨色，和 tkinter 版 W.Group 里的 chip 同构。 */
+.chips {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+}
+
+.chip {
+  display: inline-flex;
+  align-items: baseline;
+  gap: var(--s2);
+  max-width: 100%;
+  padding: var(--s1) var(--s2);
+  border-radius: var(--r-input);
+  background: var(--bg-subtle);
+  text-align: left;
+}
+
+.chip:hover { background: var(--bg-hover); }
+
+.chip-token {
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  color: var(--brand-ink);
+  white-space: nowrap;
+}
+
+.chip-desc {
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  color: var(--fg-subtle);
+  min-width: 0;
+}
+
+/* ---- 手机预览框 --------------------------------------------------------
+   **不用白底**：这一块模拟「手机收到的样子」，用 --bg-subtle 和页面区分开，
+   白底会让人以为那是另一个输入框（W4 §2.2）。 */
+.preview {
+  border: 1px solid var(--border);
+  border-radius: var(--r-card);
+  background: var(--bg-subtle);
+  padding: var(--s4);
+  min-height: 120px;
+}
+
+.preview-title {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-semibold);
+  color: var(--fg);
+  word-break: break-word;
+}
+
+/* pre-wrap：换行和连续空格都按模板原样显示——**不解释 markdown**，
+   渲染已经在后端做完了，这里只负责把字符串摆出来。 */
+.preview-body {
+  margin-top: var(--s2);
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+
+.preview-empty {
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--fg-subtle);
+}
+
+/* ---- 长文（教程页） ----------------------------------------------------
+   判据是「从上往下读得下去」：行高 1.75、段间距 16（--s4），
+   比表单宽松一档（W4 §3.1）。 */
+.prose {
+  font-size: var(--fs-body);
+  line-height: var(--lh-prose);
+  color: var(--fg-muted);
+}
+
+.prose > p + p { margin-top: var(--s4); }
+
+.prose strong { color: var(--fg); font-weight: var(--fw-semibold); }
+
+/* 步骤：序号圆点 + 标题 + 正文，纵向流，**不用卡片** */
+.step {
+  display: flex;
+  gap: var(--s3);
+  padding-bottom: var(--s5);
+}
+
+.step:last-child { padding-bottom: 0; }
+
+.step-num {
+  flex: 0 0 auto;
+  width: var(--s5);
+  height: var(--s5);
+  border-radius: var(--r-pill);
+  background: var(--bg-subtle);
+  color: var(--fg-muted);
+  font-size: var(--fs-label);
+  line-height: var(--s5);
+  font-weight: var(--fw-semibold);
+  text-align: center;
+  font-variant-numeric: tabular-nums;
+}
+
+.step-body { flex: 1 1 auto; min-width: 0; }
+
+.step-title {
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-semibold);
+  color: var(--fg);
+}
+
+.step-text {
+  margin-top: var(--s1);
+  font-size: var(--fs-body);
+  line-height: var(--lh-prose);
+  color: var(--fg-muted);
+}
+
+/* 步骤末尾的「去哪个页面」——它是导航，不是正文，所以用 aux 字号 + 品牌墨色 */
+.step-link {
+  display: inline-block;
+  margin-top: var(--s2);
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--brand-ink);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+/* 小标题（「微信内」「方案 A · ntfy」这类） */
+.sub-head {
+  margin-top: var(--s5);
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  font-weight: var(--fw-semibold);
+  color: var(--fg);
+}
+
+.sub-head:first-child { margin-top: 0; }
+
+/* 项目符号列表 */
+.bullets {
+  margin: var(--s2) 0 0;
+  padding-left: var(--s5);
+  font-size: var(--fs-body);
+  line-height: var(--lh-prose);
+  color: var(--fg-muted);
+}
+
+.bullets li + li { margin-top: var(--s1); }
+
+/* 配置 / 代码片段：--bg-subtle 底 + 等宽 + 左右 12 内边距 */
+.snippet {
+  margin-top: var(--s2);
+  padding: var(--s2) var(--s3);
+  border-radius: var(--r-input);
+  background: var(--bg-subtle);
+  font-family: var(--mono);
+  font-size: var(--fs-label);
+  line-height: var(--lh-prose);
+  color: var(--fg-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+

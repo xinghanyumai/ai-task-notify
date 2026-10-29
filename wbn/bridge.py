@@ -21,7 +21,7 @@ import json
 import threading
 from datetime import datetime, timedelta
 
-from wbn import channels, config, insight, logs, sanitize
+from wbn import channels, config, events, filters, insight, logs, render, sanitize
 
 
 def _ensure_json(value):
@@ -155,6 +155,63 @@ def _field_value(raw, ftype: str):
     return str(raw)
 
 
+# ---------------------------------------------------------------- 页面结构表
+#
+# 触发页的六个事件、模板页的七个类型、22 个占位符——这三张表**都已经有定义处**，
+# 这里只做转手，不再新写一份内容：
+#   · 事件键序 → config.DEFAULT_CONFIG["triggers"]
+#   · 事件中文名 → events.KIND_LABELS
+#   · 模板类型 → config.DEFAULT_CONFIG["templates"]
+#   · 占位符 → render.PLACEHOLDERS
+#
+# 唯一「新」的是下面这 6 条事件说明：它们只存在于 `ui.py:KIND_DESC`（GUI 层，
+# bridge 是纯逻辑层，不能反向依赖它）。这是全项目第三处事件中文名的落点，
+# 已知重复，改动必须两处一起改；W4 不插队重构，记 roadmap R34。
+
+_KIND_DESC = {
+    "task_done": "一轮任务正常跑完",
+    "task_failed": "明确报错或中断",
+    "need_input": "助手在等你回答",
+    "tool_failed": "工具连续失败（噪音较大）",
+    "session_start": "开始新会话",
+    "session_end": "会话关闭",
+}
+
+# 触发页的字段表。标签、说明、顺序**逐字取自 `ui.py:_page_triggers`**——
+# 两套界面对同一个字段用两句话，用户会以为是两个功能。
+#
+# `kind` 决定控件：`int` → 数字框；`list` → 逗号分隔文本；`text` → 普通文本；
+# `bool` → 开关。
+#
+# `lo` / `hi` 是**前端失焦校正**用的范围，Python 侧不做范围校验
+# （`filters.check` 只有 `float()` / `int()`，不裁上下限），所以这不是
+# 「第二套规则」，是唯一一套。上限取「再大基本就是手滑」的量级：
+# 最短耗时 1 小时、去重 1 天、每分钟 60、每小时 600、工具失败 20 次。
+_TRIGGER_FIELDS = (
+    {"key": "min_duration_seconds", "kind": "int", "lo": 0, "hi": 3600,
+     "label": "最短耗时（秒）", "hint": "低于这个时长不通知，避免「你好」也弹窗"},
+    {"key": "quiet_hours", "kind": "text", "lo": None, "hi": None,
+     "label": "静默时段", "hint": "如 23:00-08:00，多段用逗号分隔"},
+    {"key": "dedup_seconds", "kind": "int", "lo": 0, "hi": 86400,
+     "label": "去重窗口（秒）", "hint": "相同内容在该时间内只推一次"},
+    {"key": "max_per_minute", "kind": "int", "lo": 0, "hi": 60,
+     "label": "每分钟上限", "hint": "防止突发刷屏"},
+    {"key": "max_per_hour", "kind": "int", "lo": 0, "hi": 600,
+     "label": "每小时上限", "hint": "长任务密集时可调高"},
+    {"key": "tool_fail_threshold", "kind": "int", "lo": 0, "hi": 20,
+     "label": "工具连续失败阈值", "hint": "连续失败多少次才通知"},
+    {"key": "projects_include", "kind": "list", "lo": None, "hi": None,
+     "label": "只通知这些项目", "hint": "按路径子串匹配，逗号分隔；留空表示全部"},
+    {"key": "projects_exclude", "kind": "list", "lo": None, "hi": None,
+     "label": "排除这些项目", "hint": "逗号分隔"},
+    {"key": "keywords_include", "kind": "list", "lo": None, "hi": None,
+     "label": "关键词命中", "hint": "摘要里包含任一词才通知；留空不限制"},
+    {"key": "question_as_need_input", "kind": "bool", "lo": None, "hi": None,
+     "label": "助手最后一句是问句时，归类为「等你确认」而不是「已完成」",
+     "hint": ""},
+)
+
+
 class Bridge:
     """配置读写 + 通道页要的三件事（结构、状态、异步测试）。
 
@@ -178,10 +235,15 @@ class Bridge:
     def __init__(self, on_activity=None, window=None):
         self._on_activity = on_activity
         self._window = window
-        # 前端有没有未保存的改动。**只存标志，不做判断**——「什么算改动」
+        # 前端有没有未保存的改动。**只存来源，不做判断**——「什么算改动」
         # 是前端的事（草稿 vs 磁盘），后端不该再实现一遍比较逻辑。
-        # 关窗时 `app.py` 读它决定要不要拦。
-        self._dirty = False
+        # 关窗时 `app.py` 读 `_unsaved` 决定要不要拦。
+        #
+        # 为什么是集合而不是一个布尔（W4 审计 A12）：通道页和触发页都会改配置，
+        # 各自调 `set_dirty()`。共用一布尔的话，编辑触发页之后切到通道页，
+        # 通道页一看自己没脏就发 `set_dirty(false)`，触发页的改动当场失去保护——
+        # 关窗不提示，改了一半的规则直接丢。按来源记，取并集才对。
+        self._dirty_sources: set[str] = set()
         # 一次页面加载共用的一份日志（W3.8c）。三个 bridge 方法各读一次文件
         # 的时候，三次读之间只要夹进一条新投递，同一屏上就能出现
         # 「今日通知 2 / 通道失败 3」这种互相矛盾的数——和 W3.7 那个
@@ -223,8 +285,11 @@ class Bridge:
         `get_functions()` 当成数据属性扫进去（就是 `self.window` 那个
         「无限递归 → API 注入失败」的形状），而这个值本来也只有 Python 侧
         的关窗回调要读。前端只该写，不该读。
+
+        语义是**所有页面里只要有一个脏**：`_dirty_sources` 存的是「谁脏了」，
+        取 `bool()` 就是「关窗要不要拦」。
         """
-        return self._dirty
+        return bool(self._dirty_sources)
 
     def _touch(self) -> None:
         if self._on_activity is None:
@@ -237,17 +302,28 @@ class Bridge:
     # ------------------------------------------------------------ 窗口状态
 
     @_guard
-    def set_dirty(self, dirty: bool) -> dict:
+    def set_dirty(self, dirty: bool, source: str = "channels") -> dict:
         """前端把「有没有未保存的改动」告诉后端，供关窗时判断。
 
-        **只存标志，不做判断**：`app.py` 的 `closing` 回调读 `_unsaved`，
+        **只存来源，不做判断**：`app.py` 的 `closing` 回调读 `_unsaved`，
         决定要不要弹确认框。判断「什么算改动」只有前端一份（草稿 vs 磁盘），
         后端再实现一遍就是两份逻辑，迟早不一致。
 
+        `source` 是「谁在报」（`"channels"` / `"triggers"` / `"templates"`）。
+        每个页面只对自己那一格负责，**不许替别人报干净**——`set_dirty(false)`
+        只把 `source` 那一格抹掉，别的页面脏着就仍然拦关窗（W4 审计 A12）。
+
+        默认值 `"channels"` 是为了不改既有调用方（`channels.js` 只传一个参数）
+        和既有测试（`set_dirty(True)` 的返回值必须仍是 `{"dirty": True}`）。
+
         前端调用频率受 200ms 防抖约束，见 `channels.js` 的 `syncDirty()`。
         """
-        self._dirty = bool(dirty)
-        return {"dirty": self._dirty}
+        src = str(source or "channels")
+        if dirty:
+            self._dirty_sources.add(src)
+        else:
+            self._dirty_sources.discard(src)
+        return {"dirty": self._unsaved}
 
     # ------------------------------------------------------------ 配置
 
@@ -281,6 +357,135 @@ class Bridge:
         if not res.get("ok"):
             raise RuntimeError(res.get("error") or "保存失败")
         return {k: v for k, v in res.items() if k != "ok"}
+
+    # ------------------------------------------------------------ 触发页 / 模板页
+
+    @_guard
+    def ui_meta(self) -> dict:
+        """触发页与模板页要的**静态结构**，一次给齐。
+
+        为什么不在 JS 里写死：这几张表都已经有 Python 侧的定义处，
+        前端再抄一份就是「两处说同一件事、各自算一遍」（W3.7 的病因）。
+        具体到每一张：
+
+        | 表 | 唯一定义处 | 抄一份会怎样 |
+        |---|---|---|
+        | 6 个事件开关 | `config.DEFAULT_CONFIG["triggers"]` + `events.KIND_LABELS` | 少一个事件就少一个开关，那个事件永远关不掉 |
+        | 7 个模板类型 | `config.DEFAULT_CONFIG["templates"]` | 少一个类型，它的模板永远改不了，但它照样会发出去 |
+        | 22 个占位符 | `render.PLACEHOLDERS` | 任务书 §2.1 那 6 个里有 `{title}` / `{detail}`，本项目**没有**这两个变量 |
+        | 字段标签与说明 | `ui.py:_page_triggers`（逐字） | 两套界面对同一字段用两句话，用户以为是两个功能 |
+
+        `enabled` / `any_channel_on` 只回**布尔**、不回计数：状态页已经有一个
+        「启用通道 2/10」，这里再算一遍就是第二个数字，迟早会和那个对不上。
+        """
+        self._touch()
+        cfg = config.load()
+
+        kinds = [
+            {
+                "key": k,
+                "label": events.KIND_LABELS.get(k, k),
+                "desc": _KIND_DESC.get(k, ""),
+            }
+            for k in config.DEFAULT_CONFIG["triggers"]
+        ]
+        template_kinds = [
+            {"key": k, "label": events.KIND_LABELS.get(k, k)}
+            for k in config.DEFAULT_CONFIG["templates"]
+        ]
+        return {
+            "kinds": kinds,
+            "template_kinds": template_kinds,
+            "fields": [dict(f) for f in _TRIGGER_FIELDS],
+            "placeholders": [{"token": t, "desc": d} for t, d in render.PLACEHOLDERS],
+            "enabled": bool(cfg.get("enabled", True)),
+            # 只判「有没有一条」，不给数字（见 docstring 最后一段）
+            "any_channel_on": bool(config.enabled_channels(cfg)),
+        }
+
+    @_guard
+    def triggers_save(self, triggers: dict, filters_raw: dict) -> dict:
+        """触发页保存：开关直接覆盖，**过滤器在 Python 侧规整**。
+
+        为什么不让前端把 `"20"` / `"a,b"` 转好再存：转换规则在
+        `insight.normalize_filters`，它的 docstring 原文就写着「webview 版要用
+        同一套」。前端自己 `Number()` / `split(",")` 一遍就是第二套规则，
+        分叉之后症状极隐蔽——`projects_include` 存成字符串时，`_match_any`
+        会**逐字符**匹配，过滤规则静默失效，界面一切正常（W4 审计 A8 / A11）。
+
+        返回规整后的值，页面拿它回填输入框：用户敲 `1e3` 这种，落盘是 `1000`，
+        界面要跟着变成 `1000`，否则「看到的」和「存下的」又不是一个东西。
+        """
+        self._touch()
+        patch = {
+            "triggers": {str(k): bool(v) for k, v in (triggers or {}).items()},
+            "filters": insight.normalize_filters(filters_raw or {}),
+        }
+        res = insight.merge_save(patch)
+        if not res.get("ok"):
+            raise RuntimeError(res.get("error") or "保存失败")
+        cfg = res.get("cfg") or {}
+        return {
+            "triggers": cfg.get("triggers") or {},
+            "filters": cfg.get("filters") or {},
+            "turned_on": list(res.get("turned_on") or []),
+        }
+
+    @_guard
+    def quiet_hours_check(self, spec: str) -> dict:
+        """静默时段的格式检查。**复用 `filters` 的解析器，不写第二套规则。**
+
+        为什么必须校验（W4 审计 A6）：`filters.in_quiet_hours` 遇到解析不了的段
+        是 `continue`，整段静默**静默失效**——用户填了 `23:00~08:00`（波浪号），
+        以为设了静默，实际一条也没拦住，而界面上一切正常。
+
+        判据就是 `filters._parse_hhmm` 本身：能过就是合法。这里只做「逐段拆开、
+        逐个问它」，不重新实现 `HH:MM` 的解析——那正是「两套规则必然分叉」的入口。
+
+        `active_now` 是「按这份设置，现在处于静默时段吗」，由
+        `filters.in_quiet_hours` 算。页面只在显示 / 失焦时算一次，所以文案要写
+        「按已保存的时段算」，不许写成实时的。
+        """
+        text = str(spec or "").strip()
+        parts = [p.strip() for p in text.split(",") if p.strip()]
+
+        bad: list[str] = []
+        for part in parts:
+            if "-" not in part:
+                bad.append(part)
+                continue
+            a, b = part.split("-", 1)
+            if filters._parse_hhmm(a) is None or filters._parse_hhmm(b) is None:
+                bad.append(part)
+
+        return {
+            "ok": not bad,
+            "bad": bad,
+            "active_now": filters.in_quiet_hours(text),
+        }
+
+    @_guard
+    def template_preview(self, kind: str, title: str, content: str) -> dict:
+        """模板预览。**渲染只走 `insight.preview`，前端不做字符串替换。**
+
+        前端自己替换 `{project}` 看起来是十行代码的事，但 `render.py` 里有
+        换行处理、`channels.plain_text` 里有 markdown 剥离、`render_message`
+        里有标题回落——抄一遍就是两套规则，用户会发现「预览是这样，手机上不是」
+        （任务书 §2.2）。
+
+        返回的 `vars_missing` 是**模板原文里有、字段表里没有**的占位符。它们在
+        渲染阶段已经被替换成空字符串了，所以正文里没有位置可以标色——页面只能
+        在预览下面逐条列出来（W4 审计 B6）。
+        """
+        self._touch()
+        data = insight.preview(
+            config.load(), str(kind or ""), str(title or ""), str(content or ""))
+        return {
+            "title": data.get("title") or "",
+            "body": data.get("body") or "",
+            "vars_used": list(data.get("vars_used") or []),
+            "vars_missing": list(data.get("vars_missing") or []),
+        }
 
     # ------------------------------------------------------------ 状态页
 

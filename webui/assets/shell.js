@@ -30,10 +30,11 @@
   ];
 
   var PLACEHOLDER = {
-    channels:  "这一页在 W3 落地：10 条通道的字段、测试按钮、失败原因。",
-    triggers:  "这一页在 W4 落地：事件勾选、项目过滤、耗时门槛。",
-    templates: "这一页在 W4 落地：消息模板与实时预览。",
-    guide:     "这一页在 W4 落地：接入步骤与常见问题。"
+    status:    "assets/pages/status.js 没加载出来。",
+    channels:  "assets/pages/channels.js 没加载出来。",
+    triggers:  "assets/pages/triggers.js 没加载出来。",
+    templates: "assets/pages/templates.js 没加载出来。",
+    guide:     "assets/pages/guide.js 没加载出来。"
   };
 
   var SVG_NS = "http://www.w3.org/2000/svg";
@@ -242,7 +243,10 @@
         state.enabled = next;
         paintSwitch();
         refreshChain();
-        refreshPage("status");
+        /* 刷当前页，不是写死状态页：触发页顶上的「总开关关着，这些规则
+           不会生效」提示条要跟着变。写死 "status" 的话，用户在这一页拨开关，
+           提示条要等切走再切回来才出现——界面在替旧状态背书。 */
+        refreshPage(state.route);
       }).catch(function (e) {
         showMsg("没保存成功：" + e.message);
       }).then(function () {
@@ -370,11 +374,11 @@
   function paintPlaceholder(sec, name) {
     sec.textContent = "";
     var item = navById(name);
-    sec.appendChild(el("p", "page-sub", "这一页还没做。"));
+    sec.appendChild(el("p", "page-sub", "这一页没加载出来。"));
 
     var box = el("div", "empty block");
     box.appendChild(icon("M4 5a2 2 0 012-2h13v18H6a2 2 0 01-2-2zM8 7h7M8 11h7", "empty-icon"));
-    box.appendChild(el("p", "empty-title", (item ? item.label : name) + "还没做"));
+    box.appendChild(el("p", "empty-title", (item ? item.label : name) + "加载失败"));
     box.appendChild(el("p", "empty-hint", PLACEHOLDER[name] || ""));
     sec.appendChild(box);
   }

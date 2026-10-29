@@ -260,6 +260,7 @@ channels.css    通道页的两栏布局（240 列表 + 表单），同样只用
 theme-boot.js   <head> 里的同步脚本，首屏定 data-theme，防 FOUC
 shell.js        主题 / hash 路由 / bridge 封装 / 异步回调分发 / 侧栏 / 顶栏
 pages/*.js      页面模块，挂在 window.WBN_PAGES 上
+                （status / channels / triggers / templates / guide）
 ```
 
 页面模块拿到的 `ctx` 有 `call / el / icon / $ / $$ / go / refreshChain /
@@ -286,6 +287,41 @@ grep -rnE ':\s*(#[0-9a-fA-F]{3,8}|rgba?\()' webui/assets/shell.css webui/index.h
 
 **不用 ES module**：Chromium 在 `file://` 下把 module 的 origin 当 null，
 `import` 会被 CORS 拦掉。全是经典脚本 + 一个全局命名空间。
+
+## W4 三页：一份数据，一个算法，一处样式
+
+触发条件 / 消息模板 / 使用指南三页加进来时，最容易犯的错是**每页各自把后端算过一遍**。
+W3.7「侧栏绿、列表红」就是这么来的。所以这三页的规矩是：
+
+| 页面上的一句话 | 谁来算 | 页面自己算吗 |
+|---|---|---|
+| 有几个触发类型、各叫什么 | `ui_meta().kinds`（键序 = `config.DEFAULT_CONFIG["triggers"]`） | 不算，只渲染 |
+| 有哪些模板类型 | `ui_meta().template_kinds`（7 个，含 `test`） | 不算 |
+| 有哪些占位符 | `ui_meta().placeholders`（22 个，来自 `render.PLACEHOLDERS`） | 不算 |
+| 预览长什么样 | `template_preview()` → `insight.preview()` | **不算，一个字都不许替换** |
+| 静默时段这段写得对不对 | `quiet_hours_check()` → 每段用自己的 `filters._parse_hhmm` 判 | 不算，只显示 |
+| 「一个通道都没开」 | `ui_meta().any_channel_on`（bool，**不给数字**） | 不算 |
+
+**预览为什么必须调后端。** 前端自己替换占位符 = 第二套规则。两套规则今天看着一样，
+改一处就分叉，而用户看到的是「预览说这样，收到的却是那样」——这种 bug 没有报错，
+只有对不上的截图。验收时用 `diff` 证明：`tk_*.txt`（tkinter 走 `insight.preview`）
+与 `web_*.txt`（bridge 走同一个函数）逐字节相同，再把**页面 DOM 里真实渲染出来的**
+预览和它比，`md5` 也得相同。
+
+**预览区只许 `textContent`。** 它显示的是 AI 产出的正文，是全应用最不可信的一段文本，
+而 `app.py` 带 `--no-sandbox`——一条 `<img onerror>` 就是本地代码执行。
+实测：正文填 `<img src=x onerror="window.__xss=1">`，`window.__xss` 是 `undefined`，
+`.preview img` 数量 0，标签以文本形式原样显示。
+
+**`.field` 整族住 `shell.css`。** 通道页、触发页、模板页都要「标签 + 控件 + 提示 + 错误行」，
+W4 把它从 `channels.css` 搬到 `shell.css`，`channels.css` 只留一条注释指路。
+三页共用一套，才不会有「同一个控件在三个页面长得不一样」。配色靠 `data-level`
+（`warn` / `danger`）驱动，JS 里不出现色值。
+
+**`set_dirty` 按来源取并集。** 原来的签名是 `set_dirty(bool)`，一个布尔。两个页面同时有草稿时，
+后报的那个「我不脏了」会把前一个的脏抹掉，关窗拦截就漏了。W4 改成
+`set_dirty(dirty, source)`，内部存 `set[str]`，`_unsaved` 是「集合非空」；
+`source` 缺省仍是 `"channels"`，老调用方一行不用改。
 
 ## 踩过的坑：壳布局被 grid 行高撑爆（2026-10-28，已解决）
 
@@ -932,11 +968,15 @@ W3.5 把 `recent` 改成读今天+昨天，**其他所有「最近一次」语�
 
 ## 测试与 CI
 
-`tests/` 下有 382 个 pytest 用例，覆盖折行、脱敏、事件归类、过滤链、平台差异，
+`tests/` 下有 399 个 pytest 用例，覆盖折行、脱敏、事件归类、过滤链、平台差异、
 以及 W0 抽取出来的 `insight` 纯函数、W1 的 bridge 返回值契约、W3 的统计口径与
 投递健康信号、W3.5 的草稿保护与最近通知取数、W3.6 的跨天边界、W3.7 的两槽取数、
 W3.8b 的 30 格矩阵（含六条不变量、脏数据变异、多通道 partial）、W3.8c 的
-一次加载共用一份 `Facts`（mtime 失效 / 跨零点失效 / `_last_send_times` 不走缓存）。
+一次加载共用一份 `Facts`（mtime 失效 / 跨零点失效 / `_last_send_times` 不走缓存）、
+W4 的四个新 bridge 方法（`set_dirty` 按来源取并集、7 个模板类型一个不漏、占位符清单
+与 `render.PLACEHOLDERS` 一致且不含 `{title}` / `{detail}`、`any_channel_on` 是 bool 不是数字、
+预览与 `insight.preview` 逐字一致、静默时段校验与 `filters._parse_hhmm` 一致），
+以及 `test_guide_copy.py` 的四条「教程页文案必须是 `ui.py:_page_guide` 的逐字搬运」。
 默认跳过 `network` 标记的用例，`gui` 类用例靠 `sys.platform` 自己跳过，
 所以 Windows 上跑的是全量。
 

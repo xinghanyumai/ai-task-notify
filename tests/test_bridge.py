@@ -853,6 +853,8 @@ def test_bridge_exposes_only_implemented_methods():
         "channel_test", "channel_fetch_openid",
         # W3.5 关窗拦截：前端只写不读，读的那一侧是私有的 `_unsaved`
         "set_dirty",
+        # W4 触发页 / 模板页：结构表、规整后保存、静默时段校验、模板预览
+        "ui_meta", "triggers_save", "quiet_hours_check", "template_preview",
     }
 
 
