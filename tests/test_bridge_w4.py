@@ -68,6 +68,48 @@ def test_ui_meta_lists_every_template_kind():
     assert "test" in keys and "session_end" in keys and "tool_failed" in keys
 
 
+def test_ui_meta_lists_every_trigger_kind():
+    """6 个触发类型一个都不能少，顺序 = config 的键序，且每个都有说明。
+
+    与 template_kinds 那条同构。多出来的一层：`desc` 不许为空——
+    `_KIND_DESC` 是**第三处**事件中文说明（R37），漏一个的表现是
+    「开关在那儿，下面没有一行字解释它是什么」，比缺开关更难发现。
+    """
+    from wbn import events
+
+    kinds = bridge.Bridge().ui_meta()["data"]["kinds"]
+
+    # 1. 键序 = config 的键序：前端照这个顺序画开关，不许自己排一遍
+    assert [k["key"] for k in kinds] == list(config.DEFAULT_CONFIG["triggers"])
+
+    # 2. 每个都有说明。`_KIND_DESC` 少一行，这里就红
+    assert [k["key"] for k in kinds if not k["desc"].strip()] == []
+
+    # 3. 中文名来自 events.KIND_LABELS，不是 bridge 自己写第 4 份。
+    #    先断言「表里有这个键」——没有的话 `.get(k, k)` 会静默回落到英文 key，
+    #    界面上出现一个叫 `task_canceled` 的开关，看着像变量名不像功能名。
+    for k in kinds:
+        assert k["key"] in events.KIND_LABELS, f"{k['key']} 没有中文名"
+        assert k["label"] == events.KIND_LABELS[k["key"]]
+
+
+def test_ui_meta_fields_cover_every_filter_key():
+    """页面上的字段表必须覆盖 config.filters 的每一个键，不多不少。
+
+    「多」的表现：页面显示一个 config 里不存在的字段，保存时被
+    `normalize_filters` 丢掉——用户改了没反应。
+    「少」的表现：config 里有的字段用户永远改不了（A2 那个洞）。
+    """
+    fields = bridge.Bridge().ui_meta()["data"]["fields"]
+
+    # 双向相等：集合相等同时挡住「多一个」和「少一个」
+    assert {f["key"] for f in fields} == set(config.DEFAULT_CONFIG["filters"])
+
+    # `kind` 决定控件类型。拼错一个（比如 "integer"），前端认不出来会当 text 处理，
+    # 数字框静默变成文本框——不报错，只是校验和失焦校正全没了。
+    assert {f["kind"] for f in fields} <= {"int", "text", "list", "bool"}
+
+
 def test_ui_meta_placeholders_match_render():
     """占位符清单只有一份（`render.PLACEHOLDERS`），bridge 只转手。"""
     from wbn import render

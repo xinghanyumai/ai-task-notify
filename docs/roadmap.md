@@ -212,6 +212,7 @@ tkinter UI 那部分（10-27 的三条）**只保留实测数据**，代码随 W
 | **R36** | **同一段文本被两处各处理一遍** | `render.py` 负责「占位符替换 + markdown 剥离」，`plain_text()` 又自己剥一遍。两条规则今天恰好等价，改一条就分叉——模板页的预览必须调后端 render，正是为了不出现第三套规则 | 中（结构债，暂无症状） | 不改。W4 已用「预览一律调 `insight.preview`」把第三套规则堵死；W5 评估把 `plain_text` 收进 `render.py` |
 | **R37** | **「事件说明」第三次重复** | 触发条件页的 `_KIND_DESC`（6 条中文说明）与 `ui.py` 的文案、`config.DEFAULT_CONFIG["triggers"]` 的键序是三处独立维护。加一个触发类型要改三处，漏一处就是「开关存在但没有说明」 | 中（加类型时必现） | 不改。**W4.1 起**由 `test_ui_meta_lists_every_trigger_kind` / `test_ui_meta_fields_cover_every_filter_key` 钉住键集与 `desc` 非空（W4 当时只钉了 `template_kinds`，本行原措辞提前宣告了不存在的测试——W4 验收时发现，见 README §2.1 第 9 条）；W5 评估把说明并进 `config` |
 | **R38** | **三页共用一套表单样式，容易各写一份** | `.field` 整族原本在 `channels.css`，W4 三页都要用。若每页复制一份，改一处忘两处，同一个「标签-控件-提示」在三个页面上会长得不一样 | 高（已发生一次苗头） | W4：整族搬到 `shell.css`，`channels.css` 只留一条注释指路；`test_no_literal_colors_in_pages` 守住「页面里不许写字面色值」。**已修** |
+| **R39** | **`.field` 搬家时断点被改了，旧规则没删** | `channels.css` 原有 `@media (max-width: 820px) { .fields { grid-template-columns: minmax(0,1fr) } }`（注释里有一整套 CSS 视口换算论证）。W4 搬进 `shell.css` 时写成了 **760px**，而 `channels.css` 那份**没删**。后果：窗口宽度落在 **922–994 逻辑像素**（CSS 视口 761–820）时，通道页落成一列、触发页/模板页仍是两列——三个页面在这一档长得不一样。973 CSS 宽下两份规则都不触发，所以像素比对是 0 差异，只有改窗口大小时才看得见 | 中（只在窄窗口出现） | **未修**（W4.1 白名单禁止改 `webui/`）。修法二选一：① 删 `channels.css:325` 那条残留，把 `shell.css:744` 改回 820；② 保留 760 并删残留，同时把 `channels.css` 那段视口论证挪过来。倾向 ①——那是原有注释算出来的数，没有理由改 |
 
 ---
 
