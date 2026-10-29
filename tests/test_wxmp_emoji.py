@@ -177,3 +177,48 @@ def test_ordinary_symbols_are_left_alone(src):
 def test_strip_is_idempotent():
     once = channels._tidy("✅ 完成 🎉")
     assert channels._tidy(once) == once
+
+
+# ------------------------------------------------- 剥除边界（R49）
+
+
+def test_boundary_is_latin1_not_emoji():
+    """边界是 `So/Sk 且 ord > 0xFF`，代价是 `℃ ™ №` 一起消失。
+
+    **这是取舍不是 bug。要改先读 roadmap R43 / R45（边界登记在 R49）。**
+
+    `0xFF` 是 **Latin-1 的上界，不是表情的下界**，所以这条测试要双向咬：
+
+    | 输入 | 期望 | 钉住什么 |
+    |---|---|---|
+    | `25°C` | `25°C` | `°`(U+00B0 So) 在边界内 → 保留。删掉 `ord > 0xFF` 这条就红 |
+    | `25℃` | `25` | `℃`(U+2103 So) 越过边界 → 跟着 emoji 走。改成白名单/码位表可能让它变绿 |
+    | `ACM™` | `ACM` | 同上，`™`(U+2122 So) |
+    | `№3` | `3` | 同上，`№`(U+2116 So) |
+
+    前一行防「放宽」，后三行防「收窄」——只写前一行的话，把判据换成
+    「只剥 U+1F300–U+1FAFF 这段表情区」也能全绿，而每年新出的表情会漏一批。
+    后三行同时也是**已知损失的台账**：它们红说明边界被动了，不是发现新 bug。
+    """
+    assert channels._tidy("25°C") == "25°C", "° 在 Latin-1 内，必须保留，否则 25°C 变 25C"
+    assert channels._tidy("25℃") == "25", "℃ 越过 0xFF，跟 emoji 一起剥（已知损失，不是 bug）"
+    assert channels._tidy("ACM™") == "ACM", "™ 同上（已知损失）"
+    assert channels._tidy("№3") == "3", "№ 同上（已知损失）"
+
+
+def test_latin1_symbols_survive_the_boundary():
+    """0x00–0xFF 里恰好 10 个 So/Sk，全是排版符号，一个都不许剥。
+
+    这条把 `ord > 0xFF` 那半句的**理由**钉住：不是随手挑的 255，是
+    Latin-1 的上界。10 个字符逐个列出来，多一个少一个都会红。
+    """
+    keep = "^`¦¨©®¯°´¸"
+    assert len(keep) == 10
+    for ch in keep:
+        assert unicodedata.category(ch) in ("So", "Sk"), f"{ch!r} 不该在这一组"
+        assert ord(ch) <= 0xFF, f"{ch!r} 越过了 Latin-1 上界"
+        assert channels._tidy(f"a{ch}b") == f"a{ch}b", f"{ch!r} 被剥掉了"
+
+    # `~` 是 Sm 不是 Sk：它不被剥跟这条边界无关，别把它算进来当理由
+    assert unicodedata.category("~") == "Sm"
+
