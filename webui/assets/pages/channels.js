@@ -263,7 +263,7 @@
       if (!state.current || !metaOf(state.current)) state.current = firstType();
 
       paintList();
-      paintDetail();
+      paintDetail();          /* focus-ok: 首次加载，pane 里还没有可聚焦节点，焦点在侧栏 */
     }).catch(function (e) {
       showError(e);
     }).then(function () {
@@ -356,7 +356,7 @@
     state.current = ctype;
     clearResult();
     paintList();
-    paintDetail();
+    paintDetail();          /* focus-ok: 焦点在左侧列表的通道行上，这里只重建右 pane */
   }
 
   /* ---- 右表单 ------------------------------------------------------------ */
@@ -874,7 +874,14 @@
         return;
       }
       onEdit(ctype, "openid", ids[0]);
+      /* 和 saveChannel 同一个病：`paintDetail()` 会把 pane 清空重建，
+         用户刚才点的「自动获取 openid」节点被销毁，焦点掉到 body。
+         重建后 `state.nodes.openid` 已指向新节点（paintDetail 里重新赋过），
+         所以直接 focus 它即可。W6.4 漏了这一处——docstring 当时写的是
+         「以后再加调用点，照这个写」，靠人记住就会漏。 */
+      var hadFocus = document.activeElement === state.nodes.openid;
       paintDetail();      /* 重画才能看到新值；此时 draft 里有 openid，标记为未保存 */
+      if (hadFocus && state.nodes.openid) state.nodes.openid.focus();
       showResult(ctype, "ok", "已填入 openid" +
         (ids.length > 1 ? "（共 " + ids.length + " 个关注者，取了第一个）" : ""));
     });
@@ -1043,7 +1050,7 @@
     state.ctx.call("channels_state").then(function (list) {
       adopt(list);
       paintList();
-      paintDetail();
+      paintDetail();        /* focus-ok: 由 show() 进本页时调，焦点在侧栏导航项上 */
     }).catch(function () {
       /* 读不到就维持现状，不打断用户 */
     }).then(function () {
