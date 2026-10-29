@@ -23,8 +23,10 @@ P1 会推翻整个界面层。推翻的时候最容易出的事不是「新界�
 | 命令 | 管什么 | 通过标准 |
 |---|---|---|
 | `python -m pytest -q` | 单元测试 | `402 passed, 1 skipped`（skipped 是 POSIX 专有那条），条数不许减少 |
-| `python tools/bench_ui.py --runs 3` | **首屏可交互**（进程起算，W5 重写） | 中位数 ≤ 600ms |
-| ~~`python tools/audit.py`~~ | 对比度 / 键盘 / 动画 / 降级 / 响应式 | **已删（W5）**。等价物：W6 §2 的 JS 对比度脚本 + 三档截图 |
+| `python tools/bench_ui.py --runs 3` | **首屏可交互 A + 自研代码段 B**（双基线，W6.3 §2） | A ≤ 2500ms（**仅源码形态**，exe 待 W7 重测）、B ≤ 100ms，两条都要过 |
+| `python tools/a11y_contrast.py` | 交互控件对比度（边界 ≥3:1 / 文字 ≥4.5:1，浅深各一遍） | 退出码 0 |
+| `python -m pytest tests/test_stats_perf.py -q` | 日志解析性能守卫（2 天 × 400KB） | `stats()` < 100ms 且真读到事件 |
+| ~~`python tools/audit.py`~~ | 对比度 / 键盘 / 动画 / 降级 / 响应式 | **已删（W5）**。等价物：`tools/a11y_contrast.py`（W6.3 补的，可重复跑）+ 三档截图 |
 | ~~`python tools/check_style.py`~~ | 间距 / 字号 / 动效令牌 | **已删（W5）**。等价物：`grep` 字面色值 + `tokens.css` 清单 |
 | ~~`python tools/check_responsive.py`~~ | 发送期间不冻结 + Tab 顺序 | **已删（W5）**。等价物：DevTools Performance 长任务计数 + 手动 Tab |
 

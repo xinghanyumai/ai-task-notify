@@ -214,12 +214,15 @@ def run_ui() -> int:
     # 或者删错了文件，属于开发错误。伪装成「WebView2 缺失」的后果（W5 §2.4）：
     # 静默降级 → 去起一个不存在的入口 → pythonw 退出、零输出、窗口不出现，
     # 用户看到「双击没反应」，而所有代码都"没报错"。
+    _t_thirdparty = 0.0
+    _t0 = time.perf_counter()
     try:
         import webview
     except Exception:
         _log(f"import webview 失败：{traceback.format_exc()}")
         fallback_no_webview("no_package")
         return 0
+    _t_thirdparty += time.perf_counter() - _t0
 
     # **这不是预检，是读 pywebview 自己已经做完的判断。**
     #
@@ -233,11 +236,13 @@ def run_ui() -> int:
     # 用户体感是「双击 → 白窗口 → 干等 10 秒 → 告诉我打不开」。读这个值等于
     # 把那 10 秒变成 0 秒，而且不需要我们自己再判断一次运行时在不在。
     if sys.platform == "win32":
+        _t0 = time.perf_counter()
         try:
             from webview.platforms import winforms as _wf
         except Exception as exc:            # 版本变化 / 换了后端，不许崩
             _log(f"读不到 webview.platforms.winforms，跳过引擎检查：{exc}")
         else:
+            _t_thirdparty += time.perf_counter() - _t0
             is_chromium = getattr(_wf, "is_chromium", None)
             if is_chromium is None:
                 _log("pywebview 没有 is_chromium 属性（版本变了？），跳过引擎检查")
@@ -285,6 +290,22 @@ def run_ui() -> int:
             print(f"[bench] first-interactive {ms:.0f}ms", flush=True)
 
     api = Bridge(on_activity=_first_activity)
+
+    # ---- B 数：自研代码段 --------------------------------------------------
+    #
+    # 「进程起 → Bridge() 完成」里有三段：解释器启动 + 我们的 import、两个
+    # 第三方 import（pywebview 与 WinForms 程序集）、我们的 import + 配置 +
+    # 日志 + Bridge 构造。只有**最后一段**是我们的。
+    #
+    # 为什么不直接量「Bridge 构造耗时」：`import app` 自己的模块级 import
+    # （config / sanitize / events…）也在用户等待里，漏掉它，B 数就会好看而
+    # 无用。所以口径是「减去两个第三方 import 之后的余量」，这样以后谁在
+    # 模块顶层加一个重 import，B 会涨。
+    #
+    # 这条是 W6.3 §2 的判据 2：**A 是架构决定的，B 才是防回归的**。
+    if os.environ.get("WBN_BENCH") == "1":
+        ms = (time.perf_counter() - _PROCESS_T0) * 1000 - _t_thirdparty * 1000
+        print(f"[bench] self-code {ms:.0f}ms", flush=True)
     index = (ROOT / "webui" / "index.html").as_uri()   # 中文/空格会被 percent-encode
     try:
         win = webview.create_window(
