@@ -21,6 +21,13 @@ sys.path.insert(0, str(ROOT))
 
 from wbn import channels as ch_mod  # noqa: E402
 from wbn import config, pipeline  # noqa: E402
+from wbn.winapi import (  # noqa: E402
+    acquire_single_instance,
+    set_app_user_model_id,
+)
+
+# `Local\` = 每个登录会话一个。见 wbn/winapi.acquire_single_instance 的说明。
+TRAY_MUTEX_NAME = "Local\\WBN_TRAY_SINGLETON"
 
 try:
     import pystray
@@ -72,8 +79,8 @@ def status_text() -> str:
 
 
 def open_ui() -> None:
-    # 走 app.py 而不是 ui.py：app.py 带单实例锁，点两次托盘不会再开出两个
-    # 各存一份配置的窗口。app.py 自己会在 WebView2 缺失时降级回 ui.py。
+    # 走 app.py：它带单实例锁，点两次托盘不会再开出两个各存一份配置的窗口，
+    # 也会在 WebView2 缺失时弹出原生提示框（不再降级到 tkinter——W5 已下线）。
     subprocess.Popen(
         [pythonw(), str(ROOT / "app.py")],
         stdin=subprocess.DEVNULL,
@@ -131,14 +138,21 @@ def run(icon: pystray.Icon) -> None:  # pragma: no cover - GUI 回调
 
 
 def main() -> int:
+    # 托盘自己也要一把锁。**没有它的时候 2026-10-27 实测机器上同时跑着两个
+    # pythonw**——托盘没有窗口，用户完全看不出来，但两个托盘会各自重试失败队列，
+    # 同一条通知就可能发两遍。
+    #
+    # 和 UI 用**不同的**名字：两把锁各管各的。共用一把的后果是「开着设置窗口时
+    # 托盘起不来」——那是两个互不相干的组件。
+    if not acquire_single_instance(TRAY_MUTEX_NAME):
+        return 0
+
     if pystray is None:
         # 依赖缺失：直接打开设置中心，功能不受影响
         open_ui()
         return 0
 
-    from wbn import theme
-
-    theme.set_app_user_model_id()   # 托盘也挂同一个 AppUserModelID，避免出现两组图标
+    set_app_user_model_id()   # 托盘也挂同一个 AppUserModelID，避免出现两组图标
 
     config.ensure_dirs()
     config.save_default_if_missing()

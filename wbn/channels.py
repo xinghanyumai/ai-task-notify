@@ -213,10 +213,10 @@ for _t, _ic in _CHANNEL_ICONS.items():
         CHANNEL_META[_t]["icon"] = _ic
 
 
-# 通道页的分组。放在这里而不是 ui.py：它是**通道元数据**，不是布局。
-# 留在 ui.py 里的话，webview 版要 import 那个 6000 行的 tkinter 文件才能拿到
-# 一份常量——而 W5 就会把 ui.py 删掉。分组顺序是「自建 → 第三方 → 本机」，
-# 越靠前越推荐。
+# 通道页的分组。放在这里而不是界面层：它是**通道元数据**，不是布局。
+# 当初留在 tkinter 版的 ui.py 里的话，webview 版要 import 那个 6000 行的文件
+# 才能拿到一份常量——W5 已经把那个文件删了，这个理由现在更硬。
+# 分组顺序是「自建 → 第三方 → 本机」，越靠前越推荐。
 CHANNEL_GROUPS: list[tuple[str, list[str]]] = [
     ("自建推送", ["wxmp", "wecom_app"]),
     ("第三方", ["bark", "ntfy", "wecom_bot", "dingtalk_bot",

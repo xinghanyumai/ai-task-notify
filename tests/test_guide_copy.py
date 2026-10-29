@@ -1,12 +1,16 @@
-"""教程页的文案必须和 `ui.py:_page_guide` 逐段一致。
+"""教程页的文案必须和定稿原文逐段一致。
 
-为什么要有这条测试：`guide.js` 里的文字是**抄**过去的（`ui.py` 是 GUI 层，
+为什么要有这条测试：`guide.js` 里的文字是**抄**过去的（原设计是 GUI 层，
 import tkinter，bridge 不能引它，所以没法在运行时共用一份）。抄写就会漏、
 就会顺手润色。这条测试把「逐字照搬」从人工检查变成可执行断言。
 
-做法：用 `ast` 解析 `ui.py`，取 `_page_guide` 里所有字符串常量
-（Python 会把相邻字面量折叠成一个 `Constant`，所以一段话正好是一个节点），
-再把 `guide.js` 里被 `" +` / `+ "` 拆开的相邻字面量接回去，逐个做子串匹配。
+**源是 `tests/fixtures/guide_expected.py`，不是 `ui.py`。** W5 把 `ui.py`
+删掉了；原文在那之前用 `ast` 原样快照到 fixtures 里（36 段，一个字没改）。
+删 `ui.py` 时如果顺手把这条测试也删了，等于把 W4 花力气建的守卫当成
+「旧栈的一部分」一起下线——所以快照 + 改读快照，而不是取消检查。
+
+做法：`guide.js` 里被 `" +` / `+ "` 拆开的相邻字面量接回去，再对快照里
+每一段做子串匹配。
 
 **四处例外是白名单，不是通配。** 只有「控件指代」那四句允许不同，
 其余任何差异都会红——包括多加一个逗号。
@@ -14,13 +18,16 @@ import tkinter，bridge 不能引它，所以没法在运行时共用一份）�
 
 from __future__ import annotations
 
-import ast
 import re
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 
-# 原文 → 页面上实际写的那句。理由都是同一个：web 版的控件名/位置和 tkinter 不同。
+# 快照就在 tests/fixtures/ 里，直接 import 比再解析一遍 AST 更实在：
+# 解析逻辑留在生成那一刻，测试只负责比对。
+from fixtures.guide_expected import GUIDE_STRINGS  # noqa: E402
+
+# 原文 → 页面上实际写的那句。理由都是同一个：web 版的控件名/位置和原设计不同。
 LOCATOR_FIXES = (
     ("打开「推送通道」", "打开「通知通道」"),
     ("点右下角「发送测试」", "点「测试此通道」"),
@@ -29,32 +36,13 @@ LOCATOR_FIXES = (
      "打开 logs/notify-日期.log，里面每条都有 ok=True/False 和原始返回"),
 )
 
-MIN_LEN = 6          # 短于这个长度的字符串是控件参数（"body" / "bold" / "x"），不比对
-
 
 def _page_guide_strings() -> list[str]:
-    tree = ast.parse((ROOT / "ui.py").read_text(encoding="utf-8"))
-    for node in ast.walk(tree):
-        if isinstance(node, ast.FunctionDef) and node.name == "_page_guide":
-            # 函数自己的 docstring 是写给维护者的，不是给用户看的文案，
-            # 而且它讲的是「怎么排版」，页面上不该出现。跳过。
-            doc = node.body[0] if (
-                node.body
-                and isinstance(node.body[0], ast.Expr)
-                and isinstance(node.body[0].value, ast.Constant)
-                and isinstance(node.body[0].value.value, str)
-            ) else None
-            skip = doc.value if doc is not None else None
-
-            out = []
-            for sub in ast.walk(node):
-                if sub is skip:
-                    continue
-                if isinstance(sub, ast.Constant) and isinstance(sub.value, str):
-                    if len(sub.value.strip()) >= MIN_LEN:
-                        out.append(sub.value)
-            return out
-    raise AssertionError("ui.py 里找不到 _page_guide")
+    """定稿原文。快照为空说明有人把文件清空了，那比「文案被改」更糟。"""
+    assert GUIDE_STRINGS, (
+        "tests/fixtures/guide_expected.py 是空的——文案守卫失去了比对源，"
+        "等于没在守。它不该被清空。")
+    return list(GUIDE_STRINGS)
 
 
 def _strip_comments(src: str) -> str:

@@ -30,9 +30,7 @@ ignore = [
 [tool.ruff.lint.per-file-ignores]
 # 自检与审查脚本是给人读输出的，允许 print
 "selftest.py" = ["T201"]
-"tools/audit.py" = ["T201"]
 "install.py" = ["T201"]
-"tools/shot.py" = ["T201"]
 "tools/make_icon.py" = ["T201"]
 
 [tool.pytest.ini_options]

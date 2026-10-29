@@ -22,15 +22,21 @@ from __future__ import annotations
 
 import ctypes
 import os
-import subprocess
 import sys
 import threading
+import time
 import traceback
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
+
+# 进程起算的零点。`tools/bench_ui.py` 量的就是这个口径（W6 §4.1 的 A 数）：
+# 双击 → 首屏可交互，含解释器启动 + WebView2 初始化。放在模块顶层而不是
+# `run_ui()` 里，是因为「进程起」比「函数进」早一个 import 的时间——
+# 那一段也是用户要等的。
+_PROCESS_T0 = time.perf_counter()
 
 WIN_TITLE = "AI 任务通知"
 SUBCOMMANDS = ("ui", "tray", "hook", "dispatch", "install", "selftest")
@@ -44,7 +50,6 @@ UI_ALIVE_TIMEOUT = 10.0
 # 换成 Global 的后果是「另一个登录用户点开程序，什么都不会发生」，
 # 比开出两个窗口更糟。见 W1 汇报里的偏差说明。
 MUTEX_NAME = "Local\\WBN_UI_SINGLETON"
-ERROR_ALREADY_EXISTS = 183
 
 # WebView2 运行时在注册表里的三个可能位置（HKLM 32/64 位 + HKCU 用户级安装）
 WEBVIEW2_KEYS = [
@@ -56,8 +61,6 @@ WEBVIEW2_KEYS = [
      r"\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}", "HKEY_CURRENT_USER"),
 ]
 
-_mutex = None      # 必须存全局：句柄一丢，锁就没了
-
 
 # ------------------------------------------------------------------ 单实例
 
@@ -65,22 +68,14 @@ _mutex = None      # 必须存全局：句柄一丢，锁就没了
 def acquire_single_instance() -> bool:
     """拿不到锁说明已有一个实例在跑，返回 False。
 
-    任何异常/失败都返回 True（放行）。宁可开两个窗口，也不能因为探测失败
-    让用户彻底打不开设置——单实例是体验优化，不是安全边界。
+    **实现住在 `wbn.winapi`**：托盘也要一把同样语义的锁（`Local\\WBN_TRAY_SINGLETON`），
+    两处各写一遍就是「同一件事两个说法」——改一处忘一处，症状还很难看出来
+    （只是偶尔开出两个窗口）。这里保留本函数名，是因为它比
+    `winapi.acquire_single_instance(MUTEX_NAME)` 在 `run_ui()` 里读起来清楚。
     """
-    global _mutex
-    if sys.platform != "win32":
-        return True
-    try:
-        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
-        k32.CreateMutexW.argtypes = (ctypes.c_void_p, ctypes.c_int, ctypes.c_wchar_p)
-        k32.CreateMutexW.restype = ctypes.c_void_p
-        _mutex = k32.CreateMutexW(None, 0, MUTEX_NAME)
-        if not _mutex:
-            return True
-        return ctypes.get_last_error() != ERROR_ALREADY_EXISTS
-    except Exception:
-        return True
+    from wbn.winapi import acquire_single_instance as acquire
+
+    return acquire(MUTEX_NAME)
 
 
 def focus_existing() -> bool:
@@ -121,40 +116,84 @@ def has_webview2() -> bool:
     return False
 
 
-def fallback_to_tkinter() -> None:
-    """W1 阶段先指向旧的 ui.py（方便并排对照）；W5 删 ui.py 时改成原生提示框。
-    见 DECISIONS D1——最终不保留 legacy，退路靠 git tag `tkinter-final`。"""
-    exe = Path(sys.executable)
-    pyw = exe.with_name("pythonw.exe")
-    subprocess.Popen(
-        [str(pyw if pyw.exists() else exe), str(ROOT / "ui.py")],
-        stdin=subprocess.DEVNULL,
-        stdout=subprocess.DEVNULL,
-        stderr=subprocess.DEVNULL,
-        cwd=str(ROOT),
-        creationflags=0x08000000 if sys.platform == "win32" else 0,
+def fallback_no_webview() -> None:
+    """没有 WebView2：给一个能改配置、能看日志的原生对话框。
+
+    **用 ctypes 调 MessageBoxW，不许 import tkinter**——W7 要打单文件 exe，
+    带上 tkinter 会多 5MB，还会拖慢启动（见 W7 §0.2）。所以这里连
+    `from wbn import config` 都是函数内 import：它只用标准库，但保持本模块
+    顶层「只有标准库」的约定。
+
+    三个按钮各有去处，不是只有一句「装个运行时」：
+        「是」   → 打开配置目录（config.json 可以手改）
+        「否」   → 打开日志目录（通知链路还在跑，能看它到底发没发出去）
+        「取消」 → 关掉
+
+    这条路径**不影响通知**：hook / dispatch 不经过 UI，配置和日志都在磁盘上。
+    """
+    text = (
+        "这台机器缺少 Microsoft WebView2 运行时，设置界面无法启动。\n\n"
+        "通知功能不受影响，仍然正常工作——只是没有图形设置界面。\n\n"
+        "「是」：打开配置目录（可手动编辑 config.json）\n"
+        "「否」：打开日志目录（查看通知是否发出）\n"
     )
+    _log("WebView2 缺失，走原生提示框降级")
+
+    if sys.platform != "win32":
+        print(text, file=sys.stderr)
+        return
+
+    from wbn import config
+
+    MB_YESNOCANCEL, MB_ICONWARNING = 0x03, 0x30
+    IDYES, IDNO = 6, 7
+    try:
+        r = ctypes.windll.user32.MessageBoxW(
+            None, text, "缺少 WebView2 运行时", MB_YESNOCANCEL | MB_ICONWARNING)
+    except Exception as e:                  # 连对话框都弹不出来，至少留日志
+        _log(f"MessageBoxW 调用失败：{e}")
+        return
+    if r == IDYES:
+        os.startfile(str(config.ROOT))      # noqa: S606 - 打开自己的目录
+    elif r == IDNO:
+        config.ensure_dirs()
+        os.startfile(str(config.LOG_DIR))   # noqa: S606
+
 
 
 # ------------------------------------------------------------------ 开窗
 
 
 def run_ui() -> int:
-    if not acquire_single_instance():
+    # 基准测试时跳过单实例锁：`tools/bench_ui.py` 要连续起好几个进程，
+    # 而锁的语义是「只许一个」——不跳的话第二次起就静默退出，量不到东西。
+    if os.environ.get("WBN_BENCH") != "1" and not acquire_single_instance():
         focus_existing()
         return 0
     if not has_webview2():
-        fallback_to_tkinter()
+        fallback_no_webview()
         return 0
 
+    # **这个 try 只包 `import webview`。** 它是唯一「装没装第三方包」的判断。
+    #
+    # 我们自己的模块 import 失败**必须炸出来**——那是打包漏文件、改名、
+    # 或者删错了文件，属于开发错误。伪装成「WebView2 缺失」的后果（W5 §2.4）：
+    # 静默降级 → 去起一个不存在的入口 → pythonw 退出、零输出、窗口不出现，
+    # 用户看到「双击没反应」，而所有代码都"没报错"。
     try:
         import webview
-
-        from wbn.bridge import Bridge
-        from wbn.theme import set_app_user_model_id
     except Exception:
-        fallback_to_tkinter()
+        fallback_no_webview()
         return 0
+
+    # pythonw.exe 下 stderr 是 None，栈会被吞掉。所以先落一条日志，
+    # 再让异常继续往外走（退出码非 0，快捷方式 / 任务计划层面能看出来）。
+    try:
+        from wbn.bridge import Bridge
+        from wbn.winapi import set_app_user_model_id
+    except Exception:
+        _log(f"UI 模块 import 失败（不是 WebView2 的问题）：{traceback.format_exc()}")
+        raise
 
     # 任务栏按 AppUserModelID 分组，不设的话按钮上是 Python 的图标
     set_app_user_model_id()
@@ -171,7 +210,17 @@ def run_ui() -> int:
         os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--no-sandbox")
 
     alive = threading.Event()
-    api = Bridge(on_activity=alive.set)
+
+    def _first_activity() -> None:
+        """前端第一次调通 bridge。既当存活探针，也当「首屏可交互」的打点。"""
+        if alive.is_set():
+            return
+        alive.set()
+        if os.environ.get("WBN_BENCH") == "1":
+            ms = (time.perf_counter() - _PROCESS_T0) * 1000
+            print(f"[bench] first-interactive {ms:.0f}ms", flush=True)
+
+    api = Bridge(on_activity=_first_activity)
     index = (ROOT / "webui" / "index.html").as_uri()   # 中文/空格会被 percent-encode
     win = webview.create_window(
         WIN_TITLE, index,
@@ -180,7 +229,7 @@ def run_ui() -> int:
         background_color="#fafafa",
     )
     if win is None:
-        fallback_to_tkinter()
+        fallback_no_webview()
         return 0
 
     # 通道页的异步测试要把结果推回页面，需要窗口句柄。建窗口时还没有它，
@@ -220,9 +269,9 @@ def run_ui() -> int:
             return
         _log(
             f"WebView2 窗口 {UI_ALIVE_TIMEOUT:.0f}s 内没有调通 bridge，"
-            "判定 UI 未启动，降级到 tkinter"
+            "判定 UI 未启动"
         )
-        fallback_to_tkinter()
+        fallback_no_webview()
         for w in list(getattr(webview, "windows", [])):
             try:
                 w.destroy()
@@ -234,7 +283,8 @@ def run_ui() -> int:
     try:
         webview.start(debug=os.environ.get("WBN_DEBUG") == "1")
     except Exception:
-        fallback_to_tkinter()
+        _log(f"webview.start() 抛异常：{traceback.format_exc()}")
+        fallback_no_webview()
     return 0
 
 

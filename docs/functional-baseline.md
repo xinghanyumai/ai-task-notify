@@ -1,5 +1,12 @@
 # 功能基线
 
+> 📦 **tkinter 时代基线（2026-10-27）。** 本文的 12 条行为清单仍然有效，但
+> 「怎么跑」那张表里的三个检查脚本（`audit.py` / `check_style.py` /
+> `check_responsive.py`）**已在 W5 随 tkinter 层一起删除**——它们检查的是 Tk
+> 控件树，没有对象了。web 版的等价尺子见
+> [`prompts/W6-复核-回归与可访问性.md`](prompts/W6-复核-回归与可访问性.md) §0，
+> 重建版基线由 W6 产出。本文保留的原因：12 条行为清单是 W6 那张表的来源。
+
 这份表是 P1 重做之前的「现在到底能干什么」。
 
 P1 会推翻整个界面层。推翻的时候最容易出的事不是「新界面不好看」，而是
@@ -15,17 +22,17 @@ P1 会推翻整个界面层。推翻的时候最容易出的事不是「新界�
 
 | 命令 | 管什么 | 通过标准 |
 |---|---|---|
-| `python -m pytest -q` | 单元测试 | `212 passed`，条数不许减少 |
-| `python tools/audit.py` | 对比度 / 键盘 / 动画 / 降级 / 响应式 | 末行 `全部通过` |
-| `python tools/check_style.py` | 间距 / 字号 / 动效令牌 | 退出码 0 |
-| `python tools/check_responsive.py` | 发送期间不冻结 + Tab 顺序 | 见文末「尺子自身的问题」 |
-| `python tools/bench_ui.py --runs 3` | 启动、首次进页、切页耗时 | 首次进页 < 900ms，切页 < 100ms（**当前 4 项首次进页超预算，`redesign-base` 上就超，见「删预热换来了什么」**） |
+| `python -m pytest -q` | 单元测试 | `402 passed, 1 skipped`（skipped 是 POSIX 专有那条），条数不许减少 |
+| `python tools/bench_ui.py --runs 3` | **首屏可交互**（进程起算，W5 重写） | 中位数 ≤ 600ms |
+| ~~`python tools/audit.py`~~ | 对比度 / 键盘 / 动画 / 降级 / 响应式 | **已删（W5）**。等价物：W6 §2 的 JS 对比度脚本 + 三档截图 |
+| ~~`python tools/check_style.py`~~ | 间距 / 字号 / 动效令牌 | **已删（W5）**。等价物：`grep` 字面色值 + `tokens.css` 清单 |
+| ~~`python tools/check_responsive.py`~~ | 发送期间不冻结 + Tab 顺序 | **已删（W5）**。等价物：DevTools Performance 长任务计数 + 手动 Tab |
 
-> **`212` 不是笔误。** 原 170 是 W0 之前的口径；W0 把 `ui.py` 的业务逻辑抽到
-> `wbn/insight.py` 时新增了 `tests/test_insight.py`（42 例），所以是 170 + 42 = 212。
-> **「条数不许减少」这条规则只有在数字是最新的时候才管用**——如果这里还写 170，
-> 那么删掉 42 个测试也不会违反规则，闸门就是空的。
-> 以后每加一批测试，这行必须同步改。
+> **`402` 不是笔误。** 212 是 tkinter 时代的数（W0 之后）；W1–W4 加了 WebView 桥、
+> 通道页、三页、三处结构守卫，W5 又删掉 7 条 tkinter 专有用例、加了 4 条
+> （AppUserModelID 活下来 + 两把锁 + POSIX 无操作）和 3 条旧栈守卫。
+> **「条数不许减少」这条规则只有在数字是最新的时候才管用**——数字写旧了，
+> 删掉一批测试也不会违反规则，闸门就是空的。以后每加一批测试，这行必须同步改。
 
 **这张表里 `bench_ui.py` 一行的实测数字见 [`baseline-tkinter.md`](baseline-tkinter.md)（最终态）。**
 那份是 `tkinter-final` 这一份确定的代码上测出来的，不可重测——W5 删掉 tkinter 层后就再也测不出来了。

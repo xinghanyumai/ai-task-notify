@@ -137,6 +137,39 @@
     });
   }
 
+  /* ---- 未捕获异常落日志 ---------------------------------------------------
+   *
+   * `theme.install_tk_exception_hook` 的等价物（W5 删 `theme.py` 时一起下线的）。
+   * Tk 那版的理由是「回调异常默认只写 stderr，pythonw.exe 下 stderr 是 None，
+   * 等于消失」；webview 里形状不同、结果一样：页面抛一个 uncaught error，
+   * DevTools 里有，但用户不会开 DevTools，日志里什么都没有，现象还是
+   * 「点了没反应」。
+   *
+   * **直接调 api，不走 call()。** call() 会先 await apiReady()，而 bridge 没就绪
+   * 恰恰是最需要记日志的时候——那条路径会 reject 出第二个错误，转着圈报。
+   * 返回的 promise 也要吃掉：它 reject 会触发 unhandledrejection，又回到这里。
+   */
+  function reportJsError(message, source) {
+    try {
+      var api = window.pywebview && window.pywebview.api;
+      if (!api || typeof api.log_js_error !== "function") return;
+      var p = api.log_js_error(String(message || ""), String(source || ""));
+      if (p && typeof p.catch === "function") p.catch(function () {});
+    } catch (e) {
+      /* 记日志本身失败，不能再抛——否则就是「报告错误的代码自己出错」 */
+    }
+  }
+
+  window.addEventListener("error", function (ev) {
+    reportJsError(ev.message || "未知错误",
+                  (ev.filename || "") + ":" + (ev.lineno || 0));
+  });
+
+  window.addEventListener("unhandledrejection", function (ev) {
+    var r = ev.reason;
+    reportJsError((r && (r.message || r)) || "未处理的 rejection", "promise");
+  });
+
   /* ---- 异步回调（Python 侧主动推结果回来） --------------------------------
      `wbn/bridge.py` 的 `_push()` 调 `window.__wbnCb({id, ok, data})`。
      这个全局只能是**壳**提供的：它是传输层，不是某一页的业务。

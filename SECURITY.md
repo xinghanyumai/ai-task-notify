@@ -37,7 +37,9 @@
 ## 本仓库不含凭证
 
 `config.json`、`state/`、`logs/` 都在 `.gitignore` 里。仓库里只有
-`config.example.json`，凭证字段全为空。`assets/` 下的界面截图用 `tools/shot.py` 的
-`WBN_SCRUB=1` 模式生成，里面的 appID、模板 ID、openid 都是等长假值。
+`config.example.json`，凭证字段全为空。`assets/` 下的界面截图里的 appID、
+模板 ID、openid 都是等长假值——生成它们的那版截图脚本（`tools/shot.py`，
+带 `WBN_SCRUB=1` 脱敏）已随 tkinter 层在 W5 删除，**重拍截图时要手工清空凭证**，
+现在的 `tools/shot_webview.py` 不做脱敏。
 
 安全设计的完整说明见 [docs/security.md](docs/security.md)。

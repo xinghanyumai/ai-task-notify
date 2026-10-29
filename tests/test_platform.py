@@ -1,8 +1,19 @@
-"""平台相关用例：Windows 专有 API、hooks 安装逻辑、GUI 冒烟。
+"""平台相关用例：Windows 专有 API、hooks 安装逻辑。
 
 CI 矩阵里 ubuntu 也要跑 pytest，所以这里用 `pytest.mark.skipif` 按平台跳过，
 **不用 `-k` 排除**——被跳过的用例会以 skipped 状态出现在报告里，
 而不是悄悄消失。用 -k 排除的话，哪天这些用例被误删了也看不出来。
+
+W5 删掉了 4 条：`test_widgets_construct_without_error` /
+`test_icon_set_draws_only_known_names` / `test_toast_draws_its_background`
+（随 `wbn/widgets.py` 一起下线，控件改成 HTML/CSS 组件）、
+`test_dpi_awareness_call_is_safe_everywhere`（`theme.enable_dpi_awareness` 随
+`theme.py` 删除；DPI 感知改由 pywebview 自己设，验收方式是 200% DPI 下截图不糊，
+不是单元测试）。`test_system_theme_returns_a_known_mode` 也删了：主题由 CSS
+`prefers-color-scheme` 决定，Python 侧不再读注册表。
+
+**`test_app_user_model_id_is_applied` 活下来了。** 它验的是「任务栏不显示 Python
+图标」，跟用什么 UI 技术无关，web 版同样需要。
 """
 
 from __future__ import annotations
@@ -12,7 +23,7 @@ from pathlib import Path
 
 import pytest
 
-from wbn import config, theme
+from wbn import config, winapi
 
 IS_WINDOWS = sys.platform == "win32"
 
@@ -20,122 +31,6 @@ windows_only = pytest.mark.skipif(
     not IS_WINDOWS,
     reason="Windows 专有 API（icacls / shell32 / winreg），在 POSIX 上无意义",
 )
-
-
-# ---------------------------------------------------------------- GUI 冒烟
-
-
-@pytest.fixture(scope="session")
-def _tk_session():
-    """整个测试进程只开一次 Tk。
-
-    实测：同一个进程里反复 Tk() / destroy() 三次以上，Windows 上第三次会在
-    `source tk.tcl` 阶段失败（Tcl 报 SourceLibFile icons 失败）。所以根窗口
-    会话级共享，每个用例只负责清理自己挂上去的子控件。
-    """
-    try:
-        import tkinter as tk
-    except Exception as exc:  # 没装 tk 的系统
-        pytest.skip(f"无 tkinter：{exc}")
-    try:
-        root = tk.Tk()
-    except Exception as exc:  # 无声环境 / 无 X11
-        pytest.skip(f"无图形栈：{exc}")
-    root.withdraw()
-    try:
-        yield root
-    finally:
-        try:
-            root.destroy()
-        except Exception:
-            pass
-
-
-@pytest.fixture
-def tk_root(_tk_session):
-    """会话级 root + 用例级清理，保证用例之间互不干扰。"""
-    yield _tk_session
-    for child in list(_tk_session.winfo_children()):
-        try:
-            child.destroy()
-        except Exception:
-            pass
-
-
-@pytest.mark.gui
-def test_widgets_construct_without_error(tk_root):
-    """自绘控件全是 Canvas 手绘，构造期最容易出 IndexError / TclError。"""
-    from wbn import widgets as W
-
-    pal = theme.LIGHT
-    W.Button(tk_root, "测试", pal, lambda: None)
-    W.Switch(tk_root, pal, True, lambda v: None)
-    W.Checkbox(tk_root, pal, "勾选", True, lambda v: None)
-    W.Section(tk_root, pal, "小节标题")
-    W.Pill(tk_root, pal, "标签")
-    W.Metric(tk_root, pal, "标签", "42", pal.text)
-    W.Paragraph(tk_root, pal, "一段正文，用来验证换行与字体解析。", pal.bg_app, pal.text)
-
-
-@pytest.mark.gui
-def test_icon_set_draws_only_known_names(tk_root):
-    """图标名写错时 draw_icon 会静默什么都不画，界面上一片空白。"""
-    import tkinter as tk
-
-    from wbn import widgets as W
-
-    canvas = tk.Canvas(tk_root, width=200, height=200)
-    for name in ("bell", "chat", "mail", "link", "file", "check"):
-        W.draw_icon(canvas, name, 0, 0, 16, theme.LIGHT.text)
-    assert len(canvas.find_all()) > 0
-
-
-@pytest.mark.gui
-def test_toast_draws_its_background(tk_root):
-    """回归：Toast._draw 曾引用未导入的 RADIUS_LG，NameError 被 Tk 吞掉，
-    表现为「提示能弹出但没有圆角背景」。F821 由 ruff 发现，这里守住行为。
-    """
-    from wbn import widgets as W
-
-    toast = W.Toast(tk_root, theme.LIGHT)
-    toast._draw()  # 修复前这里抛 NameError
-
-    assert len(toast.cv.find_all()) >= 2, "Toast 背景没画出来"
-
-
-@pytest.mark.gui
-def test_tk_exception_hook_records_swallowed_callback_errors(tk_root):
-    """Tk 回调异常默认只写 stderr，pythonw.exe 下 stderr 是 None，等于消失。
-
-    Toast 的 bug 就是这么活过 8 个提交的。装了钩子必须能落进运行日志，
-    否则等于没装。
-    """
-    from wbn import store
-
-    theme.install_tk_exception_hook(tk_root)
-    try:
-        raise ValueError("draw 挂了")
-    except ValueError:
-        tk_root.report_callback_exception(*sys.exc_info())
-
-    log = store.log_path().read_text(encoding="utf-8", errors="replace")
-    assert "Tk 回调异常" in log
-    assert "draw 挂了" in log
-
-
-@pytest.mark.gui
-def test_tk_exception_hook_calls_on_error_callback(tk_root):
-    """审查脚本靠这个回调把异常计成失败项，不能只记日志。"""
-    captured: list[str] = []
-
-    theme.install_tk_exception_hook(tk_root, on_error=captured.append)
-    try:
-        raise RuntimeError("审查用")
-    except RuntimeError:
-        tk_root.report_callback_exception(*sys.exc_info())
-
-    assert captured, "on_error 没被调用"
-    assert "审查用" in captured[0]
 
 
 # ---------------------------------------------------------------- Windows API
@@ -160,23 +55,44 @@ def test_harden_file_is_a_noop_for_missing_file(tmp_path):
 
 @windows_only
 def test_app_user_model_id_is_applied():
-    """不设 AppUserModelID，任务栏会把窗口归到 pythonw.exe 名下、显示 Python 图标。"""
-    import ctypes
+    """不设 AppUserModelID，任务栏会把窗口归到 pythonw.exe 名下、显示 Python 图标。
 
-    theme.set_app_user_model_id()
+    W5 把这个函数从 `wbn/theme.py` 搬到 `wbn/winapi.py`——`theme.py` 被删了，
+    但**这个断言必须活下来**：它验的是任务栏行为，和 UI 技术栈无关。
+    """
+    winapi.set_app_user_model_id()
 
-    buf = ctypes.c_wchar_p()
-    ctypes.windll.shell32.GetCurrentProcessExplicitAppUserModelID(ctypes.byref(buf))
-    assert buf.value == "Wbn.TaskNotify.Desktop.1"
-
-
-def test_dpi_awareness_call_is_safe_everywhere():
-    """必须在 Tk() 之前调用；POSIX 上直接 return，Windows 上走 shcore。"""
-    theme.enable_dpi_awareness()  # 不抛即通过
+    assert winapi.read_app_user_model_id() == winapi.APP_USER_MODEL_ID
 
 
-def test_system_theme_returns_a_known_mode():
-    assert theme.system_theme() in ("light", "dark")
+@windows_only
+def test_second_acquire_of_same_mutex_reports_already_running():
+    """托盘单实例锁的判据（验收第 7 条）。
+
+    同一进程里第二次拿同名互斥量也会成功返回句柄，但 `GetLastError` 是
+    `ERROR_ALREADY_EXISTS`——这正是「已有一个实例在跑」的信号。这条测试钉的是
+    「我们读的是 last_error，不是句柄是否为空」——写反了的话单实例永远不生效，
+    而且不会有任何报错。
+    """
+    name = "Local\\WBN_TEST_SINGLETON_LOCK"
+
+    assert winapi.acquire_single_instance(name) is True
+    assert winapi.acquire_single_instance(name) is False
+
+
+@windows_only
+def test_acquire_single_instance_fails_open_on_bad_name():
+    """探测失败必须放行。宁可开两个窗口，也不能因为探测失败让人彻底打不开。"""
+    # 空名字：CreateMutexW 会失败，函数应当返回 True（放行）而不是崩掉
+    assert winapi.acquire_single_instance("") is True
+
+
+def test_app_user_model_id_is_a_noop_on_posix():
+    """POSIX 上直接 return，不 import 任何 Windows 专有模块。"""
+    if IS_WINDOWS:
+        pytest.skip("只在 POSIX 上验这条")
+    winapi.set_app_user_model_id()          # 不抛即通过
+    assert winapi.read_app_user_model_id() is None
 
 
 # ---------------------------------------------------------------- hooks 安装

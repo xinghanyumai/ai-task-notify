@@ -30,7 +30,10 @@ sys.path.insert(0, str(ROOT))
 from wbn import config  # noqa: E402
 
 HOOK_PATH = ROOT / "hook.py"
-UI_PATH = ROOT / "ui.py"
+# 桌面快捷方式指向的唯一入口。**W5 之前这里是 `ui.py`（tkinter 版）**，
+# 那个文件已经删了——不改这一行的后果是：老用户升级后桌面图标还在，
+# 双击报「找不到文件」，而且他想不到是这次更新弄坏的。
+UI_PATH = ROOT / "app.py"
 TRAY_PATH = ROOT / "tray.py"
 ICON_PATH = ROOT / "assets" / "icon.ico"
 

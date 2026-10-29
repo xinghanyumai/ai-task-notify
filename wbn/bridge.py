@@ -21,7 +21,7 @@ import json
 import threading
 from datetime import datetime, timedelta
 
-from wbn import channels, config, events, filters, insight, logs, render, sanitize
+from wbn import channels, config, events, filters, insight, logs, render, sanitize, store
 
 
 def _ensure_json(value):
@@ -99,7 +99,7 @@ def _last_send_times(facts: logs.Facts | None = None) -> dict:
 
     解析、分槽、「今天的记录覆盖昨天的」全部在 `logs` 里，这里只摊平——
     `channels_list` / `channel_state` / `delivery_health` 都按 dict 下标读，
-    `ui.py` 的退路也走这条路。
+    当初 tkinter 版的状态页也走这条路（那个版本已随 W5 删除）。
 
     | 字段 | 来源 | 消费者 |
     |---|---|---|
@@ -298,6 +298,26 @@ class Bridge:
             self._on_activity()
         except Exception:
             pass      # 探针自己出错不许影响正常调用
+
+    @_guard
+    def log_js_error(self, message: str, source: str = "") -> dict:
+        """前端把未捕获的 JS 异常写进运行日志，返回 `{"logged": True}`。
+
+        **这是 `theme.install_tk_exception_hook` 的等价物。** W5 删掉 `theme.py`
+        时那条钩子一起没了——它存在的原因是「Tk 回调异常默认只写 stderr，
+        pythonw.exe 下 stderr 是 None，等于消失」（Toast 的 NameError 就是这么
+        活过 8 个提交的）。webview 里同一类问题换了个形状：页面里抛一个
+        uncaught error，DevTools 能看到，但用户不会开 DevTools，日志里什么都没有，
+        现象还是「点了没反应」。
+
+        所以 `webui/assets/app.js` 里挂了 `error` / `unhandledrejection` 两个监听，
+        把消息转到这条方法。**这是「换尺子」不是「取消检查」**——旧尺子量 Tk 回调，
+        新尺子量页面异常，落在同一个 `logs/notify-*.log` 里。
+        """
+        text = sanitize.redact(str(message or ""), 500)
+        where = sanitize.redact(str(source or ""), 200)
+        store.log(f"[js] {text}" + (f" @ {where}" if where else ""))
+        return {"logged": True}
 
     # ------------------------------------------------------------ 窗口状态
 

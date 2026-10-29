@@ -18,7 +18,7 @@ from PIL import Image, ImageDraw
 ROOT = Path(__file__).resolve().parent.parent
 OUT = ROOT / "assets" / "icon.ico"
 
-# 品牌色（与 wbn/theme.py 的 brand 一致）
+# 品牌色（与 webui/assets/tokens.css 的 --brand 一致）
 TOP = (18, 214, 172)     # #12D6AC
 BOTTOM = (0, 163, 132)   # #00A384
 

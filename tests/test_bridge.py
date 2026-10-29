@@ -855,6 +855,9 @@ def test_bridge_exposes_only_implemented_methods():
         "set_dirty",
         # W4 触发页 / 模板页：结构表、规整后保存、静默时段校验、模板预览
         "ui_meta", "triggers_save", "quiet_hours_check", "template_preview",
+        # W5：`theme.install_tk_exception_hook` 的等价物——页面未捕获的异常
+        # 落进 logs/，不然「点了没反应」在日志里查不到任何东西
+        "log_js_error",
     }
 
 

@@ -1,19 +1,24 @@
 # 核心链路不需要任何第三方依赖。
 #
 # hook.py / dispatch.py / wbn/ 全部只用 Python 标准库（json / urllib / smtplib /
-# tkinter / hashlib …），所以「装完就能收通知」这件事不依赖 pip。
+# hashlib …），所以「装完就能收通知」这件事不依赖 pip。
+#
+# **W5 之后不再需要 tkinter。** 旧的 tkinter 版界面（ui.py + wbn/widgets.py 等
+# 6084 行）已删除，退路是 git tag `tkinter-final`。整个仓库现在不 import tkinter，
+# 这是 W7 打单文件 exe 的前提（带上 tkinter 会多 5MB 并拖慢启动）。
 #
 # 下面两个包只在这两种场景需要：
 #   1. 托盘常驻（tray.py）—— pystray 负责系统托盘，Pillow 负责画图标
-#   2. 开发工具（tools/make_icon.py 生成图标、tools/shot.py 截图）
+#   2. 开发工具（tools/make_icon.py 生成图标）
 # 缺了它们，设置中心仍能正常打开，只是没有托盘图标（tray.py 会自动降级）。
 
 pystray>=0.19,<0.20
 Pillow>=10.0
 
 # UI 需要（pywebview + 系统 WebView2）。它只影响界面，不影响通知链路：
-# 没装、装坏了、或者机器上缺 WebView2 运行时，app.py 都会自动降级到
-# tkinter 版（ui.py），hook / dispatch 照常发通知。
+# 没装、装坏了、或者机器上缺 WebView2 运行时，app.py 会弹一个原生提示框
+# （ctypes 的 MessageBoxW，**不 import tkinter**），给出配置目录和日志目录两个入口，
+# hook / dispatch 照常发通知。
 #
 # 下界 6.2 是实测过的版本（6.2.1）。6.x 已经删掉了 webview.__version__，
 # 取版本号要用 importlib.metadata.version("pywebview")。

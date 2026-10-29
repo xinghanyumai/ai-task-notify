@@ -162,12 +162,16 @@ Tkinter 是标准库，配置界面不用装 Qt 或 Electron，双击即开。
 
 ## 目录结构
 
+> **W5 删掉了 tkinter 层 6084 行**（`ui.py` / `wbn/widgets.py` / `theme.py` /
+> `tokens.py` / `anim.py` / `splash.py`）和三个 Tk 专用检查脚本。下面是**修正过**
+> 的现状；完整的结构说明与逐文件职责由 W7 §1.1 重画（那时打包结构才定型）。
+> 退路是 `git tag tkinter-final`。
+
 ```
 .
 ├── app.py             唯一入口：ui（默认）/ tray / hook / dispatch / install / selftest
 ├── hook.py            宿主调用的入口，约 70ms 返回
 ├── dispatch.py        异步派发进程
-├── ui.py              设置中心（tkinter 版，W5 下线，退路靠 tag tkinter-final）
 ├── tray.py            托盘常驻（可选）
 ├── install.py         安装器：写 hooks、建快捷方式
 ├── selftest.py        自检：模拟 4 类事件，验证到底能不能收到
@@ -181,13 +185,9 @@ Tkinter 是标准库，配置界面不用装 Qt 或 Electron，双击即开。
 │       ├── shell.js   主题 / hash 路由 / bridge / 侧栏 / 顶栏
 │       └── pages/status.js 「运行状态」页，全站样板页
 ├── tools/             开发期脚本，不参与运行
-│   ├── audit.py       审查：对比度、键盘可达、动效、三档窗口宽度
-│   ├── shot.py        开发用截图（浅色深色、任意页面、任意窗口尺寸）
 │   ├── shot_webview.py WebView2 窗口截图（WGC，ImageGrab 只能拍到黑块）
 │   ├── make_icon.py   生成多尺寸图标 assets/icon.ico
-│   ├── bench_ui.py    切页 / 启动耗时基线
-│   ├── check_style.py 尺度与令牌纪律检查
-│   └── check_responsive.py 发送期间停顿、Tab 顺序检查
+│   └── bench_ui.py    首屏可交互耗时基线（W5 重写）
 ├── wbn/               核心引擎
 │   ├── config.py      默认值、深合并、原子读写、文件权限收紧
 │   ├── events.py      事件归类 + transcript 摘要提取
@@ -200,9 +200,7 @@ Tkinter 是标准库，配置界面不用装 Qt 或 Electron，双击即开。
 │   ├── insight.py     config/日志 → 前端可直接渲染的数据（零 UI 依赖，两套界面共用）
 │   ├── logs.py        唯一的日志解析层：文本 → Facts（只做结构，不做业务判断；无状态）
 │   ├── bridge.py      暴露给 JS 的 API（config_get / config_save），返回值统一 {ok,data,error}
-│   ├── theme.py       设计令牌（配色 / 圆角 / 字体 / DPI / 对比度计算）
-│   ├── widgets.py     自绘控件（按钮/开关/竖脊导航/分节/时间轴/手机预览）
-│   └── anim.py        补间动画，支持减弱动效
+│   └── winapi.py      Windows 进程级 API（AppUserModelID、命名互斥量），只依赖 ctypes
 ├── tests/             pytest 用例
 ├── state/             运行时状态（去重表、会话计时、失败队列、token 缓存）
 ├── logs/              运行日志，按天切分，默认保留 14 天
