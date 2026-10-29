@@ -34,7 +34,8 @@
 | 改掉三句过时注释、删掉会说假话的预检 | **W6.1** ✅ | [W6.1-擦桌子与删预检.md](W6.1-擦桌子与删预检.md) |
 | 微信上看不清：emoji 没了、英文词被切、markdown 裸奔 | **W6.2** ✅ | [W6.2-微信可读性.md](W6.2-微信可读性.md) |
 | 逐项回归、查 a11y、量性能 | **W6** ✅ | [W6-复核-回归与可访问性.md](W6-复核-回归与可访问性.md) |
-| 落地 W6 的 8 条裁定：两处缺陷 + 三条预算 | **W6.3** | [W6.3-复核裁定落地.md](W6.3-复核裁定落地.md) |
+| 落地 W6 的 8 条裁定：两处缺陷 + 三条预算 | **W6.3** ✅ | [W6.3-复核裁定落地.md](W6.3-复核裁定落地.md) |
+| 焦点丢失收口（三页的 `disabled`）+ 阈值校正 | **W6.4** | [W6.4-焦点丢失收口.md](W6.4-焦点丢失收口.md) |
 | **打成单文件 exe** | **W7** | [W7-单文件打包.md](W7-单文件打包.md) |
 | **发版、升级路径、卸载** | **W8** | [W8-发布与分发.md](W8-发布与分发.md) |
 | 开源发布 | **P5** | [P5-开源发布.md](P5-开源发布.md) |
@@ -1085,6 +1086,44 @@ bark 缺 device key，如实写「未验：缺 device key」，不许标 ✓。
 6. 空状态：logs/ 改名 → 截 5页×2主题 → 改名回来 → **核对日志文件数一致**。
 
 做完停下来，按 §12 的 10 项汇报。第 8 项（扫描器扫改前 commit 的输出）不许跳过。
+```
+
+### W6.4 · 焦点丢失收口
+
+```
+@docs/prompts/W6.4-焦点丢失收口.md
+@skill:tdd
+W6.3 修了总开关的焦点丢失，但同一个病在三个页面还在。这次收口一类，不是三个实例。
+
+改这 7 处（.disabled → setBusyAttr + 重入守卫）：
+  channels.js:587  save.disabled = state.busy
+  channels.js:589  test.disabled = !ready || state.busy   ← 拆成两行
+  channels.js:604  openid.disabled = !ok || state.busy    ← 拆成两行
+  templates.js:446/463  save.disabled = true/false
+  triggers.js:565/587   save.disabled = true/false
+
+**先分清两种禁用，不许一刀切：**
+- 语义禁用（!ready / !ok）：**保留 disabled**，Tab 不到它是对的
+- 临时禁用（state.busy / state.saving）：换 aria-disabled + `if (busy) return;`
+「保存中…」文字全部保留。不许用 pointer-events:none 代替 JS 守卫。
+
+顺手：删 .switch:disabled 死样式；给 .btn 补 aria-disabled 样式。
+
+阈值校正（PM 定错了）：
+- tests/test_stats_perf.py 的 BUDGET_MS 100 → 150。100ms 是 PM 拿字节数当度量定错的，
+  真实耗时由事件行数决定。150 对 83.6ms 是 1.8× 余量，仍能抓住 sleep(0.15) 的 387ms。
+  注释里写清「这是退化报警线，不是性能目标；红了先查 O(n²)，别调这个数」。
+
+新增守卫（核心交付）：
+tests/test_no_focus_killing_disabled.py —— 扫 webui/assets/**/*.js 里所有 .disabled =，
+每条必须命中带理由的豁免名单，否则红。判据是「随便加一行 btn.disabled = true 必须红」。
+
+三处小改：
+- functional-baseline.md 的 402 → 「402（W5）→ 493（W6.3）」
+- 遗留清单分两栏：待办 / 已裁定不做
+- --brand-soft 死令牌：注释写清准备用在哪，写不出就删
+
+做完按 §7 九项汇报。
 ```
 
 ### W7 · 单文件打包
