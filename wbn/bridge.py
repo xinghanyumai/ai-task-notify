@@ -229,7 +229,8 @@ class Bridge:
     `native.AccessibilityObject.Bounds.Empty.Empty.Empty...` 无限递归，结果：
     报一屏 `Error while processing window.native...` 之后 API 注入失败，
     前端永远拿不到 `window.pywebview.api`，页面停在骨架屏，最后被
-    `app.py` 的存活探针判死降级到 tkinter。**Python 侧完全看不出是这个原因。**
+    `app.py` 的存活探针判死降级到原生提示框（当时是 tkinter，W5 起已下线）。
+    **Python 侧完全看不出是这个原因。**
     """
 
     def __init__(self, on_activity=None, window=None):

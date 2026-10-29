@@ -51,16 +51,6 @@ UI_ALIVE_TIMEOUT = 10.0
 # 比开出两个窗口更糟。见 W1 汇报里的偏差说明。
 MUTEX_NAME = "Local\\WBN_UI_SINGLETON"
 
-# WebView2 运行时在注册表里的三个可能位置（HKLM 32/64 位 + HKCU 用户级安装）
-WEBVIEW2_KEYS = [
-    (r"SOFTWARE\WOW6432Node\Microsoft\EdgeUpdate\Clients"
-     r"\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}", "HKEY_LOCAL_MACHINE"),
-    (r"SOFTWARE\Microsoft\EdgeUpdate\Clients"
-     r"\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}", "HKEY_LOCAL_MACHINE"),
-    (r"SOFTWARE\Microsoft\EdgeUpdate\Clients"
-     r"\{F3017226-FE2A-4295-8BDF-00C3A9A7E4C5}", "HKEY_CURRENT_USER"),
-]
-
 
 # ------------------------------------------------------------------ 单实例
 
@@ -95,29 +85,80 @@ def focus_existing() -> bool:
         return False
 
 
-# ------------------------------------------------------- WebView2 与降级
+# ------------------------------------------------------------ 降级提示框
+#
+# **不做任何 WebView2 预检。** W6.1 删掉了原来那个查 EdgeUpdate 注册表键的
+# 探测函数（名字里带 webview2，已在 R47 删除，历史见 `git log -S`）。
+# 它的 docstring 写着「最终仍以 start() 抛不抛异常为准」，但代码里探到 False
+# 就直接 return，一次都没试过。2026-10-29 真实事故：用 regedit 改键名时粘贴
+# 带进一个换行，键名变成 `{F3017226-…E4C5}\n`，键看着还在、版本号也在，探测
+# 却找不到，于是程序对用户说「这台机器缺少 Microsoft WebView2 运行时」——
+# 运行时明明装着。**这是用户无法自行判断的假话，比不提示更糟。**
+#
+# 现在只保留真实信号，四种原因各说各话，见 FALLBACK_REASONS。
+#
+# **no_engine 不是把预检加回来。** R47 禁的是「我们猜」：自己查注册表、探不到就
+# 当运行时不存在。no_engine 读的是 `pywebview` **自己**在 import 时算好的结论
+# （`winforms.is_chromium`，见 run_ui 里的注释）——那是「它会用哪个引擎」的事实，
+# 不是对运行时存在与否的猜测，所以不会有假阴性。
 
 
-def has_webview2() -> bool:
-    """注册表探测。探不到不等于一定没有（便携版可能不写注册表），
-    所以它只是「提前判断」，最终仍以 webview.start() 抛不抛异常为准。"""
-    if sys.platform != "win32":
-        return False
-    import winreg
+FALLBACK_REASONS: dict[str, tuple[str, str]] = {
+    # 首句必须能让人区分这四件事：没装包 / 引擎不对 / 建不出窗口 / 建了画不出。
+    "no_package": (
+        "没有安装 pywebview，设置界面无法启动。",
+        "装一下就好：在项目目录执行 pip install -r requirements.txt",
+    ),
+    # **首句不许说「缺少」。** 这个分支的触发条件是 pywebview 判定「引擎不是
+    # Chromium」，键名坏掉时运行时明明装着——说「缺少」就又是 R47 那句假话。
+    "no_engine": (
+        "检测到界面引擎不可用（WebView2 运行时定位不到），设置界面无法启动。",
+        "重装一遍 WebView2 Runtime 再打开——缺它、或者它坏了，都会让界面引擎"
+        "回落到 IE，本界面在 IE 下显示不出来。",
+    ),
+    "no_runtime": (
+        "缺少 Microsoft WebView2 运行时，设置界面无法启动。",
+        "它是 Windows 自带的组件，正常机器上都有；"
+        "缺了从微软官网装「WebView2 Runtime」再打开。",
+    ),
+    "no_render": (
+        "界面没能显示出来，设置窗口打不开。",
+        "重开一次通常就好；还不行就重装一遍 WebView2 运行时——"
+        "缺它、或者它坏了，表现都是「窗口开了但页面不出来」。"
+        "反复出现请把 logs/ 里最新那份日志发出来。",
+    ),
+}
 
-    for path, hive in WEBVIEW2_KEYS:
-        try:
-            with winreg.OpenKey(getattr(winreg, hive), path) as key:
-                version = str(winreg.QueryValueEx(key, "pv")[0] or "")
-            if version and version != "0.0.0.0":
-                return True
-        except OSError:
-            continue
-    return False
+# 原因串写错时的兜底文案。**它说的是「不知道」，不是猜一个**——
+# 猜错的代价就是上面那个事故。
+UNKNOWN_REASON = (
+    "设置界面无法启动（原因未知，详见日志）。",
+    "logs/ 里最新那份日志记了具体是哪一步失败的。",
+)
 
 
-def fallback_no_webview() -> None:
-    """没有 WebView2：给一个能改配置、能看日志的原生对话框。
+def fallback_text(reason: str) -> tuple[str, str]:
+    """返回 `(首句, 补充说明)`。纯函数，方便测试断言三种原因说三句话。"""
+    return FALLBACK_REASONS.get(reason, UNKNOWN_REASON)
+
+
+def fallback_message(reason: str) -> str:
+    """拼出对话框正文。单独拿出来是为了能测——弹窗本身没法断言文字。"""
+    headline, hint = fallback_text(reason)
+    return (
+        f"{headline}\n\n"
+        f"{hint}\n\n"
+        "通知功能不受影响，仍然正常工作——只是没有图形设置界面。\n\n"
+        "「是」：打开配置目录（可手动编辑 config.json）\n"
+        "「否」：打开日志目录（查看通知是否发出）\n"
+    )
+
+
+def fallback_no_webview(reason: str) -> None:
+    """设置界面起不来：给一个能改配置、能看日志的原生对话框。
+
+    `reason` 取 `FALLBACK_REASONS` 的键之一，**故意不给默认值**——给了默认值
+    就一定有人不传，然后三种失败又退回同一句话，正是 R47 要治的病。
 
     **用 ctypes 调 MessageBoxW，不许 import tkinter**——W7 要打单文件 exe，
     带上 tkinter 会多 5MB，还会拖慢启动（见 W7 §0.2）。所以这里连
@@ -131,13 +172,9 @@ def fallback_no_webview() -> None:
 
     这条路径**不影响通知**：hook / dispatch 不经过 UI，配置和日志都在磁盘上。
     """
-    text = (
-        "这台机器缺少 Microsoft WebView2 运行时，设置界面无法启动。\n\n"
-        "通知功能不受影响，仍然正常工作——只是没有图形设置界面。\n\n"
-        "「是」：打开配置目录（可手动编辑 config.json）\n"
-        "「否」：打开日志目录（查看通知是否发出）\n"
-    )
-    _log("WebView2 缺失，走原生提示框降级")
+    text = fallback_message(reason)
+    headline = text.splitlines()[0]        # 日志里记的就是用户看到的那一句
+    _log(f"设置界面无法启动（{reason}）：{headline}")
 
     if sys.platform != "win32":
         print(text, file=sys.stderr)
@@ -149,7 +186,7 @@ def fallback_no_webview() -> None:
     IDYES, IDNO = 6, 7
     try:
         r = ctypes.windll.user32.MessageBoxW(
-            None, text, "缺少 WebView2 运行时", MB_YESNOCANCEL | MB_ICONWARNING)
+            None, text, "设置界面无法启动", MB_YESNOCANCEL | MB_ICONWARNING)
     except Exception as e:                  # 连对话框都弹不出来，至少留日志
         _log(f"MessageBoxW 调用失败：{e}")
         return
@@ -170,9 +207,6 @@ def run_ui() -> int:
     if os.environ.get("WBN_BENCH") != "1" and not acquire_single_instance():
         focus_existing()
         return 0
-    if not has_webview2():
-        fallback_no_webview()
-        return 0
 
     # **这个 try 只包 `import webview`。** 它是唯一「装没装第三方包」的判断。
     #
@@ -183,8 +217,38 @@ def run_ui() -> int:
     try:
         import webview
     except Exception:
-        fallback_no_webview()
+        _log(f"import webview 失败：{traceback.format_exc()}")
+        fallback_no_webview("no_package")
         return 0
+
+    # **这不是预检，是读 pywebview 自己已经做完的判断。**
+    #
+    # R47 删掉的是「我们猜」：自己查注册表，探不到就当运行时不存在，于是对用户
+    # 说了一句假话。这里读的 `wf.is_chromium` 是 pywebview 在 `import webview`
+    # 时**模块级**求值出来的（`webview/platforms/winforms.py:131`），它的
+    # `_is_chromium()`（同文件第 68 行）查的就是同一套 EdgeUpdate 键。
+    #
+    # 值为 False 时 pywebview 不会报错，它**静默换成 MSHTML（IE 引擎）**：
+    # 窗口照样建得出来（所以 create_window 不失败），但本界面在 IE 下画不出来。
+    # 用户体感是「双击 → 白窗口 → 干等 10 秒 → 告诉我打不开」。读这个值等于
+    # 把那 10 秒变成 0 秒，而且不需要我们自己再判断一次运行时在不在。
+    if sys.platform == "win32":
+        try:
+            from webview.platforms import winforms as _wf
+        except Exception as exc:            # 版本变化 / 换了后端，不许崩
+            _log(f"读不到 webview.platforms.winforms，跳过引擎检查：{exc}")
+        else:
+            is_chromium = getattr(_wf, "is_chromium", None)
+            if is_chromium is None:
+                _log("pywebview 没有 is_chromium 属性（版本变了？），跳过引擎检查")
+            elif not is_chromium:
+                _log(
+                    f"界面引擎不可用：is_chromium={is_chromium!r}，"
+                    f"renderer={getattr(_wf, 'renderer', '?')!r}"
+                    f"（pywebview 已回落到 MSHTML），不建窗口直接降级"
+                )
+                fallback_no_webview("no_engine")
+                return 0
 
     # pythonw.exe 下 stderr 是 None，栈会被吞掉。所以先落一条日志，
     # 再让异常继续往外走（退出码非 0，快捷方式 / 任务计划层面能看出来）。
@@ -222,14 +286,21 @@ def run_ui() -> int:
 
     api = Bridge(on_activity=_first_activity)
     index = (ROOT / "webui" / "index.html").as_uri()   # 中文/空格会被 percent-encode
-    win = webview.create_window(
-        WIN_TITLE, index,
-        js_api=api,
-        width=1180, height=780, min_size=(880, 600),
-        background_color="#fafafa",
-    )
+    try:
+        win = webview.create_window(
+            WIN_TITLE, index,
+            js_api=api,
+            width=1180, height=780, min_size=(880, 600),
+            background_color="#fafafa",
+        )
+    except Exception:
+        # WebView2 运行时不可用时，有的 pywebview 版本在这里就抛，有的返回 None
+        _log(f"create_window 抛异常：{traceback.format_exc()}")
+        fallback_no_webview("no_runtime")
+        return 0
     if win is None:
-        fallback_no_webview()
+        _log("create_window 返回 None")
+        fallback_no_webview("no_runtime")
         return 0
 
     # 通道页的异步测试要把结果推回页面，需要窗口句柄。建窗口时还没有它，
@@ -260,8 +331,8 @@ def run_ui() -> int:
 
     win.events.closing += _on_closing
 
-    # 存活探针。`has_webview2()` 探到运行时、`create_window` 也没抛异常，窗口
-    # 照样可能是**一块黑**：WebView2 初始化回调报成功，控制器随后失效，页面
+    # 存活探针。`create_window` 没抛异常、也返回了对象，窗口照样可能是
+    # **一块黑**：WebView2 初始化回调报成功，控制器随后失效，页面
     # 一次都没画出来（本机 2026-10 实测，MSHTML 后端同代码正常）。
     # 唯一可信的判据是「前端到底调通没调通 bridge」，所以拿 config_get 当心跳。
     def _watchdog() -> None:
@@ -271,7 +342,7 @@ def run_ui() -> int:
             f"WebView2 窗口 {UI_ALIVE_TIMEOUT:.0f}s 内没有调通 bridge，"
             "判定 UI 未启动"
         )
-        fallback_no_webview()
+        fallback_no_webview("no_render")
         for w in list(getattr(webview, "windows", [])):
             try:
                 w.destroy()
@@ -283,8 +354,9 @@ def run_ui() -> int:
     try:
         webview.start(debug=os.environ.get("WBN_DEBUG") == "1")
     except Exception:
+        # 与 create_window 失败同一类：运行时在，但初始化起不来
         _log(f"webview.start() 抛异常：{traceback.format_exc()}")
-        fallback_no_webview()
+        fallback_no_webview("no_runtime")
     return 0
 
 

@@ -868,7 +868,8 @@ def test_bridge_has_no_public_data_attributes():
     `get_functions()` 会 `dir()` 一遍再对每个公开非可调用属性递归展开，
     于是开始遍历 `window.native.AccessibilityObject.Bounds.Empty.Empty...`，
     无限递归 → API 注入失败 → 前端永远拿不到 `window.pywebview.api` →
-    页面停在骨架屏 → 存活探针判死降级 tkinter。Python 侧一句报错都没有。
+    页面停在骨架屏 → 存活探针判死降级到原生提示框（当时是 tkinter，
+    W5 起已下线）。Python 侧一句报错都没有。
     """
     b = bridge.Bridge(window=FakeWindow())
     bad = [n for n in dir(b)
