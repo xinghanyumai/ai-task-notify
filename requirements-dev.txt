@@ -4,3 +4,7 @@ pytest>=8.0
 ruff==0.17.2
 # 只给 tests/test_ci_workflow.py 解析 .github/workflows/ci.yml 用
 pyyaml>=6.0
+# 只给 tools/a11y_contrast.py 用（连系统已装的 Edge / WebView2 的 CDP，
+# **不下载浏览器**）。CI 里跑不了——它要真实窗口——所以不进 pytest 的依赖，
+# 但验收 a11y 的人要装。运行程序本身不需要。
+playwright>=1.40
