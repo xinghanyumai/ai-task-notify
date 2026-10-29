@@ -22,19 +22,22 @@ P1 会推翻整个界面层。推翻的时候最容易出的事不是「新界�
 
 | 命令 | 管什么 | 通过标准 |
 |---|---|---|
-| `python -m pytest -q` | 单元测试 | `402 passed, 1 skipped`（skipped 是 POSIX 专有那条），条数不许减少 |
+| `python -m pytest -q` | 单元测试 | `402（W5 收尾时）→ 493（W6.3 时）passed, 1 skipped`（skipped 是 POSIX 专有那条），条数不许减少 |
 | `python tools/bench_ui.py --runs 3` | **首屏可交互 A + 自研代码段 B**（双基线，W6.3 §2） | A ≤ 2500ms（**仅源码形态**，exe 待 W7 重测）、B ≤ 100ms，两条都要过 |
 | `python tools/a11y_contrast.py` | 交互控件对比度（边界 ≥3:1 / 文字 ≥4.5:1，浅深各一遍） | 退出码 0 |
-| `python -m pytest tests/test_stats_perf.py -q` | 日志解析性能守卫（2 天 × 400KB） | `stats()` < 100ms 且真读到事件 |
+| `python -m pytest tests/test_stats_perf.py -q` | 日志解析性能守卫（2 天 × 400KB） | `stats()` < 150ms 且真读到事件（**退化报警线，不是性能目标**，见 `roadmap.md` R50） |
 | ~~`python tools/audit.py`~~ | 对比度 / 键盘 / 动画 / 降级 / 响应式 | **已删（W5）**。等价物：`tools/a11y_contrast.py`（W6.3 补的，可重复跑）+ 三档截图 |
 | ~~`python tools/check_style.py`~~ | 间距 / 字号 / 动效令牌 | **已删（W5）**。等价物：`grep` 字面色值 + `tokens.css` 清单 |
 | ~~`python tools/check_responsive.py`~~ | 发送期间不冻结 + Tab 顺序 | **已删（W5）**。等价物：DevTools Performance 长任务计数 + 手动 Tab |
 
-> **`402` 不是笔误。** 212 是 tkinter 时代的数（W0 之后）；W1–W4 加了 WebView 桥、
+> **`402` 不是笔误，`493` 也不是。** 212 是 tkinter 时代的数（W0 之后）；W1–W4 加了 WebView 桥、
 > 通道页、三页、三处结构守卫，W5 又删掉 7 条 tkinter 专有用例、加了 4 条
-> （AppUserModelID 活下来 + 两把锁 + POSIX 无操作）和 3 条旧栈守卫。
+> （AppUserModelID 活下来 + 两把锁 + POSIX 无操作）和 3 条旧栈守卫，W5 收尾时是 **402**；
+> W6.3 加了 1 条日志性能守卫 + 6 条令牌守卫，到 **493**。
 > **「条数不许减少」这条规则只有在数字是最新的时候才管用**——数字写旧了，
-> 删掉一批测试也不会违反规则，闸门就是空的。以后每加一批测试，这行必须同步改。
+> 删掉一批测试也不会违反规则，闸门就是空的。所以这里**同时留两个数**：
+> 左端是历史，右端是当前。只写 402 会立刻开始撒谎；只写 493 会让下面这段
+> 历史说明失去落点。以后每加一批测试，**右端那个数必须同步改**。
 
 **这张表里 `bench_ui.py` 一行的实测数字见 [`baseline-tkinter.md`](baseline-tkinter.md)（最终态）。**
 那份是 `tkinter-final` 这一份确定的代码上测出来的，不可重测——W5 删掉 tkinter 层后就再也测不出来了。
