@@ -268,10 +268,23 @@
   function wireSwitch() {
     var sw = $("#master-switch");
     if (!sw) return;
+    var busy = false;
 
     sw.addEventListener("click", function () {
+      /* **不用 `sw.disabled = true`。** 给一个已聚焦的元素设 `disabled`，
+         浏览器会把它 blur 掉，焦点掉到 `body`——键盘用户按一下空格切总开关，
+         下一个 Tab 就要从页面开头重走 30 个元素。W6 第 10 条基线要求
+         「Tab 走一圈、焦点可见」，丢焦点就是在这条线上开了一个口子。
+
+         改成 `aria-disabled` + 重入守卫：元素留在 Tab 序列里，焦点不动，
+         重复点击在这里被 `busy` 挡住。`aria-disabled` 本身不阻止点击，
+         所以守卫不能省——省了就是连点几次发几次 `config_save`。
+         **不许用 `tabindex="-1"` 绕过去**：那是把控件踢出 Tab 序列，比丢焦点更糟。 */
+      if (busy) return;
+      busy = true;
+      sw.setAttribute("aria-disabled", "true");
+
       var next = !state.enabled;
-      sw.disabled = true;
       call("config_save", { enabled: next }).then(function () {
         state.enabled = next;
         paintSwitch();
@@ -283,7 +296,8 @@
       }).catch(function (e) {
         showMsg("没保存成功：" + e.message);
       }).then(function () {
-        sw.disabled = false;
+        busy = false;
+        sw.setAttribute("aria-disabled", "false");
       });
     });
   }

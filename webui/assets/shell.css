@@ -268,13 +268,23 @@ html, body { overflow: hidden; }
   transition: background var(--dur) var(--ease);
 }
 
-/* 开启态外面套一圈 --brand-ink：品牌绿（`--brand`）对白卡只有 2.29:1，
-   控件边界本身达不到 3:1。套一圈深绿（5.16:1）之后边界达标，
-   品牌绿仍然是「活着」的信号，不用换色。暗色下 --brand-ink 就是 --brand，
-   那一侧本来就 11.45:1，这一圈等于不可见，不影响。 */
+/* 开启态：填充用 --track-on，不用 --brand。
+   --brand 对 --bg 只有 2.19:1，而开关的填充是唯一表达开/关的信号，必须 ≥3:1
+   （--track-on 是 3.25）。取舍与配色理由写在 tokens.css 的 --track-on 段。
+   外面那圈 inset 描边留着：轨道现在自己达标了，这圈不再承担对比度，
+   只负责让边缘和卡片底之间多一道界线。 */
 .switch[aria-checked="true"] {
-  background: var(--brand);
+  background: var(--track-on);
   box-shadow: inset 0 0 0 1px var(--brand-ink);
+}
+
+/* 保存中：视觉上要淡，但**不许用 `disabled`**。
+   `disabled` 会让元素 blur，焦点掉到 body——键盘用户按一下空格，
+   下一个 Tab 就要从页面开头重走 30 个元素（W6 第 10 条基线的精神）。
+   用 `aria-disabled` + 事件里的重入守卫，元素留在 Tab 序列里、焦点不动。 */
+.switch[aria-disabled="true"] {
+  opacity: .5;
+  cursor: default;
 }
 
 .switch:disabled { opacity: .5; }
@@ -519,7 +529,12 @@ body[data-route="channels"] .col { max-width: none; }
 .btn-secondary {
   background: var(--bg-card);
   color: var(--fg);
-  border: 1px solid var(--border-strong);
+  /* **不是 --border-strong。** 那个令牌只做装饰分隔线（tokens.css 第 31 行），
+     对白卡 1.45:1；用它画按钮边框，等于让「唯一能看出这里有按钮」的
+     那条线不达标（WCAG 1.4.11 要 3:1）。
+     --border-input 的语义正好覆盖这里：「这个边框是信息，不是装饰」。
+     实测 #86868d → 对白卡 3.62 / 对页面底 3.46，深色 #70707a → 3.72。 */
+  border: 1px solid var(--border-input);
 }
 .btn-secondary:hover { background: var(--bg-hover); }
 
