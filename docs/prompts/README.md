@@ -35,7 +35,8 @@
 | 微信上看不清：emoji 没了、英文词被切、markdown 裸奔 | **W6.2** ✅ | [W6.2-微信可读性.md](W6.2-微信可读性.md) |
 | 逐项回归、查 a11y、量性能 | **W6** ✅ | [W6-复核-回归与可访问性.md](W6-复核-回归与可访问性.md) |
 | 落地 W6 的 8 条裁定：两处缺陷 + 三条预算 | **W6.3** ✅ | [W6.3-复核裁定落地.md](W6.3-复核裁定落地.md) |
-| 焦点丢失收口（三页的 `disabled`）+ 阈值校正 | **W6.4** | [W6.4-焦点丢失收口.md](W6.4-焦点丢失收口.md) |
+| 焦点丢失收口（三页的 `disabled`）+ 阈值校正 | **W6.4** ✅ | [W6.4-焦点丢失收口.md](W6.4-焦点丢失收口.md) |
+| `paintDetail()` 的焦点守卫（机制代替记性） | **W6.5** | [W6.5-paintDetail焦点守卫.md](W6.5-paintDetail焦点守卫.md) |
 | **打成单文件 exe** | **W7** | [W7-单文件打包.md](W7-单文件打包.md) |
 | **发版、升级路径、卸载** | **W8** | [W8-发布与分发.md](W8-发布与分发.md) |
 | 开源发布 | **P5** | [P5-开源发布.md](P5-开源发布.md) |
@@ -1124,6 +1125,34 @@ tests/test_no_focus_killing_disabled.py —— 扫 webui/assets/**/*.js 里所�
 - --brand-soft 死令牌：注释写清准备用在哪，写不出就删
 
 做完按 §7 九项汇报。
+```
+
+### W6.5 · paintDetail 焦点守卫
+
+```
+@docs/prompts/W6.5-paintDetail焦点守卫.md
+@skill:tdd
+W6.4 修了 save 和 toggle 的焦点，但漏了第 8 处：channels.js:877 的 openid 获取成功。
+
+更值得说的是为什么漏：paintDetail() 的 docstring 写着「以后再加调用点，照这个写」——
+靠人记住，而同一轮里已经漏了一次。所以这轮补机制，不只是补那一处。
+
+三件事：
+1. 补 877：hadFocus 记在重建前，paintDetail() 后 focus() 新节点（同 saveChannel 的写法）
+2. tests/test_paint_detail_focus.py：扫所有 paintDetail() 调用点，每个必须
+   后续 3 行内有 .focus( 或 focusFirstMissing(，或写 /* focus-ok: 理由 */。
+   当前 8 个调用点：3 个已还原、4 个豁免（理由都是「焦点不在 pane 里」）、1 个本轮补。
+3. roadmap 登记通道页无「保存中…」文案为 P3，理由：逐通道保存 vs 整页保存，语义不同；
+   要统一的话统一到「都有文字」，因为变淡对低视力用户不够。
+
+判据必须验两条变异：
+- 加一行 paintDetail(); → 必须红
+- 注释掉 692 的 state.nodes.save.focus() → 必须红
+只扫不咬等于装饰——W6.4 的 M2 假红已经证明了。
+
+不许：把 877 标豁免（那是真丢焦点）、豁免不写理由、这轮顺手给通道页补文案。
+
+做完按 §4 八项汇报。W6.5 绿了直接进 W7。
 ```
 
 ### W7 · 单文件打包
