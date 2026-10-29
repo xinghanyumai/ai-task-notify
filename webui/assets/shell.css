@@ -776,7 +776,15 @@ body[data-route="channels"] .col { max-width: none; }
 
    这个数不许单独改。改之前先量：`getComputedStyle(.fields).gridTemplateColumns`
    在两页各读一次，再读一次 appID 输入框的 `clientWidth` / `scrollWidth`——
-   后者大于前者就是文字被切了。 */
+   后者大于前者就是文字被切了。
+
+   975 > 973（默认窗口 1180×780 的 CSS 视口），所以**一打开软件通道页就是一列**。
+   这是有意的：972 也能让 973 保持两列（列宽 162.5、appID 零余量 1.2px），
+   但「刚好装下」正是 R39 那一类问题的土壤——换台机器、换个更长的 appID 就又截断。
+   宁可少一列，不要一个零余量的状态。
+
+   真要两列：把 975 改成 972，同时接受 appID 在 973 时只剩 1px 余量。
+   更深一层的修法见 roadmap R40（长字段跨列）。 */
 @media (max-width: 760px) {
   .fields { grid-template-columns: minmax(0, 1fr); }
 }
