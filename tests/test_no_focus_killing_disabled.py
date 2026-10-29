@@ -41,74 +41,11 @@ W6.3 只修了总开关那一个实例。**「修了一个实例」和「修了�
 from __future__ import annotations
 
 import re
-from pathlib import Path
 
-ASSETS = Path(__file__).resolve().parent.parent / "webui" / "assets"
+from js_source import ASSETS, code_only, norm
 
 # 赋值语句：`<lhs>.disabled = <rhs>;`。lhs 允许 `state.nodes.save` 这种点链。
 _ASSIGN = re.compile(r"(?P<lhs>[A-Za-z_$][\w$.\[\]]*)\.disabled\s*=\s*(?P<rhs>[^;\n]+)")
-
-
-def _code_only(src: str) -> list[str]:
-    """逐行返回**只留代码**的文本：去掉 `//` 行尾注释与 `/* ... */` 块注释。
-
-    为什么不能只看行首：`/* ... */` 会跨行，注释中间那些续行既不以 `*` 开头
-    也不以 `//` 开头。本文件自己的注释里就写着 `save.disabled = ...` 当例子，
-    只判行首的话扫描器会把这段**注释**当成一处真实赋值报上来——守卫的第一批
-    误报就是它。
-
-    顺便避开字符串里的 `//`（URL 里的 `http://` 被当成注释，会把后半行吃掉）。
-    字符串里的 `disabled` 也不该算数，所以引号内的内容一并丢弃。
-    """
-    out, buf = [], []
-    i, n = 0, len(src)
-    in_block = False
-    quote = ""            # 非空表示正处在这个引号里
-    while i < n:
-        ch = src[i]
-        nxt = src[i + 1] if i + 1 < n else ""
-        if ch == "\n":
-            buf.append(ch)
-            out.append("".join(buf))
-            buf = []
-            i += 1
-            continue
-        if in_block:
-            if ch == "*" and nxt == "/":
-                in_block = False
-                i += 2
-                continue
-            i += 1
-            continue
-        if quote:
-            if ch == "\\":
-                i += 2
-                continue
-            if ch == quote:
-                quote = ""
-            i += 1
-            continue
-        if ch == "/" and nxt == "*":
-            in_block = True
-            i += 2
-            continue
-        if ch == "/" and nxt == "/":
-            while i < n and src[i] != "\n":
-                i += 1
-            continue
-        if ch in "\"'`":
-            quote = ch
-            i += 1
-            continue
-        buf.append(ch)
-        i += 1
-    out.append("".join(buf))
-    return out
-
-
-def _norm(text: str) -> str:
-    """空白归一化：`!ready  ||  state.busy` 与 `!ready || state.busy` 等价。"""
-    return re.sub(r"\s+", " ", text).strip()
 
 
 def _hits() -> list[dict]:
@@ -121,10 +58,10 @@ def _hits() -> list[dict]:
     out = []
     for path in sorted(ASSETS.rglob("*.js")):
         src = path.read_text(encoding="utf-8")
-        for no, line in enumerate(_code_only(src), 1):
+        for no, line in enumerate(code_only(src), 1):
             for m in _ASSIGN.finditer(line):
                 lhs = m.group("lhs").split(".")[-1]
-                stmt = _norm(f"{lhs}.disabled = {m.group('rhs')}")
+                stmt = norm(f"{lhs}.disabled = {m.group('rhs')}")
                 out.append({
                     "file": path.name,
                     "line": no,
@@ -154,7 +91,7 @@ EXEMPT = [
 
 
 def _key(file: str, stmt: str) -> tuple[str, str]:
-    return (file, _norm(stmt))
+    return (file, norm(stmt))
 
 
 _ALLOWED = {_key(f, s): reason for f, s, reason in EXEMPT}
