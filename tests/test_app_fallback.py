@@ -37,6 +37,9 @@ def test_four_failure_reasons_say_four_different_things():
     R48 加了 `no_engine`（读 `wf.is_chromium`，消掉 10 秒白屏），跟着扩成四种。
     """
     reasons = ("no_package", "no_engine", "no_runtime", "no_render")
+    # 这份清单必须和源码里的键集一模一样：漏一个就少测一种失败，
+    # 多一个则说明这条测试已经和实现脱节了。
+    assert set(reasons) == set(app.FALLBACK_REASONS)
     lines = [_first_line(r) for r in reasons]
 
     assert len(set(lines)) == len(reasons), (

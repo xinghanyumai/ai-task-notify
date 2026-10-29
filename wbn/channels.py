@@ -873,6 +873,58 @@ def _label_width(content: str, var: str) -> int:
     return 6          # 拿不到定义就按「详情：」三字算
 
 
+# 跟着 emoji 走的**不可见修饰符**，基础符号被剥掉之后它们就成了孤儿：
+#   变体选择符  `⚠️` 的第二个字符（FE0F），决定基础符号按彩色还是黑白渲染
+#   零宽连接符  `🙋‍♀️` 中间那个（200D），把两个 emoji 粘成一个
+#   键帽组合符  `1️⃣` 的第三个字符（20E3），给数字套一个方框
+# 按名字前缀判，仍然不是码位表。留着它们不影响肉眼，但会污染字段值
+# （宽度算 0、比较不相等、日志里打印成 `\u200d`）。
+_EMOJI_GLUE = ("VARIATION SELECTOR", "ZERO WIDTH", "COMBINING ENCLOSING KEYCAP")
+
+
+def _strip_emoji(text: str) -> str:
+    """剥掉 emoji 和它们的变体选择符。**只给微信通道用**，别拿去处理别的通道。
+
+    微信模板消息会**静默过滤** emoji，但把 emoji 后面的空格留着。默认标题
+    `✅ {app} 任务完成` 到手机上就变成 ` WorkBuddy 任务完成`——状态行开头
+    多一个空格，卡片里看是缩进的。所以宁可在发之前自己剥干净。
+
+    判据走 `unicodedata.category()`，**不手写码位表**——码位表永远漏，
+    Unicode 每年还在加新表情：
+
+        So / Sk  符号类。`✅ ❌ 🙋 ⚠ ▶ ⏹ 🔔` 全在这里
+        非 Latin-1 只剥这个区间的。Latin-1 里的 So/Sk 是**排版符号**
+        （`° © ® ¨ ^ ~`），剥掉会把 `25°C` 变成 `25C`、把代码里的
+        脱字符和波浪号吃掉——过度剥离和漏剥离一样是 bug（R45 的教训）。
+
+    `⚠️` 在内存里是 `⚠`(So) + `\\ufe0f`(Mn) 两个字符，`🙋‍♀️` 还多一个零宽
+    连接符。只剥 So 会留下一串看不见的孤儿，所以修饰符单独判一次。
+    """
+    out: list[str] = []
+    for ch in text:
+        cat = unicodedata.category(ch)
+        if cat in ("So", "Sk") and ord(ch) > 0xFF:
+            continue
+        if unicodedata.name(ch, "").startswith(_EMOJI_GLUE):
+            continue
+        out.append(ch)
+    return "".join(out)
+
+
+# 连续空白（半角空格 / 制表符 / 全角空格）压成一个半角空格。剥掉 emoji 之后
+# `任务 ✅ 完成` 会留下两个挨着的空格，微信里看着像多打了一个。
+_TIDY_SPACE = re.compile(r"[ \t\u3000]{2,}")
+
+
+def _tidy(text: str) -> str:
+    """剥 emoji → 折叠连续空格 → 去首尾空白。微信字段的统一清洗入口。
+
+    **剥完必须 `strip()`。** 微信过滤 emoji 留下的是**前导空格**，只剥不
+    strip 的话状态行仍然是 ` 任务完成`，问题一点没解决。
+    """
+    return _TIDY_SPACE.sub(" ", _strip_emoji(str(text or ""))).strip()
+
+
 def _wxmp_values(
     title: str,
     content: str,
@@ -895,7 +947,8 @@ def _wxmp_values(
     label = str(f.get("kind_label") or "")
     emoji = str(f.get("emoji") or "🔔")
 
-    headline = (title or f"{emoji} {label}").strip()
+    # 先剥 emoji 再量宽度：`✅` 占 2 格，剥掉之前它白吃一截预算
+    headline = _tidy(title or f"{emoji} {label}")
 
     # 失败类优先显示原因，成功类显示摘要——这比把整段正文塞进一个字段有用得多
     if kind in ("task_failed", "tool_failed"):
@@ -941,7 +994,12 @@ def _wxmp_values(
 
 
 def _map_wxmp_data(declared: list[str], values: dict[str, str]) -> dict:
-    """把语义值分配到模板实际声明的变量上，返回微信要的 data 结构。"""
+    """把语义值分配到模板实际声明的变量上，返回微信要的 data 结构。
+
+    **所有字段值在这里过一遍 `_tidy`**——这是微信通道唯一的出口，剥 emoji、
+    折叠空格、去首尾空白都在这一处做。模板变量名是用户自定义的（`keyword1`
+    还是 `thing2` 都有可能），所以只能在「值」这一侧收口，不能挑字段名。
+    """
     out: dict[str, dict] = {}
     used: set[str] = set()
     pending: list[str] = []
@@ -971,6 +1029,8 @@ def _map_wxmp_data(declared: list[str], values: dict[str, str]) -> dict:
         else:
             out[name] = {"value": values.get("detail") or values.get("headline") or "—"}
 
+    for item in out.values():
+        item["value"] = _tidy(item.get("value") or "")
     return out
 
 

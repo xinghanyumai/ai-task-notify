@@ -115,6 +115,11 @@ UnicodeEncodeError: 'utf-8' codec can't encode character '\udca2'
    不但不换行，还会把换行之后的内容整段丢掉，所以多行只能靠多声明变量实现
    （`detail`、`detail2`、`detail3`、`detail4`）。程序会按显示宽度切段、行首避标点、
    英文单词不劈开，超出四行才加 `…`。想彻底不受行数限制，改用企业微信自建应用。
+8. 微信通道不显示 emoji，自定义标题请用文字表达状态。微信会在服务端把 emoji
+   静默过滤掉，但留下 emoji 后面的空格——默认标题 `✅ {app} 任务完成` 到手机上
+   是 ` WorkBuddy 任务完成`，前面多一个空格。所以程序在发送前会自己把 emoji 剥掉、
+   把剩下的连续空格折叠成一个，状态含义得靠文字写清楚（`完成` / `失败` / `等你确认`），
+   别只靠图标。bark、ntfy、webhook 这些通道不受影响，它们的标题仍带 emoji。
 9. `Notification` 里的空闲提醒不会通知。宿主答完在等你下一条消息时也会发
    `Notification`（内容是 `xxx is waiting for your input`），但那和 `Stop` 报的
    「任务完成」是同一件事，再推一条就是重复打扰，所以已在 `events.py` 里过滤。
