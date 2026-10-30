@@ -156,9 +156,27 @@ HTTP 200、4 个 IPv4 TLS 握手全 OK），但**照它的 README 逐字配置�
 `~/.workbuddy-ai/...`（`~/.workbuddy` 是 legacy 目录，本项目 `install.py` 里也是
 这么标的）。后果是：MCP 注册进一个不会被读的文件、凭证发现失败、`--diag` 直接
 建议你跑 `--login`，而 `--login` 会占掉微信侧唯一名额、**顶掉 WorkBuddy 原生
-微信连接**。三个路径都要加 `-ai`，且**绝不能跑 `--login`**。另外实测 `ret=-2`：
-光有 `bot_token` 不够，还得先让用户在微信里给 bot 发一条消息拿到 `context_token`，
-它 README 说的「装好就能推」在本机不成立。
+微信连接**。
+
+但配置不用改它的源码，只要把两个值填进**它自己会读的那个** `config.json`：
+`bot_token` 和 `user_id`（都在 `~/.workbuddy-ai/` 下面，只读不写）。
+注意这两类路径的处理**不一样**：
+
+| 放什么 | 路径 | 要不要加 `-ai` |
+|---|---|---|
+| MCP 注册 | `~/.workbuddy-ai/mcp.json` | **必须加**，不加就注册进一个不会被读的文件 |
+| 凭证 | `~/.workbuddy/wechat-clawbot-push/config.json` | **不加**，包源码里硬编码就是这个路径 |
+
+**绝不能跑 `--login`**——它会占掉微信侧唯一名额、顶掉 WorkBuddy 原生微信连接。
+
+另外实测 `ret=-2` 的真正原因**不是**缺 `context_token`，是**没有「最近活跃会话」**：
+你在微信里给 bot 发过一句话之后，**不携带 `context_token` 也能直接推成功**
+（实测回执 `HTTP 200 发送成功（未携带 context_token，走最近活跃会话）`）；
+没发过就是 `ret=-2`。所以「装好就能推」要补一个前提：**先让那个会话热起来**。
+
+也别指望用 `--refresh` 去捞 `context_token`——WorkBuddy 同时运行时它**必然失败**
+（两边用同一个 bot 抢同一条消息流，实测 `getupdates` 超时）。这也说明依赖
+`context_token` 的路子本身不可靠，但**不影响推送**。
 
 ### 差异到底是什么
 

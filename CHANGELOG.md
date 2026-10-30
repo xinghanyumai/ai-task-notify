@@ -18,7 +18,7 @@
 - **WebView2 沙箱默认打开**：之前为了兼容性默认关闭，现在默认开启，只在看门狗
   判定「窗口没画出来」时降级一次重试。`WBN_WEBVIEW_SANDBOX=1` 强制打开并禁止降级，
   `WBN_WEBVIEW_NOSANDBOX=1` 强制关闭。
-- **文档体系重构**：README 从 738 行压到 167 行，只留定位、截图、从零快速开始、
+- **文档体系重构**：README 从 738 行压到只留定位、截图、从零快速开始、
   通道选择表、常见问题和索引。正文拆到 `docs/`：`architecture.md`（hook 协议、
   事件归类、两段式架构）、`design.md`（界面语汇、设计令牌、自绘控件、无障碍）、
   `security.md`、`troubleshooting.md`（含编码事故完整复盘）。
