@@ -9,13 +9,13 @@ Windows 10 / 11 · 个人自用 · 零服务器 · 零订阅费 · 零实名
 通知链路只用 Python 标准库，托盘那两个包缺了也能跑。
 
 <p align="center">
-  <img src="assets/ui_channels_light.png" width="49%" alt="推送通道页（浅色）">
-  <img src="assets/ui_channels_dark.png" width="49%" alt="推送通道页（深色）">
+  <img src="assets/screenshots/ui_channels_light.png" width="49%" alt="推送通道页（浅色）">
+  <img src="assets/screenshots/ui_channels_dark.png" width="49%" alt="推送通道页（深色）">
 </p>
 <p align="center">
-  <img src="assets/ui_template_light.png" width="32%" alt="消息模板页">
-  <img src="assets/ui_status_light.png" width="32%" alt="运行状态页">
-  <img src="assets/ui_guide_light.png" width="32%" alt="使用教程页">
+  <img src="assets/screenshots/ui_template_light.png" width="32%" alt="消息模板页">
+  <img src="assets/screenshots/ui_status_light.png" width="32%" alt="运行状态页">
+  <img src="assets/screenshots/ui_guide_light.png" width="32%" alt="使用教程页">
 </p>
 <p align="center">
   <sub>推送通道（浅色 / 深色） · 消息模板 · 运行状态 · 使用教程</sub>
