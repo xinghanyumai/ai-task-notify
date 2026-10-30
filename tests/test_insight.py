@@ -15,6 +15,7 @@
 from __future__ import annotations
 
 import json
+import sys
 from datetime import datetime
 
 import pytest
@@ -864,6 +865,13 @@ def test_stats_does_not_mutate_cfg():
     assert json.dumps(cfg, ensure_ascii=False, sort_keys=True) == snapshot
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="`open_path` 在 POSIX 上走 `subprocess.Popen(['xdg-open', ...])`，"
+           "Popen 只负责把进程拉起来，路径不存在它也不会抛——失败发生在子进程里，"
+           "拿不到 `(False, 原因)`。这条判据只在 os.startfile 那条路上成立"
+           "（W9 打开 ubuntu 收集阶段后才暴露出来）",
+)
 def test_open_path_reports_failure_without_raising():
     ok, err = insight.open_path("Z:/definitely/not/here")
     assert ok is False

@@ -155,6 +155,15 @@ def test_shortcut_targets_exe_and_uses_tray_subcommand(monkeypatch, tmp_path):
     monkeypatch.setattr(install, "make_shortcut", lambda *a, **kw: calls.append(a) or True)
     monkeypatch.setattr(install, "_desktop_dir", lambda: tmp_path / "desktop")
     monkeypatch.setattr(install, "_startup_dir", lambda: tmp_path / "startup")
+    # **这一行是给非 Windows runner 用的。** `create_shortcuts` 的自启那半现在
+    # 走 `set_autostart()`，而它第一步 `_autostart_probe()` 在 POSIX 上直接返回
+    # `(None, "非 Windows 系统…")`——于是 `make_shortcut` 只被调一次，CI 的
+    # ubuntu job 上就变成 `assert 1 == 2`（W9 实测）。
+    # 这条用例要钉的是「frozen 时目标/参数指向哪」，不是「这台机器有没有启动
+    # 文件夹」，所以把平台门打开、其余照旧走真实代码。
+    monkeypatch.setattr(
+        install, "_autostart_probe",
+        lambda: (tmp_path / "startup" / install.AUTOSTART_NAME, ""))
 
     install.create_shortcuts(with_autostart=True)
 

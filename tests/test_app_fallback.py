@@ -247,6 +247,12 @@ def test_missing_package_reports_no_package(monkeypatch):
     assert _run_ui(monkeypatch, webview=BLOCKED) == ["no_package"]
 
 
+@pytest.mark.skipif(
+    sys.platform != "win32",
+    reason="引擎检查被 app.py 的 `if sys.platform == \"win32\":` 门住——POSIX 上 "
+           "pywebview 走 GTK/Qt，没有 winforms.is_chromium 这回事，这条判据在"
+           "那里不成立（W9 打开 ubuntu 收集阶段后才暴露出来）",
+)
 def test_engine_unavailable_reports_no_engine(monkeypatch):
     """pywebview 自己判定引擎不是 Chromium → `no_engine`，而且**不建窗口**。
 
