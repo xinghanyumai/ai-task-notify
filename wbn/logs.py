@@ -43,14 +43,26 @@ _EMOJI_RANGES = (
 
 # `notify-*.log` 里的**事件汇总行**，`pipeline.notify()` 每条事件写一行：
 #   [10:24:23] event=Stop kind=task_done sent=True remote_ok=True \
-#              elapsed=1.17s title=✅ WorkBuddy 任务完成
+#              elapsed=1.17s app=WorkBuddy title=✅ WorkBuddy 任务完成
 #
 # `title=` 是最后一个字段，可能含空格（`✅ WorkBuddy 任务完成`），所以用 `(.*)`
 # 收尾；老行没有 `title=`，那一段可选。字段全部锚定位置，不整行找子串。
+#
+# **`app=` 是 W7.7 加的，必须整段可选**：`logs/` 里有上千行 W7.7 之前的行
+# 没有这个字段。写成必需 → 历史行全部解析失败 → 状态页「今日通知数」归零，
+# 而界面上看不出任何异常（只是数字变成 0）。判据见
+# `tests/test_log_app_field.py::test_old_format_line_still_parses`。
+#
+# **`app` 必须在 `title` 之前**：`title` 是自由文本，可能含 `app=` 这串字
+# （用户在任务里写「日志里加 app= 字段」就会）。放最后用 `.*` 安全吞掉；
+# 放前面则会被 `\S+` 截断，后面的 `title` 跟着错位。
+#
+# `\S+` 而不是 `\S*`：`app` 值由 `hook.py`（默认 `"WorkBuddy"`）和
+# `dispatch.py`（`or "WorkBuddy"`）兜底成非空，所以这里不需要容空。
 _EVENT_LINE = re.compile(
     r"^\[(?P<time>\d{2}:\d{2}:\d{2})\] event=(?P<event>\S+) kind=(?P<kind>\S+)"
     r" sent=(?P<sent>True|False) remote_ok=(?P<remote_ok>True|False)"
-    r" elapsed=\S+(?: title=(?P<title>.*))?$")
+    r" elapsed=\S+(?: app=(?P<app>\S+))?(?: title=(?P<title>.*))?$")
 
 # `notify-*.log` 里的通道投递行：
 #   [10:40:04] channel=wxmp ok=False msg=errcode=40037 模板 ID 无效
@@ -96,6 +108,9 @@ class Event:
     sent: bool
     remote_ok: bool
     title: str       # 已剥掉开头 emoji，可能为空（老行没有 title=）
+    # W7.7 之前写的行没有 `app=`，解析出来是空串——「不知道是哪个宿主」，
+    # 不是「没有宿主」。**必须有默认值**：所有构造点（含测试）不用改。
+    app: str = ""
 
 
 @dataclass(frozen=True)
@@ -239,6 +254,7 @@ def parse_event(line: str, day: str = "") -> Event | None:
         sent=m.group("sent") == "True",
         remote_ok=m.group("remote_ok") == "True",
         title=plain,
+        app=m.group("app") or "",     # 老行没有这一段 → 空串
     )
 
 

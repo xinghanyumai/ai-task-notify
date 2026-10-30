@@ -1092,6 +1092,41 @@ W3.5 把 `recent` 改成读今天+昨天，**其他所有「最近一次」语�
 | 权限 | 普通用户 | 不写注册表、不装服务 |
 | 文本缩放 | 任意 | **会被乘进 `devicePixelRatio`**，见上一节。100% 与 120% 下 CSS 视口差 20% |
 
+## 开发期工具
+
+改前端样式时靠 CDP 连真实窗口取计算样式和对比度（`tools/a11y_contrast.py`），
+不靠肉眼看截图。这条路有一个**静默失效**的陷阱，W7.4 和 W7.6 各卡了一次。
+
+### `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 设了 `--remote-debugging-port` 不生效
+
+症状是「CDP 端口连不上」，但**不报任何错**：`connect_ex` 一直是 `ECONNREFUSED`，
+进程照常起来，窗口照常显示，就是没有调试端口。
+
+原因：这个环境变量只在 WebView2 **新建浏览器进程**时被读。本机已经有一个
+WebView2 浏览器进程（托盘常驻的那个）在跑时，`create_window` 会复用它，
+环境变量被整个忽略——所以「昨天能连、今天连不上」跟代码没关系，跟有没有
+残留进程有关系。
+
+正解是走 pywebview 自己的设置项，让它在拼 `AdditionalBrowserArguments` 时带上：
+
+```python
+import webview
+webview.settings["REMOTE_DEBUGGING_PORT"] = 9222   # 必须在 create_window 之前
+```
+
+`webview/__init__.py` 里默认是 `None`，`platforms/edgechromium.py` 读到非 `None`
+才拼进参数字符串。`tools/a11y_contrast.py` 的 `_launch()` 早就这么写——它用
+`python -c` 先设 `webview.settings` 再 `import app`，就是为了抢在 `create_window` 之前：
+
+```python
+code = ("import webview;"
+        f"webview.settings['REMOTE_DEBUGGING_PORT'] = {port};"
+        "import app; sys.exit(app.run_ui())")
+```
+
+**判据**：连不上时先 `netstat -ano | findstr 9222` 看端口有没有人听。没人听不是
+「端口写错了」，是设置项没生效——别去改端口号、别去查防火墙。
+
 ## 测试与 CI
 
 `tests/` 下有 399 个 pytest 用例，覆盖折行、脱敏、事件归类、过滤链、平台差异、

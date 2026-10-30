@@ -101,7 +101,9 @@ def process(payload: dict, app: str, cfg: dict | None = None,
     ok, why = filters.check(kind, ctx, cfg, ignore_rate_limit=ignore_limits)
     if not ok:
         result["skipped"] = why
-        store.log(f"skip event={result['event']} kind={kind} reason={why}")
+        # `app=` 加在末尾：这一行不是 `_EVENT_LINE` 解析的对象（`skip` 开头），
+        # 位置只求「一眼能看出是哪个宿主」。R63 的起因就是排查时靠时间戳猜宿主。
+        store.log(f"skip event={result['event']} kind={kind} reason={why} app={app}")
         return result
 
     title, content, fields = render.render_message(payload, kind, cfg, app)
@@ -114,7 +116,7 @@ def process(payload: dict, app: str, cfg: dict | None = None,
     result["dedup_key"] = key
     if store.dedup_hit(key, dedup_window):
         result["skipped"] = "turn 内重复" if turn > 0 else f"{dedup_window}s 内重复内容"
-        store.log(f"skip dedup kind={kind} turn={turn} title={title[:40]}")
+        store.log(f"skip dedup kind={kind} turn={turn} title={title[:40]} app={app}")
         return result
 
     results = channels.send_all(cfg, title, content, fields)
@@ -142,7 +144,8 @@ def process(payload: dict, app: str, cfg: dict | None = None,
 
     store.log(
         f"event={result['event']} kind={kind} sent={result['sent']} "
-        f"remote_ok={remote_ok} elapsed={time.time()-started:.2f}s title={title[:50]}"
+        f"remote_ok={remote_ok} elapsed={time.time()-started:.2f}s "
+        f"app={app} title={title[:50]}"
     )
     return result
 
