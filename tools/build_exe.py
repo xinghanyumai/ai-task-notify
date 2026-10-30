@@ -420,18 +420,27 @@ def _smoke_diag(exe: Path, proc: subprocess.Popen, elapsed: float,
     """
     lines = [f"    等了 {elapsed:.0f}s 还没退出（exe={exe}，cwd={ROOT}）",
              f"    进程还活着：{proc.poll() is None}"]
+    # `/V` 会多一列 **Window Title**。exe 是 GUI 子系统，出错时可能弹一个
+    # 没人能点的对话框（runner 上没有桌面），标题就在这一列里。
     try:
         tl = subprocess.run(
-            ["tasklist", "/FI", f"IMAGENAME eq {exe.name}", "/FO", "CSV", "/NH"],
+            ["tasklist", "/FI", f"IMAGENAME eq {exe.name}", "/V", "/FO", "LIST"],
             capture_output=True, text=True, timeout=30, check=False).stdout.strip()
     except Exception as exc:                # noqa: BLE001
         tl = f"(tasklist 失败：{exc})"
-    lines.append(f"    tasklist：{tl or '(空)'}")
+    lines.append("    tasklist /V：")
+    lines.append("\n".join("      " + ln for ln in (tl or "(空)").splitlines()))
+    # 解压到哪一步了：`_MEI*` 里文件数 + 总字节。本机实测一份**完整**解压是
+    # 104 个文件、约 34MB；数字远小于这个就是**卡在解压**，接近这个就是卡在
+    # 解压之后（引导器起子进程 / 弹对话框等人点）。
     try:
-        mei = sorted(p.name for p in Path(tempfile.gettempdir()).glob("_MEI*"))
+        meis = sorted(p for p in Path(tempfile.gettempdir()).glob("_MEI*") if p.is_dir())
+        for d in meis[:2]:
+            files = [p for p in d.rglob("*") if p.is_file()]
+            total = sum(p.stat().st_size for p in files)
+            lines.append(f"    {d.name}：{len(files)} 个文件，共 {total / 1e6:.1f} MB")
     except Exception as exc:                # noqa: BLE001
-        mei = [f"(列不出来：{exc})"]
-    lines.append(f"    %TEMP% 下 _MEI* 共 {len(mei)} 个：{mei[:5]}")
+        lines.append(f"    (列 _MEI 失败：{exc})")
     lines.append("    --- exe 的 stdout ---")
     lines.append(out_path.read_bytes().decode("utf-8", "replace") or "(空)")
     lines.append("    --- exe 的 stderr ---")
