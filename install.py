@@ -16,18 +16,32 @@
 from __future__ import annotations
 
 import argparse
+import ctypes
 import json
 import os
 import shutil
 import subprocess
 import sys
 import time
+from ctypes import (
+    HRESULT,
+    POINTER,
+    WINFUNCTYPE,
+    Structure,
+    byref,
+    c_ubyte,
+    c_ulong,
+    c_ushort,
+    c_void_p,
+    c_wchar_p,
+)
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
 from wbn import config  # noqa: E402
+from wbn.winapi import APP_USER_MODEL_ID  # noqa: E402
 
 HOOK_PATH = ROOT / "hook.py"
 # 桌面快捷方式指向的唯一入口。**W5 之前这里是 `ui.py`（tkinter 版）**，
@@ -179,6 +193,94 @@ def ensure_icon() -> Path | None:
     return ICON_PATH if ICON_PATH.exists() else None
 
 
+# ------------------------------------------------------------------ AUMID
+#
+# 任务栏按 AppUserModelID 分组，并据此决定按钮上显示哪个图标。`.lnk` 里没有
+# AUMID 时，任务栏用**进程可执行文件**（pythonw.exe）的图标——用户看到一条
+# 快捷方式却顶着 Python 图标。
+#
+# `WScript.Shell` 的 `Shortcut` 对象没有 AppUserModelID 属性，只能走
+# `IPropertyStore`。下面这段是跑通过的实现，**五个细节一个都不能改**：
+#
+# | 细节 | 错了会怎样 |
+# |---|---|
+# | `shell32.dll` 不是 `propsys.dll` | AttributeError: function ... not found |
+# | `VT_LPWSTR = 31` | SetValue 失败，或写进垃圾 |
+# | 必须调 `Commit()` | SetValue 返回成功但**磁盘上什么都没变** |
+# | vtable 索引 SetValue=6 / Commit=7 / Release=2 | 调错函数，轻则失败重则崩 |
+# | 先 `CoInitialize(None)` | 返回 CO_E_NOTINITIALIZED |
+#
+# 结构体布局沿用验证过的那一版，不要"顺手整理"成更规范的样子——
+# PROPVARIANT 的真实布局比这里复杂，能跑通的是这个简化版。
+
+_VT_LPWSTR = 31
+_GPS_READWRITE = 2
+
+
+def _set_lnk_aumid(lnk: Path, app_id: str) -> tuple[bool, str]:
+    """把 AppUserModelID 写进 .lnk 的属性存储。返回 (成功, 说明)。"""
+    if sys.platform != "win32":
+        return False, "非 Windows，跳过"
+
+    class GUID(Structure):
+        _fields_ = [("Data1", c_ulong), ("Data2", c_ushort), ("Data3", c_ushort),
+                    ("Data4", c_ubyte * 8)]
+
+    class PROPERTYKEY(Structure):
+        _fields_ = [("fmtid", GUID), ("pid", c_ulong)]
+
+    class PROPVARIANT(Structure):
+        _fields_ = [("vt", c_ushort), ("r1", c_ushort), ("r2", c_ushort),
+                    ("r3", c_ushort), ("p", c_void_p), ("p2", c_void_p)]
+
+    iid_property_store = GUID(
+        0x886D8EEB, 0x8CF2, 0x4446,
+        (c_ubyte * 8)(0x8D, 0x02, 0xCD, 0xBA, 0x1D, 0xBD, 0xCF, 0x99))
+    pkey_app_user_model_id = PROPERTYKEY(
+        GUID(0x9F4C2855, 0x9F79, 0x4B39,
+             (c_ubyte * 8)(0xA8, 0xD0, 0xE1, 0xD4, 0x2D, 0xE1, 0xD5, 0xF3)), 5)
+
+    try:
+        ole32 = ctypes.windll.ole32
+        shell32 = ctypes.windll.shell32
+        ole32.CoInitialize(None)
+
+        # Win7+ 导出在 shell32.dll（Vista 时代在 propsys.dll，已被转发）
+        get_store = shell32.SHGetPropertyStoreFromParsingName
+        get_store.argtypes = [c_wchar_p, c_void_p, ctypes.c_int,
+                              POINTER(GUID), POINTER(c_void_p)]
+        get_store.restype = HRESULT
+
+        store = c_void_p()
+        hr = get_store(str(lnk), None, _GPS_READWRITE,
+                       byref(iid_property_store), byref(store))
+        if hr < 0:
+            return False, f"SHGetPropertyStoreFromParsingName hr=0x{hr & 0xFFFFFFFF:08X}"
+
+        vtbl = ctypes.cast(store, POINTER(POINTER(c_void_p))).contents
+        set_value = WINFUNCTYPE(HRESULT, c_void_p, POINTER(PROPERTYKEY),
+                                POINTER(PROPVARIANT))(vtbl[6])
+        commit = WINFUNCTYPE(HRESULT, c_void_p)(vtbl[7])
+        release = WINFUNCTYPE(c_ulong, c_void_p)(vtbl[2])
+
+        pv = PROPVARIANT()
+        pv.vt = _VT_LPWSTR
+        pv.p = ctypes.cast(c_wchar_p(app_id), c_void_p)
+        hr = set_value(store, byref(pkey_app_user_model_id), byref(pv))
+        if hr < 0:
+            release(store)
+            return False, f"SetValue hr=0x{hr & 0xFFFFFFFF:08X}"
+        # 不 Commit 的话 SetValue 返回成功、磁盘上什么都没变——最坏的一种失败：
+        # 报成功，但用户看到的还是 Python 图标。
+        hr = commit(store)
+        release(store)
+        if hr < 0:
+            return False, f"Commit hr=0x{hr & 0xFFFFFFFF:08X}"
+        return True, "OK"
+    except Exception as exc:                      # noqa: BLE001
+        return False, f"{type(exc).__name__}: {exc}"
+
+
 # ------------------------------------------------------------------ 快捷方式
 
 
@@ -244,8 +346,16 @@ def make_shortcut(
     """用 WScript.Shell 创建 .lnk。window_style: 1 正常 / 7 最小化。"""
     icon = ensure_icon()
     py = str(python_exe())
-    arg_line = str(script)
+    # **必须加双引号。** 本项目路径含空格（`D:\Code\Work buddy 通知`），
+    # 而 Windows 把 Arguments 拼在 TargetPath 后面时不做任何转义：裸路径会被
+    # 拆成 `D:\Code\Work` + `buddy` + `通知\app.py`，Python 拿第一段当脚本路径
+    # → 文件不存在 → pythonw.exe 静默退出（无控制台、无 stderr）。
+    # 用户看到的就是「双击图标毫无反应」。同一个文件里 hook_command() 一直是
+    # 加引号的，两处不一致就是 W7.0 那个 P0。
+    arg_line = f'"{script}"'
     if args:
+        # args 是 `--silent` 这类不带空格的开关，裸写才对；
+        # 写成 `f'"{script}" {args}'` 之外再包一层引号会把开关吞进路径里。
         arg_line += f" {args}"
 
     ps = (
@@ -261,7 +371,14 @@ def make_shortcut(
         'Write-Output "OK"'
     )
     out = _ps(ps)
-    return out.strip().endswith("OK") and lnk.exists()
+    ok = out.strip().endswith("OK") and lnk.exists()
+    if ok:
+        # 写 AUMID 失败**不算致命**：任务栏图标会退回 Python 图标，但程序能跑。
+        # 「能启动」是根本，「图标好看」是锦上添花——不许因为后者 return False。
+        wrote, why = _set_lnk_aumid(lnk, APP_USER_MODEL_ID)
+        if not wrote:
+            print(f"  ! 快捷方式已建，但任务栏图标关联失败（会显示成 Python 图标）：{why}")
+    return ok
 
 
 def create_shortcuts(with_autostart: bool = True) -> None:
