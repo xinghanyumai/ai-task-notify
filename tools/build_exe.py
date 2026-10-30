@@ -45,6 +45,7 @@ import subprocess
 import sys
 import tempfile
 import time
+import traceback
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
@@ -371,6 +372,18 @@ def check_webui(exe: Path, onedir: bool) -> tuple[int, int]:
     return len(src), len(got)
 
 
+def _die(msg: str) -> None:
+    """失败信息一律打到 **stdout**，然后 exit 1。
+
+    为什么不直接 `sys.exit(msg)`：那样是写 stderr。2026-10-30 实测，CI 上这个
+    step 的 stderr 根本没进日志——`[7/7] 冒烟：--version` 之后只剩一行
+    `##[error]Process completed with exit code 1.`，脚本自己写的那句「✘ 退出码 N」
+    一个字都没有。排查时只能靠猜，所以改成 stdout：那是唯一确定看得见的地方。
+    """
+    print(msg, flush=True)
+    sys.exit(1)
+
+
 def _kill_tree(proc: subprocess.Popen) -> None:
     """连同子孙一起杀掉。
 
@@ -426,12 +439,15 @@ def check_smoke(exe: Path) -> None:
                 code = proc.wait(timeout=120)
             except subprocess.TimeoutExpired:
                 _kill_tree(proc)
-                sys.exit("  ✘ 120s 没退出。多半是 `--version` 落到了开窗口那条路上。")
+                _die("  ✘ 120s 没退出。多半是 `--version` 落到了开窗口那条路上。")
         out = out_path.read_bytes().decode("utf-8", "replace")
         err = err_path.read_bytes().decode("utf-8", "replace")
 
     if code != 0:
-        sys.exit(f"  ✘ 退出码 {code}\n{out}\n{err}")
+        # 退出码 + 两边捕获到的原文一起打出来：exe 是 GUI 子系统，正常路径上
+        # 这两份是空的；一旦有内容，那就是它真正的报错，比退出码有用得多。
+        _die(f"  ✘ 退出码 {code}（exe={exe}，cwd={ROOT}）\n"
+             f"  --- stdout ---\n{out}\n  --- stderr ---\n{err}")
     print("  ✔ 退出码 0")
 
 
@@ -476,4 +492,13 @@ def main() -> int:
 
 
 if __name__ == "__main__":
-    sys.exit(main())
+    # **异常也必须打到 stdout。** CI 上 stderr 不进日志（见 `_die` 的说明），
+    # 不接这一下的话，脚本自己抛异常时日志里同样一个字都没有。
+    try:
+        sys.exit(main())
+    except SystemExit:
+        raise
+    except Exception:                       # noqa: BLE001
+        print("\n脚本自己抛异常了，traceback 如下：", flush=True)
+        traceback.print_exc(file=sys.stdout)
+        sys.exit(1)
