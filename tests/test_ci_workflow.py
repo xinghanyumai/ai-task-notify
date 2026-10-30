@@ -171,7 +171,7 @@ def test_package_uploads_exe_artifact(workflow):
     steps = _steps(workflow, "package")
     upload = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact")]
     assert upload, "没有上传产物，CI 打包就白打了"
-    assert upload[0]["with"]["path"] == "dist/通知.exe"
+    assert upload[0]["with"]["path"] == "通知.exe"
 
 
 # ---------------------------------------------------------------- pytest 配置

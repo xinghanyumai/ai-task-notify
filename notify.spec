@@ -7,7 +7,8 @@
     python tools/build_exe.py            # onefile，默认
     python tools/build_exe.py --onedir   # onedir，只用来对比启动耗时
 
-产物：`dist/通知.exe`。
+产物：项目根目录的 `通知.exe`（`build_exe.py` 用 `--distpath` 指过去；
+单独跑 `pyinstaller notify.spec` 不带 `--distpath` 的话仍会落到 `dist/`）。
 
 --------------------------------------------------------------------------
 三条不能改错的约定

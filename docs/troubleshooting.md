@@ -134,7 +134,7 @@ Get-ChildItem $env:TEMP -Directory -Filter "_MEI*" | Remove-Item -Recurse -Force
 怎么修：
 
 ```bat
-dist\通知.exe install
+通知.exe install
 ```
 
 它会做三件事，全部指向 exe：
@@ -148,6 +148,29 @@ dist\通知.exe install
 不重启的话旧进程还挂着旧的命令，你会以为没生效。
 
 想退回源码形态：`python install.py` 重跑一次即可，两边都是幂等的。
+
+## exe 的配置和日志在哪：就在项目根，`dist\` 已经没有这一份了
+
+W7.5 起产物是**项目根目录的 `通知.exe`**，`dist\` 目录下不再有这一份。所以
+`config.ROOT`（exe 所在目录）= 项目根，运行期产物落在：
+
+| 文件 | 位置 |
+|---|---|
+| `config.json` | 项目根——**源码模式和 exe 模式共用同一份** |
+| `logs\` | 项目根——共用 |
+| `state\` | 项目根——共用 |
+
+以前 exe 在 `dist\` 里，那三样是**各写一份**（`dist\config.json` 和根目录的
+`config.json` 是两个文件，改了 exe 那边的界面，源码那边看不到）。现在只有一份。
+
+所以：
+
+- **别再去找 `dist\` 下的那一份**，那个目录已经不存在了。要在界面上改配置，
+  改的就是根目录这份；用 `python app.py` 打开看到的也是同一份。
+- 反过来，「把整个项目文件夹拷走 = 连配置一起带走」这条仍然成立，而且更彻底：
+  现在连 exe 都在这同一个文件夹里。
+- 交付给别人时**只发 `通知.exe`**。把整个文件夹发出去，等于把 `config.json`
+  里的 appsecret / openid 和全部通知记录一起发出去。
 
 ## 已知限制
 

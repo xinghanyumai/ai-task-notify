@@ -236,10 +236,10 @@ def main() -> int:
     ap.add_argument(
         "--exe",
         nargs="?",
-        const=str(ROOT / "dist" / "通知.exe"),
+        const=str(ROOT / "通知.exe"),
         default=None,
         metavar="PATH",
-        help="量 exe 形态（默认 dist/通知.exe）。不传就是源码形态。",
+        help="量 exe 形态（默认根目录的 通知.exe）。不传就是源码形态。",
     )
     args = ap.parse_args()
 

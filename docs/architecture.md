@@ -249,16 +249,26 @@ Windows 上不支持彩色 emoji，且界面观感与现代桌面应用差距太
 └── assets/              图标与界面截图
 ```
 
+**打包产物 `通知.exe` 就落在上面这棵树的根上**（W7.5 起；之前在 `dist/` 下，
+那个目录已经没有了）。它**故意不写进树里**——这棵树被 `tests/test_doc_layout.py`
+守着「写了就必须真实存在」，而 exe 只在打完包之后才有，干净克隆和 CI 里不存在，
+写进去会让守卫在没打包的机器上假红。`/通知.exe` 已在 `.gitignore` 里，不进仓库。
+
 **路径解析分两个根，不许混**（`wbn/config.py`）：
 
 | 变量 | 源码形态 | exe 形态 | 装什么 |
 |---|---|---|---|
-| `config.ROOT` | 仓库根 | exe 所在目录（不可写时回落 `%LOCALAPPDATA%\WBNotify`） | `config.json`、`state/`、`logs/` |
+| `config.ROOT` | 仓库根 | exe 所在目录（W7.5 起 = 仓库根；不可写时回落 `%LOCALAPPDATA%\WBNotify`） | `config.json`、`state/`、`logs/` |
 | `config.BUNDLE` | 仓库根 | `sys._MEIPASS`（退出即删） | `webui/`、`assets/` |
 
 `config.json`、`state/`、`logs/` 全部基于 `config.ROOT` 推导。所以这个项目刻意
 不做成可安装包：一旦 `pip install` 到 site-packages，`ROOT` 会变成 Python 安装
 目录，配置和日志就写到不该去的地方。解压到哪里就在哪里跑。
+
+**exe 在项目根，所以两种形态的 `ROOT` 是同一个目录**（W7.5）。也就是说
+`config.json` / `logs/` / `state/` 源码模式和 exe 模式**只有一份**：界面里改完，
+`python app.py` 打开看到的就是改后的值，反过来也一样。以前 exe 在 `dist/` 里，
+两种形态各写一份，改了 exe 那边的界面源码这边看不到——那是 W7.5 顺手修掉的坑。
 
 `BUNDLE` 是**只读**的：exe 形态下它在 `%TEMP%\_MEIxxxxxx`，程序一退就被删。
 把配置写进去的症状是「填好的凭证重启就没了」，而且本机（源码形态）永远复现不了

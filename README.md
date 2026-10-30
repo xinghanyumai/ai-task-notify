@@ -86,32 +86,32 @@ WorkBuddy 点窗口关闭按钮只是隐藏到托盘，要右键托盘图标选�
 .venv\Scripts\python.exe tools\build_exe.py
 ```
 
-产物是 `dist\通知.exe`（约 19MB，一个文件）。`build_exe.py` 会在打包前后做七道
-核对：产物形态、五个子命令模块在不在包里、pywebview 的注入脚本在不在、
-`webui/` 文件数源码 == exe、体积上限、`--version` 冒烟。**任何一道红都别绕过**——
-它们挡的是「exe 能启动但一件正事都干不了」那类问题，本机测不出来。
+产物是**项目根目录的 `通知.exe`**（约 19MB，一个文件）。`build_exe.py` 会在打包前后做七道
+核对：产物形态（根目录有 exe、没有 `通知/` 目录、体积 18–26MB）、五个子命令模块在不在包里、
+pywebview 的注入脚本在不在、`webui/` 文件数源码 == exe、`--version` 冒烟。
+**任何一道红都别绕过**——它们挡的是「exe 能启动但一件正事都干不了」那类问题，本机测不出来。
 
-**交付时只发 exe，不要把 `dist\` 整个打包。** 跑过一次之后 `dist\` 里会有
-`config.json` / `logs\` / `state\` —— 那是你本机的运行期产物（配置就该写在 exe
-旁边，这样整个文件夹拷走就带走配置），带出去等于把配置一起发出去。
+**交付只发根目录的 `通知.exe`，别把整个项目文件夹发出去。** 它和源码模式共用同一份
+`config.json` / `logs\` / `state\`——里面是你本机的微信 appid / appsecret / openid
+和全部通知记录，带出去等于把配置一起发出去。
 
 ```bash
-dist\通知.exe                 # 开设置窗口（双击就是这个）
-dist\通知.exe install         # 挂 hooks + 建快捷方式
-dist\通知.exe uninstall       # 撤掉
-dist\通知.exe tray --silent   # 托盘常驻
-dist\通知.exe --version       # 版本号
+通知.exe                 # 开设置窗口（双击就是这个）
+通知.exe install         # 挂 hooks + 建快捷方式
+通知.exe uninstall       # 撤掉
+通知.exe tray --silent   # 托盘常驻
+通知.exe --version       # 版本号
 ```
 
-配置和日志写在 **exe 旁边**（`config.json` / `logs/` / `state/`）。放在
-`C:\Program Files` 这种写不进去的目录时，自动回落到
-`%LOCALAPPDATA%\WBNotify\`——状态页会显示实际用的路径。
+配置和日志写在 **exe 旁边**，也就是项目根目录（`config.json` / `logs/` / `state/`）。
+这和源码模式是**同一份**——在界面里改完，两边看到的一致。放在 `C:\Program Files`
+这种写不进去的目录时，自动回落到 `%LOCALAPPDATA%\WBNotify\`——状态页会显示实际用的路径。
 
 排查问题用调试版（带控制台，能看见 traceback）：
 
 ```bash
-set WBN_CONSOLE=1 && .venv\Scripts\python.exe -m PyInstaller --noconfirm notify.spec
-dist\通知-debug.exe
+set WBN_CONSOLE=1 && .venv\Scripts\python.exe -m PyInstaller --noconfirm --distpath . notify.spec
+通知-debug.exe
 ```
 
 ## 选哪个通道

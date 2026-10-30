@@ -7,13 +7,20 @@
 
 ### 新增
 
-- **单文件 exe**：`dist\通知.exe`，约 19MB，双击即用，目标机器不需要装 Python。
+- **单文件 exe**：项目根目录的 `通知.exe`，约 19MB，双击即用，目标机器不需要装 Python。
   `install` / `uninstall` / `tray` / `hook` / `selftest` 全部走子命令
   （`通知.exe install`、`通知.exe hook --app WorkBuddy` …），源码那套用法不变。
   配置、日志、状态写在 exe 旁边，整个文件夹拷走就带走配置；exe 放在不可写目录
   （如 `C:\Program Files`）时自动落到 `%LOCALAPPDATA%\WBNotify`。
 
 ### 变更
+
+- **产物从 `dist\` 挪到项目根**：打出来直接就是根目录的 `通知.exe`，`dist\` 目录不再产生。
+  连带一个行为变化——`config.json` / `logs\` / `state\` 现在**源码模式和 exe 模式
+  共用同一份**（以前 exe 在 `dist\` 里，是各写一份）。好处是配置只有一份，界面里
+  改完两边一致；代价是 exe 会往仓库根写日志，这是有意的。
+  `tools/build_exe.py` 原来会顺手清 `dist\` 里的 `config.json` / `logs` / `state`，
+  产物挪位置之后那三样就是真实数据了，**这段清理逻辑已删除**，只删 exe 本身。
 
 - **WebView2 沙箱默认打开**：之前为了兼容性默认关闭，现在默认开启，只在看门狗
   判定「窗口没画出来」时降级一次重试。`WBN_WEBVIEW_SANDBOX=1` 强制打开并禁止降级，

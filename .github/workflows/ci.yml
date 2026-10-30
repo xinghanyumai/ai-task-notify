@@ -110,15 +110,15 @@ jobs:
       # `console=False` 的 exe 没有 stdout，所以看的是退出码，不是输出。
       - name: 冒烟（--version）
         run: |
-          if (-not (Test-Path "dist\通知.exe")) { throw "没产出 dist\通知.exe" }
-          & "dist\通知.exe" --version
+          if (-not (Test-Path "通知.exe")) { throw "没产出 通知.exe（应在仓库根）" }
+          & ".\通知.exe" --version
           if ($LASTEXITCODE -ne 0) { throw "冒烟失败：退出码 $LASTEXITCODE" }
         shell: pwsh
 
       - uses: actions/upload-artifact@v4
         with:
           name: notify-exe
-          path: dist/通知.exe
+          path: 通知.exe
           # 打包是唯一不可逆的交付物，别让它 7 天后自动消失
           retention-days: 30
           if-no-files-found: error

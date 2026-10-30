@@ -5,7 +5,7 @@
     python tools/build_exe.py --onedir   # onedir（只用于对比启动耗时）
     python tools/build_exe.py --no-verify # 只打包，跳过打包后的核对
 
-产物：`dist/通知.exe`。
+产物：项目根目录的 `通知.exe`（W7.5 起；之前在 `dist/`）。
 
 --------------------------------------------------------------------------
 为什么需要这个脚本，而不是直接 `pyinstaller notify.spec`
@@ -27,7 +27,7 @@ exe 里必须也是这 N 个，逐个点名对）。第 1、3 件只能自动验
 脚本会自己做的检查
 --------------------------------------------------------------------------
     打包前  preflight()      spec / manifest / version_info / 资源目录都在
-    打包后  check_layout()   dist/ 里只有 通知.exe（onefile 的判据）
+    打包后  check_layout()   根目录有 通知.exe、没有 通知/、体积在 18–26MB
             check_webui()    源码 webui 文件数 == exe 内文件数，且逐个点名对
             check_smoke()    `通知.exe --version` 退出码为 0
             report()         体积、耗时
@@ -48,14 +48,24 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 SPEC = ROOT / "notify.spec"
-DIST = ROOT / "dist"
 BUILD = ROOT / "build"
 APP_NAME = "通知"
-EXE = DIST / f"{APP_NAME}.exe"
+# 产物就落在项目根（W7.5 从 `dist/` 挪过来的）。
+#
+# 刻意**不设 `DIST` 变量**：以前 `DIST = ROOT / "dist"` 是个间接层，改产物位置时
+# 只要漏改一处（尤其是 `build()` 没传 `--distpath`），产物就还在 `dist/` 里，
+# 而所有常量看上去都改了。现在凡是要写路径的地方直接用 `ROOT`。
+EXE = ROOT / f"{APP_NAME}.exe"
+ONEDIR_DIR = ROOT / APP_NAME
 
 # 体积上限（任务书 §4 第 2 条）。超了不是「警告一下」——它意味着
 # 有东西没排干净（最典型的是 numpy / cv2 被某个 hook 又拖回来）。
 SIZE_LIMIT_MB = 40
+
+# 体积**预期**区间（W7.5 §2.1 第 3 条）。挪位置前实测 20,162,588 B ≈ 19.2MB。
+# 偏小 = 打出了空壳（`hiddenimports` / `datas` 没进包，第一版就踩过：12.1MB，
+# `--version` 退出码 0，全绿，而五个子命令一个都没进包）。
+EXE_SIZE_RANGE_MB = (18.0, 26.0)
 
 # 除 webui/ 之外必须存在的**数据文件**（相对 exe 根）。
 #
@@ -130,21 +140,31 @@ def preflight(onedir: bool) -> None:
     print(f"  ✔ PyInstaller {PyInstaller.__version__}")
     print(f"  ✔ 形态：{'onedir' if onedir else 'onefile'}")
 
-    # 上一轮的产物必须清掉。留着的话，这一轮失败时 `dist/通知.exe`
+    # 上一轮的产物必须清掉。留着的话，这一轮失败时 `通知.exe`
     # 还是旧的，人会误以为打包成功了。
-    for junk in ([DIST / APP_NAME] if onedir else [EXE]):
-        if junk.is_dir():
-            shutil.rmtree(junk, ignore_errors=True)
-        elif junk.exists():
-            junk.unlink()
-    # 上一轮**跑过** exe 的话，`dist/` 里还会有 config.json / state / logs
-    # （那是正确行为：配置和日志就该写在 exe 旁边）。它们不属于构建产物，
-    # 清掉，否则下面「dist 里只有一个文件」的判据会被自己上一次的测试结果搞红。
-    for junk in (DIST / "logs", DIST / "state", DIST / "config.json"):
-        if junk.is_dir():
-            shutil.rmtree(junk, ignore_errors=True)
-        elif junk.exists():
-            junk.unlink()
+    #
+    # **只删 exe 本身（onedir 形态删 `通知/` 目录），一个字节都不许多删。**
+    # W7.5 之前产物在 `dist/`，这里还顺手清过 `config.json` / `logs` / `state`
+    # ——那是对的，`dist/` 里那三样只是「跑 exe 时写下的副本」。
+    # 现在产物就在项目根，`config.json` / `logs/` / `state/` 是**源码模式和 exe
+    # 模式共用的真实数据**（里面是微信 appid / secret / openid、全部通知记录、
+    # 所有会话的 turn_index）。再清那三样就不是清理，是删库。
+    for junk in ([ONEDIR_DIR] if onedir else [EXE]):
+        try:
+            if junk.is_dir():
+                shutil.rmtree(junk)
+            elif junk.exists():
+                junk.unlink()
+        except OSError as e:
+            # Windows 上 exe 正在跑时删不掉（WinError 32）；有的环境删除会走
+            # 回收站机制，抛的是别的 OSError。两种都收在这里，给一句人话——
+            # 直接把 PyInstaller 那串 `[WinError 32]` 或 traceback 甩给用户，
+            # 他只会以为脚本坏了。
+            sys.exit(
+                f"  ✘ 删不掉旧的 {junk.name}，多半是它正在运行——先关掉再打包"
+                "（托盘右键退出，或 taskkill /IM 通知.exe /F）\n"
+                f"    底层错误：{e}"
+            )
 
 
 # ------------------------------------------------------------------ 打包
@@ -161,6 +181,10 @@ def build(onedir: bool, clean: bool) -> float:
     cmd = [sys.executable, "-m", "PyInstaller", "--noconfirm"]
     if clean:
         cmd.append("--clean")
+    # `--distpath` 必须显式传。`notify.spec` 里没写 distpath，PyInstaller 默认
+    # 输出到 `cwd/dist`——只改常量（`EXE` 指到根目录）产物不会跟着挪，
+    # 结果就是「检查报找不到 exe，而 dist/ 里躺着一个新的」。
+    cmd += ["--distpath", str(ROOT)]
     cmd.append(str(SPEC))
 
     t0 = time.perf_counter()
@@ -176,29 +200,39 @@ def build(onedir: bool, clean: bool) -> float:
 
 
 def check_layout(onedir: bool) -> Path:
-    """onefile 的判据是「dist/ 里只有一个文件」。"""
-    print("\n[3/7] 产物形态")
-    if not DIST.exists():
-        sys.exit("  ✘ dist/ 不存在——PyInstaller 没产出东西，去看 build/ 的日志")
+    """产物形态：onefile 就是根目录一个 `通知.exe`，且**不许**出现 `通知/` 目录。
 
-    entries = sorted(p.name for p in DIST.iterdir())
-    # 运行过 exe 之后，`dist/` 里会多出 config.json / state / logs——那是
-    # 正确行为（配置和日志写在 exe 旁边），不是构建产物。preflight 会清，
-    # 这里再容一次，免得「跑完测试再打包」被判成失败。
-    runtime = {"config.json", "state", "logs"}
-    stale = [e for e in entries if e not in runtime]
+    判据不能是「目录里只有一个文件」——产物在项目根，根目录有十几个源码文件
+    （`app.py` / `notify.spec` / `requirements.txt` …），数文件数会把一次正常
+    构建直接判成失败。改成三条正面判据：exe 在、`通知/` 不在、体积在预期区间。
+    """
+    print("\n[3/7] 产物形态")
     if onedir:
-        target = DIST / APP_NAME
+        target = ONEDIR_DIR
         if not (target / f"{APP_NAME}.exe").exists():
-            sys.exit(f"  ✘ 没找到 {target / f'{APP_NAME}.exe'}；dist/ 里有 {entries}")
+            sys.exit(f"  ✘ 没找到 {target / f'{APP_NAME}.exe'}——去看 build/ 的日志")
         print(f"  ✔ onedir：{APP_NAME}/（{len(list(target.rglob('*')))} 个条目）")
         return target / f"{APP_NAME}.exe"
 
-    if stale != [f"{APP_NAME}.exe"]:
-        sys.exit(f"  ✘ dist/ 里应该只有 {APP_NAME}.exe，实际有：{stale}")
-    if entries != stale:
-        print(f"  · 另有运行期产物（正常）：{sorted(set(entries) - set(stale))}")
-    print(f"  ✔ onefile：dist/ 里只有 {APP_NAME}.exe")
+    if not EXE.exists():
+        sys.exit(
+            f"  ✘ 根目录没有 {APP_NAME}.exe——PyInstaller 没产出东西，去看 build/ 的日志"
+        )
+    if ONEDIR_DIR.exists():
+        sys.exit(
+            f"  ✘ 根目录出现了 {APP_NAME}/ 目录——那是 onedir 形态，onefile 不该有。"
+            f" 先删掉 {ONEDIR_DIR} 再打包。"
+        )
+
+    mb = _mb(EXE)
+    lo, hi = EXE_SIZE_RANGE_MB
+    if not lo <= mb <= hi:
+        sys.exit(
+            f"  ✘ {APP_NAME}.exe 是 {mb:.1f}MB，不在 {lo:.0f}–{hi:.0f}MB 区间。\n"
+            "  偏小多半是打出了空壳（hiddenimports / datas 没进包）；"
+            " 偏大常见是某个 hook 把 numpy / cv2 又拖回来了。"
+        )
+    print(f"  ✔ onefile：根目录的 {APP_NAME}.exe（{mb:.1f}MB，且没有 {APP_NAME}/ 目录）")
     return EXE
 
 
@@ -230,7 +264,7 @@ def _pyz_modules(exe: Path, onedir: bool) -> set[str]:
 
     if onedir:
         # onedir 把 PYZ 单独放在 _internal 下，不用从 exe 里挖。
-        cand = sorted((DIST / APP_NAME / "_internal").glob("PYZ*.pyz"))
+        cand = sorted((ONEDIR_DIR / "_internal").glob("PYZ*.pyz"))
         if not cand:
             return set()
         return set(ZlibArchiveReader(str(cand[0])).toc.keys())
@@ -277,7 +311,7 @@ def check_datas(exe: Path, onedir: bool) -> None:
     """REQUIRED_DATAS 必须都在。**「界面能画出来但点了没反应」就靠这条挡。**"""
     print("\n[5/7] 运行期数据文件")
     if onedir:
-        base = DIST / APP_NAME / "_internal"
+        base = ONEDIR_DIR / "_internal"
         got = {p.relative_to(base).as_posix() for p in base.rglob("*") if p.is_file()}
     else:
         got = _names_in_exe(exe)
@@ -306,11 +340,11 @@ def check_webui(exe: Path, onedir: bool) -> tuple[int, int]:
     )
 
     if onedir:
-        inner_dir = DIST / APP_NAME / "_internal" / "webui"
+        inner_dir = ONEDIR_DIR / "_internal" / "webui"
         if not inner_dir.exists():
             sys.exit(f"  ✘ onedir 里没有 {inner_dir}")
         got = {
-            p.relative_to(DIST / APP_NAME / "_internal").as_posix()
+            p.relative_to(ONEDIR_DIR / "_internal").as_posix()
             for p in inner_dir.rglob("*")
             if p.is_file()
         }
