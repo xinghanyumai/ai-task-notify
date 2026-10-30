@@ -41,4 +41,5 @@ addopts = "-m 'not network' --tb=short -ra"
 markers = [
     "gui: 需要真实窗口 / 图形栈的用例，非 Windows 或无声环境自动 skip",
     "network: 会发起真实网络请求（含发通知），默认跳过，-m network 显式跑",
+    "slow: 秒级用例（起真实进程 / 起真实窗口），CI 里照跑，本地嫌慢可 -m 'not slow'",
 ]
