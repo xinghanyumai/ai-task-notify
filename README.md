@@ -154,9 +154,8 @@ dist\通知-debug.exe
 HTTP 200、4 个 IPv4 TLS 握手全 OK），但**照它的 README 逐字配置会失败**——
 它把路径硬编码成 `~/.workbuddy/...`，而 WorkBuddy 当前实际用的是
 `~/.workbuddy-ai/...`（`~/.workbuddy` 是 legacy 目录，本项目 `install.py` 里也是
-这么标的）。后果是：MCP 注册进一个不会被读的文件、凭证发现失败、`--diag` 直接
-建议你跑 `--login`，而 `--login` 会占掉微信侧唯一名额、**顶掉 WorkBuddy 原生
-微信连接**。
+这么标的）。后果是：MCP 注册进一个不会被读的文件、凭证**自动发现**失败、
+`--diag` 直接建议你跑 `--login`。
 
 但配置不用改它的源码，只要把两个值填进**它自己会读的那个** `config.json`：
 `bot_token` 和 `user_id`（都在 `~/.workbuddy-ai/` 下面，只读不写）。

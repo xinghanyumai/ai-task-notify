@@ -120,6 +120,35 @@ Get-ChildItem $env:TEMP -Directory -Filter "_MEI*" | Remove-Item -Recurse -Force
 去改「解压到固定目录」——那样 exe 旁边会多出一个用户看不懂、也不敢删的目录，
 比偶尔攒几个临时目录更糟（R54 / R59）。
 
+## 我打了 exe，但双击还是源码版
+
+**exe 不会自己接管。** 快捷方式和宿主的 hooks 是上一次 `install` 写下的，
+那时指向的还是 `.venv\Scripts\pythonw.exe`。打一个新 exe 出来，它们不会跟着变。
+
+怎么确认：
+
+- 右键桌面图标 →「属性」→ 看「目标」。是 `pythonw.exe` 就说明还在跑源码。
+- 或者看 `~/.workbuddy-ai/settings.json` 的 `hooks` 字段，`command` 里
+  出现 `pythonw.exe` 而不是 `通知.exe`。
+
+怎么修：
+
+```bat
+dist\通知.exe install
+```
+
+它会做三件事，全部指向 exe：
+
+1. 重写九条 hooks（`"{exe}" hook --app WorkBuddy`），旧的 `settings.json`
+   自动备份成 `settings.json.bak-时间戳`
+2. 重建桌面图标和开机自启快捷方式（自启参数是 `tray --silent`）
+3. 换图标源——指向 exe 之后任务栏和快捷方式显示的才是品牌铃铛，不再是 Python 图标
+
+改完**重启宿主**（WorkBuddy / CodeBuddy）才会重新读 hooks。
+不重启的话旧进程还挂着旧的命令，你会以为没生效。
+
+想退回源码形态：`python install.py` 重跑一次即可，两边都是幂等的。
+
 ## 已知限制
 
 1. 微信测试号是「开发测试」定位，微信官方不承诺永久不变。若某天接口调整，

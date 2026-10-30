@@ -12,11 +12,38 @@ from datetime import datetime
 
 from . import channels, config, events, filters, render, store
 
+# 终态事件：一个 turn 的「结果」只值一条通知。
+# 非终态（need_input / tool_failed / session_*）不在此列——一个 turn 里真的
+# 可能问两次、真的可能连续失败三次，按 turn 去重会把真通知吃掉。
+TERMINAL_KINDS = frozenset({"task_done", "task_failed"})
 
-def _dedup_key(kind: str, session: str, title: str, content: str) -> str:
+
+def _dedup_key(kind: str, session: str, title: str, content: str,
+               turn: int = 0) -> str:
+    """去重键。
+
+    **终态事件按「事件身份」去重，不按「渲染结果」。**
+
+    2026-10-30 线上现象：一个任务弹两三条一模一样的通知。日志里 14:54:30 /
+    :33 / :36 三条 `TaskCompleted` 全部 `sent=True`。根因是旧键
+    `kind|session|title|content` 把渲染结果当成了事件身份——而默认模板带
+    `{duration}`，宿主对这个 turn 连发三次时耗时是 12s / 15s / 18s，
+    **三条 content 三个样 → 三个键 → 三条全发**。去重本身没坏（同一个 payload
+    连发三次照样只发一条），是键选错了字段。
+
+    所以终态事件的键是 `kind|session|turn:<turn_index>`，content 不参与。
+    `kind` 必须留着：同一个 turn 里「完成」和「失败」是两条不同的事。
+    `session` 必须留着：不同会话的 turn 1 不是同一个 turn。
+
+    turn <= 0（旧会话文件没有 turn_index、或事件早于 UserPromptSubmit）时
+    退回 content 键——**宁可多发一条，不许丢**。
+    """
+    if kind in TERMINAL_KINDS and turn > 0:
+        raw = f"{kind}|{session}|turn:{turn}"
+    else:
+        raw = f"{kind}|{session}|{title}|{content}"
     # errors="replace" 兜底：万一上游漏了清洗，也不能因为一个脏字符丢掉整条通知
-    raw = f"{kind}|{session}|{title}|{content}".encode("utf-8", "replace")
-    return hashlib.sha1(raw).hexdigest()[:16]
+    return hashlib.sha1(raw.encode("utf-8", "replace")).hexdigest()[:16]
 
 
 def process(payload: dict, app: str, cfg: dict | None = None,
@@ -36,6 +63,7 @@ def process(payload: dict, app: str, cfg: dict | None = None,
         "skipped": None,
         "channels": [],
         "title": "",
+        "dedup_key": "",
     }
 
     kind = events.classify(payload)
@@ -80,9 +108,13 @@ def process(payload: dict, app: str, cfg: dict | None = None,
     result["title"] = title
 
     dedup_window = int(cfg.get("filters", {}).get("dedup_seconds") or 0)
-    if store.dedup_hit(_dedup_key(kind, sid, title, content), dedup_window):
-        result["skipped"] = f"{dedup_window}s 内重复内容"
-        store.log(f"skip dedup kind={kind} title={title[:40]}")
+    # 只有终态事件才去查 turn_index：非终态用 content 键，查了也不用。
+    turn = store.turn_index(sid) if kind in TERMINAL_KINDS else 0
+    key = _dedup_key(kind, sid, title, content, turn)
+    result["dedup_key"] = key
+    if store.dedup_hit(key, dedup_window):
+        result["skipped"] = "turn 内重复" if turn > 0 else f"{dedup_window}s 内重复内容"
+        store.log(f"skip dedup kind={kind} turn={turn} title={title[:40]}")
         return result
 
     results = channels.send_all(cfg, title, content, fields)
