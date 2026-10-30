@@ -278,10 +278,30 @@ W6.3 交的是一张 16 行的单表，把**还没干**的和**已经决定不�
 
 | 编号 | 问题 | 事实与依据 | 影响 | 处置 |
 |---|---|---|---|---|
-| **R54** | **hook 的单次成本从 ~70ms 涨到 ~1.5–2.2s** | 宿主每触发一个事件，都要启动一次 `通知.exe hook`，而 onefile 每次启动都要把 19MB 解到 `%TEMP%`。实测 1571–2259ms（e2e 跑三次）。dispatch 子进程再解压一次，**一条通知总计约 3–4.5s**。宿主的 hook 超时是 10–15s（`install.py` 的 `HOOK_EVENTS`），所以不会超时，但 agent 的每次事件都被拖了 2 秒 | 中：功能不受影响，体感明显 | **P3 暂不改**。三条路都不便宜：① onedir（启动 ~150ms，但不是「一个文件」了，和用户明确要求冲突）② 把 hook 拆成独立小 exe（同样破「单文件」）③ `runtime_tmpdir` 指到固定目录复用解压结果（exe 旁边会多出一个 `_MEIxxxx`，用户删不掉也看不懂）。**真到了忍不了那天，先问用户选哪条** |
+| **R54** | **hook 的单次成本从 ~70ms 涨到 ~1.5–2.2s** | 宿主每触发一个事件，都要启动一次 `通知.exe hook`，而 onefile 每次启动都要把 19MB 解到 `%TEMP%`。实测 1571–2259ms（e2e 跑三次）。dispatch 子进程再解压一次，**一条通知总计约 3–4.5s、写盘 66MB**。宿主的 hook 超时是 10–15s（`install.py` 的 `HOOK_EVENTS`），余量只剩 3–5 倍 | **P2**（W7.2 由 P3 上调）：功能不受影响，体感明显；但「余量 3–5 倍」不是宽裕，「每条通知写 66MB」会和 R59 叠在一起 | **暂不改代码**。三条路都不便宜：① onedir（启动 ~150ms，但不是「一个文件」了，和用户明确要求冲突）② 把 hook 拆成独立小 exe（同样破「单文件」）③ `runtime_tmpdir` 指到固定目录复用解压结果（exe 旁边会多出一个 `_MEIxxxx`，用户删不掉也看不懂）。**触发条件：下列任一成立就必须改** —— ① 宿主把 hook 超时缩到 5s 以内；② 用户报「通知来得慢」或 `%TEMP%` 撑爆（见 R59）；③ 事件密度上到每分钟 >10 条。**改之前必须先问用户选哪条路**，三条都动了用户明确要求过的「单文件」 |
 | **R55** | **干净机器验证没做** | 任务书 §4 第 4、5 条要求「另一台没装 Python 的机器」。本机装了 Python + 所有依赖，`import` 走源码，**excludes 排错和 hiddenimports 漏配在本机测不出来** | 高：这是唯一能证明 exe 真能用的判据 | **P1 必做**，交给用户在有第二台机器时过一遍。本机已做到的最大程度：`check_modules` 核 PYZ 里 10 个关键模块、`check_datas` 核 5 个运行期文件、`check_webui` 核 11 个前端文件、e2e 打通 hook→dispatch→webhook、CDP 驱动五页全渲染。**这些覆盖不了「目标机器缺 VC++ 运行库 / 缺 WebView2 运行时」** |
 | **R56** | 托盘「打开设置」在 exe 形态下未实测 | 代码改了（`tray.py` 走 `sys.executable` + `child_env()`），但没跑过：托盘要真的常驻、点菜单、看窗口出不出来。`child_env()` 的契约有测试，**但「点了确实开出窗口」没有** | 低：托盘是可选组件，坏了不影响通知 | **P3**：下次动托盘时顺手验。验法：`通知.exe tray --silent` → 右键 → 打开设置 → 窗口出现 |
 | **R57** | exe 里的 `selftest --status` 在 GBK 控制台会崩 | 调试版（`WBN_CONSOLE=1`）实测：`UnicodeEncodeError: 'gbk' codec can't encode '✔'`。交付版 `console=False` 没有 stdout，`print` 是空操作，所以**用户看不到这个问题**；但调试版一跑就崩，排查时会以为程序坏了 | 低：只影响调试版 | **P3**：调试版入口把 `sys.stdout.reconfigure(encoding="utf-8", errors="replace")`。不许改 `print` 里的符号（那是给正常控制台看的） |
+| **R59** | **`%TEMP%` 里会攒 `_MEIxxxx`，每个约 32MB** | 三组实测（2026-10-30 14:49–14:50，`tmp/w7/mei.py`）：**A** 正常退出 `--version`×3 → before=7 / after=7（+0）；**B** `hook` 子命令 → before=7 / after=7（+0）；**C** 启动 8s 后 `taskkill /T /F` → before=7 / after=8（**+1**）。结论只有一句：**正常路径自己删得干净，被强杀才留。** W7 测试时段那 5 个（14:16–14:17）**按 A/B 的结果反推只能是被强杀留下的**（那几次都是 `taskkill` 结束的）——这是推断，不是逐次记录 | 低：用户机器上不会自己攒；崩溃/强杀留 32MB/次 | **P3 登记，不改代码。** `docs/troubleshooting.md` 加一节「`%TEMP%` 里一堆 `_MEIxxxx` 是什么、能不能删、怎么删」。**不许改 `runtime_tmpdir` 去"根治"**（理由见 R54 ③） |
+| **R60** | **「微信单通道」这件事本项目是重复建设** | 核到四个现成方案（逐条对比写在 `README.md` 的「已经有官方通知 / MCP 推送了，还需要这个吗？」）：WorkBuddy 自带桌面通知、`wechat-clawbot-push`（PyPI，MIT，MCP 连接器，复用已绑定的 ClawBot、不占名额）、企业微信群机器人、`wexin-claw-hook`（Tauri 单 exe，本地 9720 webhook）。`wechat-clawbot-push` 本机实测：链路通（`--diag` 第 5 步 HTTP 200、4 个 IPv4 TLS 握手全 OK），但**照 README 逐字配置会失败**——路径硬编码 `~/.workbuddy/...`，实际是 `~/.workbuddy-ai/...`（前者是 legacy 目录，`install.py` 里也这么标）；`--login` 会占掉微信侧唯一名额、**顶掉 WorkBuddy 原生微信连接**；`ret=-2` 说明光有 `bot_token` 不够，得先让用户给 bot 发一条消息拿 `context_token` | 低：不影响本项目功能，影响的是「用户该不该装」 | **P3：不删功能，只把重叠如实写在 README 里**（W7.2 §2.5）。**唯一站得住的硬差异**：本项目只读宿主**公开的 hooks 协议**（`~/.workbuddy-ai/settings.json` 的 `hooks` 字段）；第三方 MCP 方案要读 `~/.workbuddy-ai/claw-state/` 下的内部游标文件，那不是公开 API，宿主改结构就断。**微信测试号通道保留**（用户 2026-10-30 拍板）：它不依赖宿主私有目录，是宿主改内部结构后唯一还能活的微信出口 |
+
+#### R55 干净机器验证清单（给用户，本机做不了）
+
+任务书 §2 原表，有第二台机器时照做。**这一条不许省**——本机装了 Python + 全部依赖，
+`import` 走源码，`excludes` 排错和 `hiddenimports` 漏配在本机根本测不出来。
+
+| # | 场景 | 期望 | 失败说明什么 |
+|---|---|---|---|
+| 1 | 双击 exe | 窗口 3.5s 内出现 | 自解压或 bootloader 在目标机被杀软拦 |
+| 2 | 五页都能进 | 页面有内容，不是「正在读取…」 | `webview/js` 没进包（`check_datas` 已挡，但目标机可能另有原因） |
+| 3 | 无 Python 环境跑 `通知.exe hook --app x` | 退出码 0，webhook 收到 | `hiddenimports` 漏（`check_modules` 已挡） |
+| 4 | 缺 VC++ 运行库 | 有明确报错，不是静默退出 | 需要 README 写清要装什么 |
+| 5 | 缺 WebView2 Runtime | 落到 `fallback_no_webview`，不是白屏 | 需要 README 写清怎么装 |
+| 6 | 中文路径 + 非管理员账户 | `%LOCALAPPDATA%` 回落生效 | 本机已验（见 `functional-baseline.md`），但目标机可能因 ACL/重定向不同而不同 |
+| 7 | 设 `WBN_WEBVIEW_SANDBOX=1` 启动 | 画面正常 | 不正常 → 沙箱故障不是本机特有的，降级策略要重新设计 |
+
+第 7 条的限定：沙箱结论目前**只在本机成立**（本机 5 轮中位数开 2549ms / 关 2674ms，
+两种形态都能画出来）。「别的机器也能画出来」没验，所以 `docs/` 里凡写沙箱结论的地方都带「本机」。
 
 ---
 
@@ -341,7 +361,7 @@ B5 纯文本渲染记 R36、C6 无数据依赖），**6 条核过无问题**（A
 | D7 | 作废提示词删不删 | ✅ **已裁定：归档不删**，`git mv` 到 `docs/archive/prompts-tkinter/` |
 | **D8** | ~~pip 安装包~~ → **已改判：做单 exe** | ✅ 单 exe，绿色便携 |
 | D9 | 通知链路回归 | 每阶段 `selftest.py` + 真发一条 |
-| **D10** | onefile 还是 onedir？ | ✅ **已拍板：onefile**（2026-10-30 实测）。exe 双击口径中位数 2549ms（5 轮），解压 ≈ 970ms；体积 19.2MB；`dist/` 里只有一个文件。代价记在 R54 |
+| **D10** | onefile 还是 onedir？ | ✅ **已拍板：onefile**（2026-10-30 实测）。exe 双击口径中位数 2549ms（5 轮），解压 ≈ 970ms；体积 19.2MB（20,162,588 B）；`dist/` 里**除运行期产物（`config.json` / `logs/` / `state/`）外**只有 exe。代价记在 R54 |
 | **D11** | 数据放 exe 旁还是 `%LOCALAPPDATA%`？ | 优先 exe 旁，不可写回落 |
 | **D12** | 要不要代码签名？ | 不签，文档说明 |
 
