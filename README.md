@@ -339,7 +339,7 @@ HTTP 200、4 个 IPv4 TLS 握手全 OK），但**照它的 README 逐字配置�
 | [docs/security.md](docs/security.md) | 凭证处理、请求边界、不可信输入、截图脱敏 |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 症状对照表、日志位置、编码事故完整复盘 |
 | [docs/channels/](docs/channels/) | 10 个通道各一页，申请步骤与坑 |
-| [docs/adr/](docs/adr/) | 6 条决策记录，写的是为什么这样选 |
+| [docs/adr/](docs/adr/) | 7 条决策记录，写的是为什么这样选 |
 | [docs/reviews/](docs/reviews/) | 2026-10-26 的开源就绪审查报告（01–04、07） |
 | [SECURITY.md](SECURITY.md) | 怎么报安全问题、凭证泄露后的处置 |
 | [CHANGELOG.md](CHANGELOG.md) | 变更历史 |
