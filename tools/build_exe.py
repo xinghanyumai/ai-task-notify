@@ -43,6 +43,7 @@ import os
 import shutil
 import subprocess
 import sys
+import tempfile
 import time
 from pathlib import Path
 
@@ -258,8 +259,6 @@ def _pyz_modules(exe: Path, onedir: bool) -> set[str]:
     第一版核对只看了外层，于是「webui 11==11、体积 12MB、冒烟通过」，
     而五个子命令模块一个都没进包。
     """
-    import tempfile
-
     from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
 
     if onedir:
@@ -372,28 +371,67 @@ def check_webui(exe: Path, onedir: bool) -> tuple[int, int]:
     return len(src), len(got)
 
 
+def _kill_tree(proc: subprocess.Popen) -> None:
+    """连同子孙一起杀掉。
+
+    onefile 的 exe 是「引导器父进程 + 真正跑代码的子进程」两层，只 kill 父进程
+    会留一个孤儿继续占着东西。
+    """
+    try:
+        subprocess.run(["taskkill", "/F", "/T", "/PID", str(proc.pid)],
+                       capture_output=True, timeout=30, check=False)
+    except Exception:                       # noqa: BLE001
+        pass
+    try:
+        proc.kill()
+    except Exception:                       # noqa: BLE001
+        pass
+
+
 def check_smoke(exe: Path) -> None:
     """`通知.exe --version` 能不能起来。
 
     **判据是退出码，不是 stdout**：spec 里 `console=False`，exe 没有控制台，
     `print()` 的输出直接丢弃，重定向也读不到。所以这里只看它有没有
     正常退出——它至少证明了「Python 运行时解压成功 + 入口模块 import 成功」。
+
+    ## 为什么**不能**用 `subprocess.run(capture_output=True, timeout=120)`
+
+    2026-10-30 实测：runner 上这一步卡满 `timeout-minutes: 20` 被取消，
+    而 PyInstaller 早在第 22 秒就 `Build complete` 了——**超时参数失效了**。
+
+    原因不在 exe，在管道：onefile 的 exe 自己就会派生子进程（引导器 + 应用），
+    子进程**继承了 capture_output 建的那两根管道**。`run()` 超时后只 kill 直接
+    子进程，然后要再 `communicate()` 一次把管道读干净；那个继承了管道的孙进程
+    只要还没退出，这一步就**永远等下去**，`TimeoutExpired` 也就永远轮不到抛。
+
+    本机复现（同一个机制，把孙进程换成睡 12 秒的 python）：
+    `run(..., timeout=3)` 实际耗时 **12.7 秒**，超时形同虚设。孙进程不退出
+    就是无限等——runner 上正好是这种情况。
+
+    所以改成**重定向到临时文件**：没有管道，就没有「等管道关闭」这一步，
+    `wait(timeout=120)` 才是真正的墙钟上限。
     """
     print("\n[7/7] 冒烟：--version")
-    try:
-        proc = subprocess.run(
-            [str(exe), "--version"],
-            cwd=str(ROOT),
-            capture_output=True,
-            timeout=120,
-            check=False,
-        )
-    except subprocess.TimeoutExpired:
-        sys.exit("  ✘ 120s 没退出。多半是 `--version` 落到了开窗口那条路上。")
-    if proc.returncode != 0:
-        out = (proc.stdout or b"").decode("utf-8", "replace")
-        err = (proc.stderr or b"").decode("utf-8", "replace")
-        sys.exit(f"  ✘ 退出码 {proc.returncode}\n{out}\n{err}")
+    with tempfile.TemporaryDirectory() as td:
+        out_path, err_path = Path(td) / "out.txt", Path(td) / "err.txt"
+        with out_path.open("wb") as out_f, err_path.open("wb") as err_f:
+            proc = subprocess.Popen(
+                [str(exe), "--version"],
+                cwd=str(ROOT),
+                stdout=out_f,
+                stderr=err_f,
+            )
+            try:
+                code = proc.wait(timeout=120)
+            except subprocess.TimeoutExpired:
+                _kill_tree(proc)
+                sys.exit("  ✘ 120s 没退出。多半是 `--version` 落到了开窗口那条路上。")
+        out = out_path.read_bytes().decode("utf-8", "replace")
+        err = err_path.read_bytes().decode("utf-8", "replace")
+
+    if code != 0:
+        sys.exit(f"  ✘ 退出码 {code}\n{out}\n{err}")
     print("  ✔ 退出码 0")
 
 
