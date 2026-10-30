@@ -1,12 +1,21 @@
 # AI 任务通知
 
+[![CI](https://github.com/xinghanyumai/ai-task-notify/actions/workflows/ci.yml/badge.svg)](https://github.com/xinghanyumai/ai-task-notify/actions/workflows/ci.yml)
+![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D4)
+![python](https://img.shields.io/badge/python-3.10%2B-3776AB)
+![core deps](https://img.shields.io/badge/core%20deps-stdlib%20only-brightgreen)
+![channels](https://img.shields.io/badge/channels-10%20%C2%B7%203%20verified-orange)
+![license](https://img.shields.io/badge/license-MIT-green)
+
+任务一停就推到手机，**每条通知都能在本地查到发没发出去**。
+
 WorkBuddy / CodeBuddy 跑完一轮、失败、或者停下来等你确认的时候，把结果推到手机。
 
 Windows 10 / 11 · 个人自用 · 零服务器 · 零订阅费 · 零实名
 
 在聊天窗口里等 agent 干活的体验不太好：它跑完了你不知道，它问你要权限你也没看见。
 这个工具挂在宿主的 hooks 上，任务一停就把结果发到微信、企业微信、Bark 或 ntfy。
-通知链路只用 Python 标准库，托盘那两个包缺了也能跑。
+通知链路只用 Python 标准库；设置界面要 `pywebview`，托盘要 `pystray` + `Pillow`，缺了照样收通知。
 
 <p align="center">
   <img src="assets/screenshots/ui_channels_light.png" width="49%" alt="推送通道页（浅色）">
@@ -21,6 +30,99 @@ Windows 10 / 11 · 个人自用 · 零服务器 · 零订阅费 · 零实名
   <sub>推送通道（浅色 / 深色） · 消息模板 · 运行状态 · 使用教程</sub>
 </p>
 
+## 它解决什么
+
+挂在 AI 编程助手的 hooks 上，任务一停就把结果推到手机。不改宿主代码，不装插件，不依赖宿主的私有目录。
+
+现成方案解决的是「**怎么把一句话送到我手机上**」；本项目解决的是「**哪些事该发、发什么、发过没有、发失败了算谁的**」。
+
+| 维度 | 只有推送脚本时 | 本项目 |
+|---|---|---|
+| 事件 | 一个 `push(text)`，发不发靠 prompt 里写 | 6 类事件各有模板与开关（`wbn/events.py` 的 `classify()`；`config.example.json` 的 `triggers` / `titles` / `templates`） |
+| 去重 | 无 | 终态事件按「哪个会话的第几轮」去重，非终态按内容（`wbn/pipeline.py` 的 `_dedup_key()`） |
+| 静默 / 限流 | 无 | 静默时段 + 每分钟 4 条 / 每小时 20 条（`wbn/filters.py` 的 `check()`） |
+| 投递结果 | 不知道发没发出去 | 每次投递落一行 `ok=True/False`（`wbn/channels.py` 的 `send_all()` → `logs/notify-*.log`） |
+| 宿主 | 只服务一个 | WorkBuddy / CodeBuddy / 旧版目录三处都认（`install.py:69-72`） |
+
+**代价，先说清楚：**
+
+- 只支持**已经装好 hooks 机制**的宿主。宿主不发 hook，本项目收不到任何东西。
+- 通知延迟取决于宿主：源码形态约 70ms；**单文件 exe 形态每次要自解压，1.5–2.2 秒**，一条通知端到端约 3–4.5 秒。对「任务完成提醒」无感，对「毫秒级告警」不合适。
+- 10 个通道里只有 3 个在真实环境验证过，见下面的[支持矩阵](#支持矩阵)。
+
+## 为什么不是一堆推送脚本
+
+一句话：推送脚本解决「怎么发」，本项目解决「什么时候发、发过没有、发失败了算谁的」。下面每条都能在仓库里找到对应实现，不是设计意图。
+
+- **事件有语义，不是一个 `push(text)`。** 6 类事件（任务完成 / 失败 / 等你确认 / 工具失败 /
+  会话开始 / 结束）各有标题模板、内容模板和独立开关，改标题不用改代码，改 `config.json` 就行。
+  依据：`config.example.json` 的 `triggers` 6 项、`titles` 与 `templates` 各 7 个键（6 个事件 + `test`），
+  归类在 `wbn/events.py` 的 `classify()`。
+- **终态事件按事件身份去重。** 同一个 turn 里宿主连发 3 次 `TaskCompleted`，你只收到 1 条；
+  非终态（等你确认、工具失败）按内容去重，连按 3 次仍然收 3 条。
+  依据：`wbn/pipeline.py` 的 `_dedup_key()` + `tests/test_dedup_turn.py`。
+- **静默时段 + 频率上限。** `quiet_hours` + 每分钟 4 条 / 每小时 20 条，外加「工具连续失败 3 次才报」
+  （`tool_fail_threshold`），避免一个坏命令刷你 40 条。
+  依据：`config.example.json` 的 `filters`；判定顺序在 `wbn/filters.py` 的 `check()`。
+- **每次投递都留证据。** 一条通知落一行 `channel=wxmp ok=True msg=已送达微信`，失败落 `ok=False` +
+  服务端返回原文。状态页直接读这些行，不是猜的。依据：`logs/notify-*.log` 的投递流水，
+  本仓库自己那 482 次投递的结果见下面的[支持矩阵](#支持矩阵)。
+- **不读宿主的私有目录。** 只用公开的 hooks 协议（`settings.json` 的 `hooks` 字段）。
+  依据：`install.py:69-72` 只写三个 `settings.json`，不读 `claw-state/`。宿主改内部结构，本项目不断。
+
+### 什么情况下别装本项目
+
+- 只是想让任务结果出现在微信里 → 装 `wechat-clawbot-push` 就够，**不用装本项目**（详见下面「已经有官方通知」那节）
+- 要毫秒级告警 → exe 形态端到端 3–4.5 秒，不合适
+- 不是 Windows → 本项目是 Windows 专有实现（DWM 标题栏、`icacls`、`WebView2`），不跨平台
+- 宿主不发 hooks → 收不到任何东西，装也没用
+- 不想在机器上装 Python → 可以用 exe，但每次 hook 要多等约 2 秒（R54）
+
+## 支持矩阵
+
+内置 10 个通道，可以同时开多个，任一成功即视为送达。默认只开「本地日志」，它只写文件不打扰你。
+
+| 通道 | 费用 / 实名 | 真实投递验证 | 到达方式 |
+|---|---|---|---|
+| 微信测试号 `wxmp` | 免费不限条 / 不要 | ✅ **102 次成功**（另有 128 次失败，见下） | 微信聊天列表 |
+| 本地日志 `log` | 免费 / — | ✅ 250 次 | 文件 |
+| 自定义 Webhook `webhook` | 免费 / — | ✅ 2 次（本地服务） | 你自己的服务 |
+| 企业微信自建应用 `wecom_app` | 免费不限条 / 不要 | ⚠️ **未验证** | 企业微信 / 微信插件 |
+| 企业微信群机器人 `wecom_bot` | 免费 / 不要 | ⚠️ **未验证** | 企业微信 |
+| 钉钉机器人 `dingtalk_bot` | 免费 / 不要 | ⚠️ **未验证** | 钉钉 |
+| 飞书机器人 `feishu_bot` | 免费 / 不要 | ⚠️ **未验证** | 飞书 |
+| Bark `bark` | 免费可自建 / 不要 | ⚠️ **未验证** | iOS 通知中心 |
+| ntfy `ntfy` | 免费可自建 / 不要 | ⚠️ **未验证** | App 推送 |
+| 邮件 `smtp` | 免费 / 不要 | ⚠️ **未验证** | 手机邮件 App |
+
+> **「未验证」的意思是**：代码写完了、字段名按官方文档填的、错误处理写了，但**没有用真实凭证跑通过**。
+> 第一次配的时候如果报错，先按 [docs/channels/](docs/channels/) 核对字段，再看日志里的
+> `ok=False msg=…`——那行是服务端返回的原文。
+
+> **`wxmp` 那 128 次失败全部发生在 2026-10-26 至 10-29**，根因是模板变量前缺「标签：」导致正文渲染为空
+> 而接口仍返回 `errcode: 0`。修复后 10-30 单日 **101 次投递全部成功**。这条留在这里是因为它比
+> 「已稳定运行」更能说明这个通道被真正用过。
+
+## 通知长什么样
+
+下面是 `selftest.py --dry` 的真实输出，标题和正文都是模板渲染结果，不是示意：
+
+```text
+── 场景 task_done  (hook 事件 Stop → 语义 task_done)
+   标题: ✅ WorkBuddy 任务完成
+   │ **项目**：Work buddy 通知
+   │ **耗时**：42 秒
+   │ **时间**：19:57
+   │ 
+   │ 已完成通知程序开发：包含 hook 入口、异步派发、10 个推送通道、配置界面与桌面快捷方式。
+
+── 场景 need_input  (hook 事件 PermissionRequest → 语义 need_input)
+   标题: 🙋 WorkBuddy 等你确认
+   │ **项目**：Work buddy 通知
+   │ **提示**：需要你确认是否允许执行 rm -rf build/
+   │ **时间**：19:57
+```
+
 ## 快速开始
 
 ### 1. 建环境
@@ -32,7 +134,10 @@ python -m venv .venv
 .venv\Scripts\python.exe -m pip install -r requirements.txt
 ```
 
-`requirements.txt` 里只有 `pystray` 和 `Pillow`，托盘图标要用。不装也能跑，只是没有托盘。
+`requirements.txt` 里运行时是三个包：`pywebview` 负责设置界面（依赖系统 WebView2），
+`pystray` + `Pillow` 负责托盘图标。**三个都不影响通知链路**——`hook.py` / `dispatch.py` /
+`wbn/` 只用 Python 标准库，缺任何一个都能正常收通知，只是少了界面或托盘。
+（文件末尾还有一个 `windows-capture`，只给开发期的截图脚本用，运行程序不需要，也不进 exe。）
 
 ### 2. 挂上 hooks
 
@@ -116,25 +221,9 @@ set WBN_CONSOLE=1 && .venv\Scripts\python.exe -m PyInstaller --noconfirm --distp
 
 ## 选哪个通道
 
-内置 10 个通道，可以同时开多个，任一成功即视为送达。默认只开「本地日志」，
-它只写文件不打扰你，用来回溯和排查。
-
-| 通道 | 费用 | 实名 | 配置耗时 | 到达方式 | 适合谁 |
-|---|---|---|---|---|---|
-| 微信测试号 | 免费，不限条数 | 不要 | 扫码约 2 分钟 | 微信聊天列表 | 主力推荐 |
-| 企业微信自建应用 | 免费，不限条数 | 不要 | 约 5 分钟 | 企业微信 / 微信插件 | 想要 markdown 排版 |
-| Bark | 免费，可自建 | 不要 | 装 App 约 1 分钟 | iOS 通知中心 | iPhone |
-| ntfy | 免费，可自建 | 不要 | 装 App 加订阅 | App 推送 | 安卓 / 桌面，公共服国内偏慢 |
-| 企业微信群机器人 | 免费 | 不要 | 建群加机器人 | 企业微信 | 已有企业微信 |
-| 钉钉 / 飞书机器人 | 免费 | 不要 | 群设置加机器人 | 对应 App | 支持加签 |
-| 邮件 SMTP | 免费 | 不要 | 开 SMTP 加授权码 | 手机邮件 App | 最通用，配置稍麻烦 |
-| 自定义 Webhook | 免费 | 不要 | 填 URL | 你自己的服务 | 接自建系统 |
-| 本地日志 | 免费 | 不要 | 默认开 | 文件 | 回溯与排查 |
-| 短信 / Telegram | 收费 / 需科学上网 | 视服务商 | 视服务商 | 短信 / TG | 不推荐 |
-
-每个通道的申请步骤、字段含义和各自的坑都在 [docs/channels/](docs/channels/)。
-为什么主推微信测试号而不是第三方推送平台，见
-[ADR-003](docs/adr/ADR-003-wechat-sandbox-over-push-platforms.md)。
+费用、到达方式和**真实投递验证状态**都在上面的[支持矩阵](#支持矩阵)里，按那三列挑就行。
+每个通道的申请步骤、字段含义和各自的坑都在 [docs/channels/](docs/channels/)；为什么主推
+微信测试号而不是第三方推送平台，见 [ADR-003](docs/adr/ADR-003-wechat-sandbox-over-push-platforms.md)。
 
 ## 已经有官方通知 / MCP 推送了，还需要这个吗？
 
@@ -218,6 +307,19 @@ HTTP 200、4 个 IPv4 TLS 握手全 OK），但**照它的 README 逐字配置�
 先跑 `selftest.py`。测试消息能收到、真实任务没有，基本是宿主没重启，
 或者撞上了中文编码那个坑，见 [docs/troubleshooting.md](docs/troubleshooting.md)。
 
+### 日志里出现 `skip` 是出错了吗
+
+不是。`skip` 是过滤链在正常工作——hook 跑了、链路是通的，只是这条按你的规则不该发。
+真正坏了是**连 `skip` 都没有**。三步排查法（看 hook 跑没跑 → 看 `reason=` → 查宿主
+那侧的 `hooks` 配置）在
+[docs/troubleshooting.md](docs/troubleshooting.md) 的「某个宿主不通知，怎么查」。
+
+### 那 7 个通道没验证过，为什么还留着
+
+因为它们各自覆盖一种真实场景（iOS、安卓、已有企业微信、只收邮件），而通道实现是
+配置驱动的：填错只会在日志里落一行 `ok=False`，不影响其它通道，也不影响宿主。留着
+成本为零，删掉的成本是「想用时得重写一遍」。但**没验过就是没验过**，矩阵里一律标 ⚠️。
+
 ### 改了模板没反应
 
 模板改动要点「保存配置」才落盘。
@@ -254,6 +356,9 @@ exe 形态另外三条：
 - **每次 hook 事件要多等约 2 秒。** onefile 每次启动都要把 19MB 解压到
   `%TEMP%`。宿主的 hook 超时是 10–15 秒，不会超时，但 agent 的每次事件都被
   拖了一下。嫌慢就用源码形态（`python app.py install`），那条路径 ~70ms。
+  实测口径（R54）：hook 单次 **1571–2259ms**，一条通知端到端 **3–4.5 秒**、写盘 **66MB**；
+  exe 双击到窗口可交互中位数 **2549ms**（含自解压约 **970ms**），内存 private **381.3MB** /
+  working set **578.2MB**。
 - **WebView2 沙箱默认开着**，只在判定「窗口一片黑」时自动带 `--no-sandbox`
   重启一次。想强制带沙箱排查：`set WBN_WEBVIEW_SANDBOX=1`。
 - **没在「没装 Python 的干净机器」上验过**（开发机只有一台）。本机能做到的
