@@ -84,6 +84,11 @@ def python_exe() -> Path:
 
 def hook_command(app: str) -> str:
     """生成 hook 命令行。路径统一用正斜杠并加引号，兼容含空格 / 中文的目录。"""
+    if getattr(sys, "frozen", False):
+        # 打包后没有 hook.py 这个文件：单 exe 只有一个入口，靠子命令分发。
+        # 引号同样不能省——exe 本身也可能被放在含空格的目录里。
+        exe = str(sys.executable)
+        return f'"{exe}" hook --app {app}'
     py = str(python_exe()).replace("\\", "/")
     hp = str(HOOK_PATH).replace("\\", "/")
     return f'"{py}" "{hp}" --app {app}'
@@ -96,9 +101,15 @@ def _norm(p: str) -> str:
 def is_our_hook(entry: dict) -> bool:
     """判断某条 hook 配置是不是本程序写入的。"""
     target = _norm(str(HOOK_PATH))
+    # 打包后写进宿主的是 `"<exe>" hook --app x`，没有 `hook.py` 这个文件名，
+    # 只认 HOOK_PATH 的话 uninstall 会认不出自己写的条目 → 残留一堆指向
+    # 已删除 exe 的 hook，宿主每次事件都白等超时。所以两种身份都认。
+    exe = _norm(str(sys.executable)) if getattr(sys, "frozen", False) else ""
     for h in entry.get("hooks", []) or []:
         cmd = _norm(str(h.get("command", "")))
         if "hook.py" in cmd and (target in cmd or "wbn" in cmd):
+            return True
+        if exe and exe in cmd and " hook " in f" {cmd} ":
             return True
     return False
 
@@ -191,6 +202,19 @@ def ensure_icon() -> Path | None:
     except Exception:
         return None
     return ICON_PATH if ICON_PATH.exists() else None
+
+
+def icon_location() -> str | None:
+    """快捷方式 `IconLocation` 的值。
+
+    打包后**不能用 `ensure_icon()` 返回的路径**：那是 `_MEIPASS` 里的
+    `assets/icon.ico`，程序一退就被删，快捷方式图标随即变成白纸。
+    图标已经用 `icon='assets/icon.ico'` 嵌进 exe 了，直接指 exe 的第 0 号图标。
+    """
+    if getattr(sys, "frozen", False):
+        return f"{sys.executable},0"
+    icon = ensure_icon()
+    return str(icon) if icon else None
 
 
 # ------------------------------------------------------------------ AUMID
@@ -344,26 +368,35 @@ def make_shortcut(
     window_style: int = 1,
 ) -> bool:
     """用 WScript.Shell 创建 .lnk。window_style: 1 正常 / 7 最小化。"""
-    icon = ensure_icon()
-    py = str(python_exe())
-    # **必须加双引号。** 本项目路径含空格（`D:\Code\Work buddy 通知`），
-    # 而 Windows 把 Arguments 拼在 TargetPath 后面时不做任何转义：裸路径会被
-    # 拆成 `D:\Code\Work` + `buddy` + `通知\app.py`，Python 拿第一段当脚本路径
-    # → 文件不存在 → pythonw.exe 静默退出（无控制台、无 stderr）。
-    # 用户看到的就是「双击图标毫无反应」。同一个文件里 hook_command() 一直是
-    # 加引号的，两处不一致就是 W7.0 那个 P0。
-    arg_line = f'"{script}"'
-    if args:
-        # args 是 `--silent` 这类不带空格的开关，裸写才对；
-        # 写成 `f'"{script}" {args}'` 之外再包一层引号会把开关吞进路径里。
-        arg_line += f" {args}"
+    icon = icon_location()
+    if getattr(sys, "frozen", False):
+        # 打包后 exe 自己就是入口：TargetPath 指 exe，Arguments 只放子命令。
+        # 不能再把脚本路径塞进去——exe 里没有 `app.py` 这个文件，
+        # 塞进去的症状和 W7.0 那个 P0 一样：双击毫无反应。
+        py = str(sys.executable)
+        arg_line = args
+    else:
+        py = str(python_exe())
+        # **必须加双引号。** 本项目路径含空格（`D:\Code\Work buddy 通知`），
+        # 而 Windows 把 Arguments 拼在 TargetPath 后面时不做任何转义：裸路径会被
+        # 拆成 `D:\Code\Work` + `buddy` + `通知\app.py`，Python 拿第一段当脚本路径
+        # → 文件不存在 → pythonw.exe 静默退出（无控制台、无 stderr）。
+        # 用户看到的就是「双击图标毫无反应」。同一个文件里 hook_command() 一直是
+        # 加引号的，两处不一致就是 W7.0 那个 P0。
+        arg_line = f'"{script}"'
+        if args:
+            # args 是 `--silent` 这类不带空格的开关，裸写才对；
+            # 写成 `f'"{script}" {args}'` 之外再包一层引号会把开关吞进路径里。
+            arg_line += f" {args}"
 
     ps = (
         "$ws = New-Object -ComObject WScript.Shell;"
         f"$s = $ws.CreateShortcut({_psdq(lnk)});"
         f"$s.TargetPath = {_psdq(py)};"
         f"$s.Arguments = {_psq(arg_line)};"
-        f"$s.WorkingDirectory = {_psdq(ROOT)};"
+        # 工作目录同样要跟着形态走：frozen 时是 exe 旁边（可写、持久），
+        # 源码时是仓库根。指 `_MEIPASS` 会让子进程的工作目录随退出消失。
+        f"$s.WorkingDirectory = {_psdq(config.ROOT)};"
         f"$s.Description = {_psdq(desc or 'AI 任务通知')};"
         + (f"$s.IconLocation = {_psdq(icon)};" if icon else "")
         + f"$s.WindowStyle = {int(window_style)};"
@@ -395,11 +428,16 @@ def create_shortcuts(with_autostart: bool = True) -> None:
 
     if with_autostart:
         startup = _startup_dir()
-        target = TRAY_PATH if TRAY_PATH.exists() else UI_PATH
+        if getattr(sys, "frozen", False):
+            # 单 exe 只有一个入口，托盘靠子命令而不是 `tray.py` 这个文件。
+            target, args = UI_PATH, "tray --silent"
+        else:
+            target = TRAY_PATH if TRAY_PATH.exists() else UI_PATH
+            args = "--silent"
         ok2 = make_shortcut(
             startup / "AI 任务通知.lnk",
             target,
-            "--silent",
+            args,
             "AI 任务通知 · 开机自启",
             window_style=7,
         )
