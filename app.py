@@ -528,9 +528,10 @@ def _log(msg: str) -> None:
 def _bench(line: str) -> None:
     """打一条耗时点。stdout + （可选）文件。
 
-    为什么不能只 print：exe 是 `console=False` 编的，**没有 stdout**，
-    print 的内容直接进黑洞，重定向也读不到。而 §0.0 要求 exe 形态的 A 数
-    必须重测——没有输出通道，这条要求就只能靠人掐秒表，不可复现。
+    为什么不能只 print：exe 是 `console=False` 编的，**双击启动时没有 stdout**
+    （PyInstaller 把它设成 `None`，print 直接进黑洞）。重定向是另一回事——
+    有重定向时 Python 会建一个真的 stdout，但它的编码是系统 ANSI 代码页，
+    在英文 Windows 上是 cp1252，中文一 print 就抛（见 `_harden_stdio`）。
 
     所以多给一条文件通道：`WBN_BENCH_FILE` 指向哪就写哪（`tools/bench_ui.py
     --exe` 会传一个临时文件）。源码形态不设这个变量，行为和以前完全一样。

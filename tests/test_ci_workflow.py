@@ -161,10 +161,32 @@ def test_package_runs_build_script_not_raw_pyinstaller(workflow):
 
 
 def test_package_smoke_checks_exit_code(workflow):
-    """`console=False` 的 exe 没有 stdout，冒烟只能看退出码。"""
+    """冒烟必须断言**真实退出码**，而且要把 stdout 重定向到文件。
+
+    原来这里断言的是 `$LASTEXITCODE`。2026-10-30 发现那是个假判据：exe 是
+    GUI 子系统（`console=False`）编的，PowerShell 对 GUI 程序**不等**，
+    `$LASTEXITCODE` 压根不会被设置（是空值），于是 `-ne 0` 永远成立。
+    这一步因此红了 8 轮，而 exe 本身 1.2 秒就退出 0 了。GUI 程序只能靠
+    `Start-Process -Wait -PassThru` 拿 `.ExitCode`。
+
+    顺带守一条：`-RedirectStandardOutput` 不能丢。重定向是那个
+    `UnicodeEncodeError`（cp1252 的 stdout + 一行中文）的触发条件，
+    没有它这一步就只是「跑过了」，测不到那条回归。
+    """
     steps = _steps(workflow, "package")
     _, step = _find_step(steps, "--version")
-    assert "LASTEXITCODE" in str(step["run"]), "冒烟必须断言退出码，不能只看跑过了"
+    run = str(step["run"])
+
+    assert "Start-Process" in run and "-Wait" in run and "-PassThru" in run, (
+        f"GUI 子系统的 exe 必须用 Start-Process -Wait -PassThru 等它退出：{run}"
+    )
+    assert ".ExitCode" in run, "冒烟必须断言退出码，不能只看跑过了"
+    assert "LASTEXITCODE" not in run, (
+        "GUI 子系统的 exe 不会设置 $LASTEXITCODE，用它断言等于永远失败"
+    )
+    assert "-RedirectStandardOutput" in run, (
+        "stdout 必须重定向到文件：那是 UnicodeEncodeError 回归的触发条件"
+    )
 
 
 def test_package_uploads_exe_artifact(workflow):

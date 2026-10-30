@@ -70,9 +70,15 @@ SIZE_LIMIT_MB = 40
 # `--version` 退出码 0，全绿，而五个子命令一个都没进包）。
 EXE_SIZE_RANGE_MB = (18.0, 26.0)
 
-# 冒烟等多久（秒）。本机 2.4s；2026-10-30 的 runner 上 120s 都没退出来，
-# 所以放宽到 300s 再看一轮——**这是为了区分「慢」和「真卡死」，不是为了让它绿**：
-# 超时仍然红，只是红的时候会带上诊断（见 `_smoke_diag`）。
+# 冒烟等多久（秒）。本机 1.2~2.4s；2026-10-30 的 runner 上卡满 300s 不退出。
+#
+# 根因最后查出来是 exe 里抛 `UnicodeEncodeError`（cp1252 的 stdout + 中文），
+# PyInstaller 弹了个没人点得掉的「Unhandled exception in script」对话框——
+# **不是慢，是死在对话框上**。`app.py` 的 `_harden_stdio` / `_main_guarded`
+# 修完之后 runner 上 1.2s 退出 0。
+#
+# 300s 留着不是为了让谁绿：真判据仍是退出码，超时只是把「慢」和「死」分开，
+# 红的时候带上 `_smoke_diag` 的证据。
 SMOKE_TIMEOUT_S = 300
 
 # 除 webui/ 之外必须存在的**数据文件**（相对 exe 根）。
@@ -525,9 +531,15 @@ def _smoke_diag(exe: Path, proc: subprocess.Popen, elapsed: float,
 def check_smoke(exe: Path) -> None:
     """`通知.exe --version` 能不能起来。
 
-    **判据是退出码，不是 stdout**：spec 里 `console=False`，exe 没有控制台，
-    `print()` 的输出直接丢弃，重定向也读不到。所以这里只看它有没有
-    正常退出——它至少证明了「Python 运行时解压成功 + 入口模块 import 成功」。
+    **判据是退出码，不是 stdout。** 但别再往下推成「stdout 读不到」——
+    那是个把我带沟里 6 轮的错误结论：`console=False` 只保证**双击时不弹黑框**，
+    一旦 stdout 被重定向（本函数就是），Python 会照常建一个真的 `sys.stdout`，
+    `print()` 的内容**写得进去**（本机实测 `通知.exe --version > out.txt`
+    能读到 `AI 任务通知 1.0.0`）。它同时带来了编码问题：那个 stdout 用的是
+    系统 ANSI 代码页，英文 Windows 上是 cp1252，中文一 print 就抛。
+
+    所以这里只看退出码——它证明了「Python 运行时解压成功 + 入口模块跑完」；
+    stdout/stderr 两份文件只在**失败时**作为证据打出来（见 `_smoke_diag`）。
 
     ## 为什么**不能**用 `subprocess.run(capture_output=True, timeout=120)`
 
@@ -546,6 +558,23 @@ def check_smoke(exe: Path) -> None:
     所以改成**重定向到临时文件**：没有管道，就没有「等管道关闭」这一步，
     `wait(timeout=SMOKE_TIMEOUT_S)` 才是真正的墙钟上限。改完之后 runner 上
     如实报出 `✘ 120s 没退出`——管道问题解决了，剩下的是 exe 自己不肯退出。
+
+    ## 最后一层：它不是慢，是死在对话框上
+
+    第 7 轮的诊断把 exe 重定向后的 stderr 打出来了，答案在那里：
+
+        File "app.py", line 562, in main
+        File "encodings\\cp1252.py", line 19, in encode
+      UnicodeEncodeError: 'charmap' codec can't encode characters in position 3-6
+
+    `console=False` 的 exe 一旦 stdout 被重定向，Python 就按系统 ANSI 代码页
+    建一个真的 `sys.stdout`；runner 是英文 Windows → cp1252 → `print("AI 任务通知…")`
+    直接抛。异常冒到引导器手里，PyInstaller 弹「Unhandled exception in script」
+    等人点确定，runner 上没有桌面 → 永远不退出。**本机 cp936 编码得出来，
+    所以本地 6 轮都没复现。** 修在 `app.py` 的 `_harden_stdio` / `_main_guarded`。
+
+    重定向到文件这件事本身也是复现条件，别把它改回 `DEVNULL`：那样即使
+    stdout 有问题也看不出来（`DEVNULL` 下 print 成功，只是写进黑洞）。
     """
     print("\n[7/7] 冒烟：--version")
     with tempfile.TemporaryDirectory() as td:

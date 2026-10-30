@@ -137,9 +137,12 @@ pyz = PYZ(a.pure)
 _common = dict(
     name=NAME,
     icon="assets/icon.ico",
-    # 双击不弹控制台黑框。副作用：`print()` 全部丢弃，`--version` 的
-    # 输出在命令行里也看不到——所以 CI 的冒烟判据是**退出码**，不是 stdout。
-    # 要排查问题就用 `WBN_CONSOLE=1` 出调试版。
+    # 双击不弹控制台黑框。副作用：双击时 `sys.stdout` 是 None，`print()`
+    # 全部丢弃。但**别由此推出「重定向也读不到」**——重定向时 Python 会建一个
+    # 真的 stdout（编码 = 系统 ANSI 代码页），内容写得出来，只是中文在英文
+    # Windows（cp1252）上会抛 UnicodeEncodeError。2026-10-30 CI 的冒烟就是
+    # 卡在这上面，修在 app.py 的 `_harden_stdio`。
+    # 要排查问题就用 `WBN_CONSOLE=1` 出调试版（见上面第 39 行）。
     console=CONSOLE,
     version="version_info.txt",
     # UPX 会把 exe 压得更小，但「自解压 + 改过节的二进制」是杀软误报的重灾区。

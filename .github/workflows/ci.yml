@@ -101,35 +101,39 @@ jobs:
       - name: 安装依赖
         run: python -m pip install -r requirements.txt pyinstaller
 
-      # Windows Defender 的实时保护会把「刚构建出来的 20MB exe + 它解压出的
-      # 六百多个文件」逐个扫一遍。2026-10-30 实测：runner 上 `通知.exe --version`
-      # 起进程后 **300 秒都不退出**，stdout/stderr 一个字没有，tasklist 里只有
-      # 一个 8.5MB 的引导器进程，`%TEMP%\_MEI*` 解压目录已经建出来——卡在解压 /
-      # 起子进程这一步，Python 代码根本没执行。同一份产物在本机 2.4 秒退出 0。
-      #
-      # 这一步只是**优化**，不是判据：真判据仍然是下面的冒烟退出码。
-      # 所以 `continue-on-error`——受管理的 runner 上 Add-MpPreference 可能被拒，
-      # 那不该变成一个和本项目无关的红叉。
-      - name: 排除 Defender 对构建目录的实时扫描
-        continue-on-error: true
-        shell: pwsh
-        run: |
-          Add-MpPreference -ExclusionPath "${{ github.workspace }}"
-          Add-MpPreference -ExclusionPath $env:TEMP
-          Write-Output "已排除：${{ github.workspace }} / $env:TEMP"
-
       # build_exe.py 内部会做四件检查：产物形态 / webui 文件数 / 体积上限 /
       # --version 冒烟。所以这一步红 = 打包本身有问题，不是「脚本没跑完」。
       - name: 打包
         run: python tools/build_exe.py
 
-      # 再单独跑一遍冒烟，用最直白的方式留一条日志。
-      # `console=False` 的 exe 没有 stdout，所以看的是退出码，不是输出。
+      # 再单独跑一遍冒烟，留一条不依赖 build_exe.py 内部逻辑的日志。
+      #
+      # **不能用 `& ".\通知.exe" --version` + `$LASTEXITCODE`。** 这个 exe 是
+      # GUI 子系统（`console=False`）编的，PowerShell 对 GUI 程序**不等**，
+      # `$LASTEXITCODE` 压根不会被设置（是空值），于是 `-ne 0` 永远成立。
+      # 前 7 轮死在 build_exe.py 的冒烟里，这一步没跑到；第 8 轮一跑到就红，
+      # 报的是「冒烟失败：退出码 」（后面空着）——而 exe 本身 1.2 秒退出 0。
+      #
+      # 要拿真退出码只能用 `Start-Process -Wait -PassThru`。顺手把 stdout
+      # 重定向到文件：**重定向正是那个 UnicodeEncodeError 的触发条件**
+      # （cp1252 的 stdout + 一行中文），所以这一步现在是那条回归的哨兵——
+      # 一旦 stdout 上又开始抛异常，这里立刻以退出码非 0 报出来。
       - name: 冒烟（--version）
         run: |
           if (-not (Test-Path "通知.exe")) { throw "没产出 通知.exe（应在仓库根）" }
-          & ".\通知.exe" --version
-          if ($LASTEXITCODE -ne 0) { throw "冒烟失败：退出码 $LASTEXITCODE" }
+          $out = Join-Path $env:RUNNER_TEMP "version.out"
+          $err = Join-Path $env:RUNNER_TEMP "version.err"
+          $p = Start-Process -FilePath ".\通知.exe" -ArgumentList "--version" -Wait -PassThru `
+            -RedirectStandardOutput $out -RedirectStandardError $err
+          $text = if (Test-Path $out) { Get-Content $out -Raw } else { "" }
+          $diag = if (Test-Path $err) { Get-Content $err -Raw } else { "" }
+          if ($p.ExitCode -ne 0) {
+            throw "冒烟失败：退出码 $($p.ExitCode)，stderr=$diag"
+          }
+          if (-not $text) {
+            throw "冒烟失败：退出码 0 但 stdout 是空的（--version 没输出）"
+          }
+          Write-Output "冒烟通过：退出码 0，输出 $($text.Trim())"
         shell: pwsh
 
       - uses: actions/upload-artifact@v4
