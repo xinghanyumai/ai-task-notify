@@ -1,8 +1,18 @@
-/* 「使用指南」页（W4）—— 长文，不是表单。
+/* 「使用指南」页（W4 长文 → W7.6 总栏 + 单项单选切换）。
  *
- * 判据：**从上往下读得下去，不需要中间停下来操作**（任务书 §3.1）。
- * 所以没有卡片、没有折叠、没有「第一步/第二步」的按钮，只有
- * 序号圆点 + 标题 + 正文的纵向流。
+ * 结构：一条常驻的 tab 条（6 项：总栏 + 5 节）+ 一个面板。
+ * **面板是条件渲染**——每次只把当前那一节 append 进 DOM，不是 5 节全渲染再
+ * 用 CSS 藏起来。后者只是「看起来对」：读屏仍可能读到、Ctrl+F 仍能搜到，
+ * DOM 里 5 节都在。判据见 `tests/test_guide_nav.py` 的 `test_panel_is_rendered_conditionally`。
+ *
+ * 状态只有一个字段：`state.section`。**不写 `location.hash`**（`shell.js` 的
+ * `routeFromHash()` 把 hash 当路由名，不认识的值直接落回状态页——W7.4 踩过），
+ * 也不写 localStorage：指南是查阅型页面，每次进来回到总栏比「停在上次看的那节」
+ * 更可预期，还省掉一层持久化耦合。
+ *
+ * 无障碍按 WAI-ARIA APG 的 tabs 模式做全套：role=tablist/tab/tabpanel、
+ * aria-selected、aria-controls、roving tabindex、←/→/Home/End。
+ * 切换后焦点**留在 tab 上**，不搬进面板（W6 那批焦点问题就是这么来的）。
  *
  * 文案逐字照搬 `ui.py:_page_guide`（那一版是打磨过的），**只改四处控件指代**：
  *
@@ -16,15 +26,16 @@
  * 其余一字未动。留一句「点右下角「发送测试」」的话，用户会去找一个不存在的
  * 按钮，然后判定「这软件坏了」——这比措辞不一致严重得多。
  *
- * `tests/test_guide_copy.py` 会逐段比对：`ui.py` 里 `_page_guide` 的每个
- * 字符串都必须原样出现在本文件里（四处指代除外，测试里显式排除）。
+ * `tests/test_guide_copy.py` 会逐段比对：快照里每一段都必须原样出现在本文件里
+ * （四处指代除外，测试里显式排除）。拆成 5 节只是换了显示方式，文案一个字没改。
  */
 (function () {
   "use strict";
 
   window.WBN_PAGES = window.WBN_PAGES || {};
 
-  var state = { root: null, ctx: null, built: false };
+  /* `section` 就是全部状态。初值必须是 "index"（总栏）——守卫会查这一行。 */
+  var state = { root: null, ctx: null, built: false, section: "index", tabEls: {}, panel: null };
 
   /* ---- 文案（逐字来自 ui.py:_page_guide） -------------------------------- */
 
@@ -162,34 +173,55 @@
              "「到底有没有触发」——它是唯一不会因为网络问题失败的通道。" }
   ];
 
-  /* 页内导航（W7.4）。
+  /* tab 与面板的 id **写成字面量**，不拼字符串。
    *
-   * **不许用 `<a href="#guide-others">`。** `shell.js:349` 的 `routeFromHash()`
-   * 把 `location.hash` 当路由名，`go()` 里不认识的直接落回 `DEFAULT_ROUTE`
-   * （状态页）——点一下导航，人就被弹到别的页面去了。所以这里全是
-   * `<button data-goto>`，点击只调 `scrollIntoView`，**一行都不碰 location.hash**。
-   *
-   * 也不做滚动联动的高亮：这一页是长文，IntersectionObserver 在快速滚动时
-   * 会来回抖，收益不成比例（任务书 §2.1）。 */
-  var NAV = [
-    { id: "guide-wxmp",    label: "微信测试号" },
-    { id: "guide-others",  label: "其他通道（" + OTHERS.length + " 个）" },
-    { id: "guide-phone",   label: "手机弹窗" },
-    { id: "guide-desktop", label: "电脑弹窗" },
-    { id: "guide-trouble", label: "排查" }
+   * 守卫（`test_tab_and_panel_ids_are_one_to_one`）要在源码里把这两组 id 抠出来
+   * 比对「各 6 个、一一对应」。写成 `"panel-" + key` 的话源码里只剩一个值，
+   * 守卫就退化成「看起来对」——W7.4 那次 `href="#` 假绿就是这么来的。 */
+  var SECTIONS = [
+    { key: "index",   label: "总栏",       tab: "tab-index",   panel: "panel-index" },
+    { key: "wxmp",    label: "微信测试号", tab: "tab-wxmp",    panel: "panel-wxmp" },
+    { key: "others",  label: "其他通道",   tab: "tab-others",  panel: "panel-others" },
+    { key: "phone",   label: "手机弹窗",   tab: "tab-phone",   panel: "panel-phone" },
+    { key: "desktop", label: "电脑弹窗",   tab: "tab-desktop", panel: "panel-desktop" },
+    { key: "trouble", label: "排查",       tab: "tab-trouble", panel: "panel-trouble" }
+  ];
+
+  /* 总栏 = 目录概览，5 张卡片（不是把全部内容平铺）。
+   * 每张：标题 + 一句说明 + 右侧元信息 + →。整卡可点，点了进对应那一节。
+   * 说明尽量复用本节已有的那句 desc，别为同一件事写两遍话。 */
+  var CARDS = [
+    { key: "wxmp", title: "四步走通，全程免费", meta: STEPS.length + " 步",
+      desc: "扫码即得凭证，不用实名、不用付费、不限条数。" },
+    { key: "others", title: "其他通道怎么配", meta: OTHERS.length + " 个通道",
+      desc: "不走微信的话看这里。字段名和「通知通道」页上的一致，照着填即可。" },
+    { key: "phone", title: "手机弹窗怎么开", meta: "",
+      desc: POPUP_DESC },
+    { key: "desktop", title: "电脑上也要弹窗", meta: "",
+      desc: DESKTOP_DESC },
+    { key: "trouble", title: "收不到？按这个顺序查", meta: "",
+      desc: "一条都没发出去、发出去了没弹、测试报错——三种情况各查一处。" }
   ];
 
   /* ---- 渲染 -------------------------------------------------------------- */
 
-  function group(title, desc, id) {
+  function specOf(key) {
+    for (var i = 0; i < SECTIONS.length; i++) {
+      if (SECTIONS[i].key === key) return SECTIONS[i];
+    }
+    return SECTIONS[0];
+  }
+
+  /** 一个分组：h2 + 可选一句说明 + 正文容器。每节只有**一个** .group。 */
+  function group(panel, title, desc) {
     var ctx = state.ctx;
     var g = ctx.el("section", "group");
-    if (id) g.id = id;
     g.appendChild(ctx.el("h2", null, title));
     if (desc) g.appendChild(ctx.el("p", "desc", desc));
     var body = ctx.el("div", "body");
     g.appendChild(body);
-    return { root: g, body: body };
+    panel.appendChild(g);
+    return body;
   }
 
   /** 滚到某个锚点。不动焦点——把焦点搬到目标段落会让键盘用户丢失位置。 */
@@ -198,7 +230,7 @@
     if (target) target.scrollIntoView({ block: "start" });
   }
 
-  /** 一个导航 chip。文字就是去处，所以不再加 aria-label（读屏会念两遍）。 */
+  /** 二级索引的一枚 chip（页内滚动，不切视图）。文字就是去处，不再加 aria-label。 */
   function chip(label, target, extra) {
     var b = state.ctx.el("button", "guide-chip" + (extra ? " " + extra : ""), label);
     b.type = "button";
@@ -207,21 +239,49 @@
     return b;
   }
 
-  function build() {
+  /** 切到某一节。`moveFocus` 只在键盘导航和卡片点击时为 true。 */
+  function select(key, moveFocus) {
+    state.section = key;
+    paint();
+    if (moveFocus) {
+      var t = state.tabEls[key];
+      /* 焦点留在 tab 上，**不搬进面板**：搬过去会打断键盘用户的位置感。 */
+      if (t) t.focus();
+    }
+  }
+
+  function backButton() {
+    var b = state.ctx.el("button", "guide-back", "← 总栏");
+    b.type = "button";
+    b.addEventListener("click", function () { select("index", true); });
+    return b;
+  }
+
+  function card(c) {
     var ctx = state.ctx;
-    state.root.textContent = "";
+    var b = ctx.el("button", "guide-card");
+    b.type = "button";
+    b.addEventListener("click", function () { select(c.key, true); });
 
-    /* 开场：一段承诺。它不是标题（顶栏已经有了），是正文的第一段。 */
-    state.root.appendChild(ctx.el("p", "page-sub", INTRO));
+    var main = ctx.el("span", "guide-card-main");
+    main.appendChild(ctx.el("span", "guide-card-title", c.title));
+    main.appendChild(ctx.el("span", "guide-card-desc", c.desc));
+    b.appendChild(main);
 
-    /* ---- 页内导航：进页面就知道「去哪看什么」 ---- */
-    var nav = ctx.el("nav", "guide-nav");
-    nav.setAttribute("aria-label", "本页导航");
-    NAV.forEach(function (n) { nav.appendChild(chip(n.label, n.id)); });
-    state.root.appendChild(nav);
+    var side = ctx.el("span", "guide-card-side");
+    if (c.meta) side.appendChild(ctx.el("span", "guide-card-meta", c.meta));
+    var arrow = ctx.el("span", "guide-card-arrow", "→");
+    arrow.setAttribute("aria-hidden", "true");
+    side.appendChild(arrow);
+    b.appendChild(side);
+    return b;
+  }
 
-    /* ---- 四步 ---- */
-    var g1 = group("四步走通", "", "guide-wxmp");
+  /* ---- 五个单项 ---------------------------------------------------------- */
+
+  function renderWxmp(panel) {
+    var ctx = state.ctx;
+    var body = group(panel, "四步走通", "");
     STEPS.forEach(function (s, i) {
       var row = ctx.el("div", "step");
 
@@ -229,67 +289,69 @@
       num.setAttribute("aria-hidden", "true");
       row.appendChild(num);
 
-      var body = ctx.el("div", "step-body");
+      var box = ctx.el("div", "step-body");
       var h = ctx.el("h3", "step-title", s.title);
       /* 序号在视觉上是圆点，读屏读不到——所以标题本身带「第 N 步」 */
       h.setAttribute("aria-label", "第 " + (i + 1) + " 步：" + s.title);
-      body.appendChild(h);
-      body.appendChild(ctx.el("p", "step-text", s.text));
+      box.appendChild(h);
+      box.appendChild(ctx.el("p", "step-text", s.text));
 
       var link = ctx.el("button", "step-link", s.link);
       link.type = "button";
       link.addEventListener("click", function () { ctx.go(s.route); });
-      body.appendChild(link);
+      box.appendChild(link);
 
-      row.appendChild(body);
-      g1.body.appendChild(row);
+      row.appendChild(box);
+      body.appendChild(row);
     });
-    state.root.appendChild(g1.root);
+  }
 
-    /* ---- 其他通道 ---- */
-    var gOther = group("其他通道怎么配",
-      "不走微信的话看这里。字段名和「通知通道」页上的一致，照着填即可。",
-      "guide-others");
+  function renderOthers(panel) {
+    var ctx = state.ctx;
+    var body = group(panel, "其他通道怎么配",
+      "不走微信的话看这里。字段名和「通知通道」页上的一致，照着填即可。");
 
     /* 二级索引：9 张卡片各在哪儿。文字直接取 `OTHERS[].name`，
-       和下面的卡片标题是**同一个字段**——两处分别写一遍迟早对不上。 */
+       和下面的卡片标题是**同一个字段**——两处分别写一遍迟早对不上。
+       它是**页内滚动**，不切视图，所以样式弱于主 tab。 */
     var index = ctx.el("div", "guide-index");
     OTHERS.forEach(function (o) {
       index.appendChild(chip(o.name, "guide-ch-" + o.key, "is-sub"));
     });
-    gOther.body.appendChild(index);
+    body.appendChild(index);
 
     OTHERS.forEach(function (o) {
       var head = ctx.el("h3", "sub-head", o.name);
       head.id = "guide-ch-" + o.key;
-      gOther.body.appendChild(head);
-      gOther.body.appendChild(ctx.el("p", "step-text", o.need));
-      gOther.body.appendChild(ctx.el("p", "step-text", o.where));
+      body.appendChild(head);
+      body.appendChild(ctx.el("p", "step-text", o.need));
+      body.appendChild(ctx.el("p", "step-text", o.where));
     });
-    state.root.appendChild(gOther.root);
+  }
 
-    /* ---- 手机弹窗 ---- */
-    var g2 = group("手机弹窗怎么开", POPUP_DESC, "guide-phone");
+  function renderPhone(panel) {
+    var ctx = state.ctx;
+    var body = group(panel, "手机弹窗怎么开", POPUP_DESC);
     POPUP.forEach(function (block) {
-      g2.body.appendChild(ctx.el("h3", "sub-head", block.name));
+      body.appendChild(ctx.el("h3", "sub-head", block.name));
       var ul = ctx.el("ul", "bullets");
       block.items.forEach(function (t) { ul.appendChild(ctx.el("li", null, t)); });
-      g2.body.appendChild(ul);
+      body.appendChild(ul);
     });
-    state.root.appendChild(g2.root);
+  }
 
-    /* ---- 电脑弹窗 ---- */
-    var g3 = group("电脑上也要弹窗", DESKTOP_DESC, "guide-desktop");
+  function renderDesktop(panel) {
+    var ctx = state.ctx;
+    var body = group(panel, "电脑上也要弹窗", DESKTOP_DESC);
     DESKTOP.forEach(function (p) {
-      g3.body.appendChild(ctx.el("h3", "sub-head", p.name));
-      g3.body.appendChild(ctx.el("p", "step-text", p.text));
+      body.appendChild(ctx.el("h3", "sub-head", p.name));
+      body.appendChild(ctx.el("p", "step-text", p.text));
     });
-    state.root.appendChild(g3.root);
+  }
 
-    /* ---- 排查 ---- */
-    var g4 = group("收不到？按这个顺序查", "", "guide-trouble");
-    /* 最后一个分组不用额外加留白：`.group` 的 margin-bottom 就是 --s6，
-       再往下是滚动容器的内边距，和 tkinter 版一样。 */
+  function renderTrouble(panel) {
+    var ctx = state.ctx;
+    var body = group(panel, "收不到？按这个顺序查", "");
     CHECKS.forEach(function (c, i) {
       var row = ctx.el("div", "step");
 
@@ -297,15 +359,99 @@
       num.setAttribute("aria-hidden", "true");
       row.appendChild(num);
 
-      var body = ctx.el("div", "step-body");
-      body.appendChild(ctx.el("h3", "step-title", c.title));
-      body.appendChild(ctx.el("p", "step-text", c.text));
+      var box = ctx.el("div", "step-body");
+      box.appendChild(ctx.el("h3", "step-title", c.title));
+      box.appendChild(ctx.el("p", "step-text", c.text));
 
-      row.appendChild(body);
-      g4.body.appendChild(row);
+      row.appendChild(box);
+      body.appendChild(row);
     });
-    state.root.appendChild(g4.root);
+  }
 
+  function renderIndex(panel) {
+    var ctx = state.ctx;
+    panel.appendChild(ctx.el("p", "page-sub", INTRO));
+    var list = ctx.el("div", "guide-cards");
+    CARDS.forEach(function (c) { list.appendChild(card(c)); });
+    panel.appendChild(list);
+  }
+
+  /* ---- 状态 → 界面 ------------------------------------------------------- */
+
+  /* tab 条**只建一次**，切换时只重画面板。这样焦点天然留在 tab 上，
+     不用「先 render 再 focus」那种容易抖的补偿写法。 */
+  function buildTabs() {
+    var ctx = state.ctx;
+    var bar = ctx.el("div", "guide-tabs");
+    bar.setAttribute("role", "tablist");
+    bar.setAttribute("aria-label", "指南分节");
+    state.tabEls = {};
+    SECTIONS.forEach(function (item, i) {
+      var t = ctx.el("button", "guide-tab", item.label);
+      t.type = "button";
+      t.id = item.tab;
+      t.setAttribute("role", "tab");
+      t.setAttribute("aria-controls", item.panel);
+      t.addEventListener("click", function () { select(item.key); });
+      t.addEventListener("keydown", function (e) { onTabKey(e, i); });
+      state.tabEls[item.key] = t;
+      bar.appendChild(t);
+    });
+    return bar;
+  }
+
+  /** APG：←/→ 切相邻、Home/End 到首尾。别的键一律不拦（Tab 要能出去）。 */
+  function onTabKey(e, i) {
+    var n = SECTIONS.length;
+    var next = -1;
+    if (e.key === "ArrowRight") next = (i + 1) % n;
+    else if (e.key === "ArrowLeft") next = (i - 1 + n) % n;
+    else if (e.key === "Home") next = 0;
+    else if (e.key === "End") next = n - 1;
+    if (next < 0) return;
+    e.preventDefault();
+    select(SECTIONS[next].key, true);
+  }
+
+  function paint() {
+    var spec = specOf(state.section);
+
+    SECTIONS.forEach(function (item) {
+      var t = state.tabEls[item.key];
+      var on = item.key === state.section;
+      t.setAttribute("aria-selected", on ? "true" : "false");
+      /* roving tabindex：只有选中的那项能被 Tab 停住，其余 -1 */
+      t.tabIndex = on ? 0 : -1;
+      if (on) t.classList.add("is-active");
+      else t.classList.remove("is-active");
+    });
+
+    var panel = state.panel;
+    panel.id = spec.panel;
+    panel.setAttribute("role", "tabpanel");
+    panel.setAttribute("aria-labelledby", spec.tab);
+    panel.setAttribute("tabindex", "0");
+    panel.textContent = "";
+
+    if (state.section === "index") {
+      renderIndex(panel);
+      return;
+    }
+    panel.appendChild(backButton());
+    if (state.section === "wxmp") renderWxmp(panel);
+    else if (state.section === "others") renderOthers(panel);
+    else if (state.section === "phone") renderPhone(panel);
+    else if (state.section === "desktop") renderDesktop(panel);
+    else renderTrouble(panel);
+  }
+
+  function build() {
+    var ctx = state.ctx;
+    state.root.textContent = "";
+    state.root.appendChild(buildTabs());
+    state.panel = ctx.el("section", "guide-panel");
+    state.root.appendChild(state.panel);
+    paint();
     state.built = true;
   }
 
@@ -320,7 +466,13 @@
       build();
     },
     show: function () {
-      if (!state.built) build();
+      if (!state.built) { build(); return; }
+      /* 回到总栏：指南是查阅型页面，从别处切回来时「上次看到哪」比「从头开始」
+         更让人意外。只在离开过某节时才重画，停在总栏就什么都不做。 */
+      if (state.section !== "index") {
+        state.section = "index";
+        paint();
+      }
     }
   };
 })();

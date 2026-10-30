@@ -1167,27 +1167,140 @@ body[data-route="channels"] .col { max-width: none; }
 
 .sub-head:first-child { margin-top: 0; }
 
-/* ---- 指南页页内导航（W7.4） --------------------------------------------
-   **不是 `<a href="#id">`。** `shell.js:349` 的 `routeFromHash()` 把
-   `location.hash` 当路由名，`go()` 里不认识的值直接落回 `DEFAULT_ROUTE`
-   —— 用锚链接点一下，人就跳到状态页了。所以导航项全是 `<button data-goto>`，
-   点击只 `scrollIntoView`，hash 始终停在 `#guide`。
+/* ---- 指南页：容器化 tab 条 + 目录卡片（W7.6） ---------------------------
 
-   视觉上是一条「索引条」，不是卡片：这一页的主人是正文，导航是目录。
-   所以只有一条下边线（--border，装饰分隔线），不加底色、不加阴影。
+   从「一条长文 + 5 个滚动锚点」改成「总栏 + 单项」单选切换。tab 条是**视图开关**，
+   不是页内目录——所以它要一眼看见、和正文明显分开。
 
-   边框用 --border-input 而**不是 --border-strong**：后者是装饰分隔线，
-   对白卡只有 1.45:1；chip 的边框是「这里可以点」的唯一信息，按 WCAG 1.4.11
-   要 3:1（同 .btn-secondary 的理由，见上）。 */
-.guide-nav {
+   **为什么和 `.seg`（模板页的类型切换）长得不一样**：`.seg` 是次级筛选，选中态
+   用 `--bg-card` + 阴影，在 --bg-subtle 底上只有 1.15:1，靠的是「位置固定 +
+   文字变深」。这一条是主导航，任务书要求「不能只靠字重或下划线」，所以当前项
+   用**实心底 + 反色字**：`--brand-ink` 打底、`--bg-card` 作字色。
+   亮色 #00795f 上放 #ffffff = **5.38:1**，暗色 #2ee6c0 上放 #151518 = **11.35:1**。
+   别把两者「统一」掉——`--brand`（#00c29a）上放白字只有 2.29:1，W6 的
+   `--track-on` 就是栽在这。
+
+   容器的可见边界靠 **1px `--border-input` 描边**（对 --bg 3.47:1），填充用
+   `--bg-subtle` 只做分组。`--border` 是装饰分隔线（1.25:1），撑不起「这里是一整条」。
+
+   tab 的 `border: 1px solid transparent` 是为了「选中态加边框时不跳动」——
+   透明边框在 a11y_contrast 里按「无边框」处理（它只认 alpha>0 的边框色），
+   不会把 1:1 的边框/填充对比算成不达标。 */
+.guide-tabs {
   display: flex;
   flex-wrap: wrap;
-  gap: var(--s2);
+  gap: var(--s1);
   margin: var(--s5) 0 var(--s6);
-  padding-bottom: var(--s4);
-  border-bottom: 1px solid var(--border);
+  padding: var(--s2);
+  border: 1px solid var(--border-input);
+  border-radius: var(--r-card);
+  background: var(--bg-subtle);
 }
 
+.guide-tab {
+  height: 32px;
+  padding: 0 var(--s3);
+  border: 1px solid transparent;
+  border-radius: var(--r-input);
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  white-space: nowrap;
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease);
+}
+
+.guide-tab:hover { background: var(--bg-hover); color: var(--fg); }
+
+.guide-tab.is-active {
+  background: var(--brand-ink);
+  color: var(--bg-card);
+  font-weight: var(--fw-semibold);
+}
+
+/* 面板拿 tabindex="0" 是为了让键盘能进来滚动。焦点环收一点，别贴着正文边框。 */
+.guide-panel:focus-visible { outline-offset: 4px; border-radius: var(--r-input); }
+
+/* 「← 总栏」：解决「我看完了想回去」这个动作，不是「我在哪」那个认知
+   （后者由常驻 tab 条负责）。所以它是文字按钮，不是第二个导航条。 */
+.guide-back {
+  margin-bottom: var(--s4);
+  padding: 0;
+  border: 0;
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  cursor: pointer;
+}
+
+.guide-back:hover { color: var(--fg); }
+
+/* ---- 总栏：5 张目录卡片 -------------------------------------------------
+   是「目录条目」，不是 5 张同权重的面板：所以不用阴影、圆角取 --r-input
+   （比 --r-card 小一档），靠 1px 描边 + 右对齐的元信息形成扫描轴。
+   边框必须是 --border-input：--border 对白卡只有 1.25:1，卡片会散在页面里。 */
+.guide-cards {
+  display: grid;
+  gap: var(--s2);
+}
+
+.guide-card {
+  display: grid;
+  grid-template-columns: 1fr auto;
+  align-items: center;
+  gap: var(--s4);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--border-input);
+  border-radius: var(--r-input);
+  background: var(--bg-card);
+  color: var(--fg);
+  font-family: inherit;
+  text-align: left;
+  cursor: pointer;
+  transition: border-color var(--dur-fast) var(--ease);
+}
+
+.guide-card:hover { border-color: var(--brand-ink); }
+
+.guide-card-main { display: block; }
+
+.guide-card-title {
+  display: block;
+  font-size: var(--fs-body);
+  line-height: var(--lh-body);
+  font-weight: var(--fw-semibold);
+}
+
+.guide-card-desc {
+  display: block;
+  margin-top: var(--s1);
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--fg-muted);
+}
+
+.guide-card-side {
+  display: flex;
+  align-items: center;
+  gap: var(--s2);
+  color: var(--fg-subtle);
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  white-space: nowrap;
+}
+
+.guide-card-arrow { font-size: var(--fs-aux); }
+
+.guide-card:hover .guide-card-arrow { color: var(--brand-ink); }
+
+/* ---- 二级索引（其他通道内） ---------------------------------------------
+   9 个通道各一枚 chip。它是**页内滚动**，不切视图，所以必须弱于主 tab：
+   小一号 + --bg-subtle 底 + 无描边。弱在这里是信息，不是省事。 */
 .guide-chip {
   height: 32px;
   padding: 0 var(--s3);
@@ -1205,8 +1318,6 @@ body[data-route="channels"] .col { max-width: none; }
 
 .guide-chip:hover { background: var(--bg-hover); color: var(--fg); }
 
-/* 「其他通道」组内的二级索引：9 个通道各一枚。比顶部那排小一号、加底色，
-   让「这是一排东西」和「这是一排入口」在视觉上分开。 */
 .guide-index {
   display: flex;
   flex-wrap: wrap;
