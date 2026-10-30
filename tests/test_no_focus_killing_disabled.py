@@ -87,6 +87,10 @@ EXEMPT = [
     ("channels.js", "openid.disabled = !ok",
      "语义禁用：没填 appID + appsecret 时「自动获取」无从下手，title 里写了原因。"
      "忙碌时的那半句已拆到 WBN_UI.setBusyAttr(openid, state.busy)。"),
+    ("status.js", "cb.disabled = !known",
+     "语义禁用：读不到启动目录（非 Windows / 目录被删 / 权限）时，这个开关点了"
+     "也没法落地——连「现在是开还是关」都不知道。右侧文案已经写明「无法读取启动目录」，"
+     "Tab 跳过它是对的。写入过程中的忙碌态走 WBN_UI.setBusyAttr，不设 disabled。"),
 ]
 
 

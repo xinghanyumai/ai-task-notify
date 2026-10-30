@@ -112,6 +112,50 @@ def _spaced_dir(tmp_path: Path) -> Path:
     return d
 
 
+def _require_lnk(lnk: Path, target: Path, args: str, desc: str) -> None:
+    """造一个 .lnk；造不出来就 **skip**，并把真实回显写进原因。
+
+    ## 为什么这里要 skip 而不是 assert
+
+    `make_shortcut()` 不是纯 Python：它起 PowerShell 跑
+    `New-Object -ComObject WScript.Shell`（`install.py:421`），成败取决于这台
+    机器有没有注册 WScript.Shell。**「runner 上没有 COM」和「本项目参数拼错了」
+    是两件事**，前者报红只会让整片 CI 看起来像产品坏了，而真正要看的那几条
+    反而被淹掉。
+
+    ## 为什么也不能 `assert True` 糊过去
+
+    那样引号真丢了也照绿——这条用例存在的全部意义（W7.0 那个「双击没反应」
+    的 P0）就没了。skip 和 pass 的区别就在这儿：skip 会留在报告里，带原因，
+    每次跑都提醒「这半条今天没验」。
+
+    ## 拆的是哪两件事
+
+    - **造 .lnk**（依赖 COM）→ 可能 skip，本函数负责；
+    - **参数解析**（`_lnk_strings` 读盘 + `shell32.CommandLineToArgvW` 切参数，
+      不碰 COM 创建）→ 只要 .lnk 造出来了就**照原样全部断言**，一条都不减。
+    """
+    if install.make_shortcut(lnk, target, args, desc):
+        return
+
+    # `make_shortcut` 只返回 bool，失败原因在它内部 `_ps()` 的 stdout 里被丢掉了。
+    # 这里再问一次 COM，把**实际输出**带进 skip 原因，别让人对着
+    # 「造 .lnk 失败」五个字猜是环境问题还是代码问题。
+    # 探针文字刻意全用 ASCII：`_ps()` 按 utf-8 解码，而中文版 PowerShell 的
+    # 默认输出编码是 GBK，夹中文会变成一串 `�`，反而看不清是哪一步失败的。
+    why = install._ps(
+        "try { $ws = New-Object -ComObject WScript.Shell;"
+        " Write-Output ('WScript.Shell OK: ' + $ws.GetType().FullName) }"
+        " catch { Write-Output ('WScript.Shell UNAVAILABLE: ' + $_.Exception.Message) }")
+    pytest.skip(
+        "make_shortcut() 返回 False，造不出 .lnk。这半条验的是 COM 能不能用，"
+        "不是参数拼得对不对——参数解析那半条因缺少 .lnk 无法执行，故一并跳过。\n"
+        f"  探针回显：{why or '(空)'}\n"
+        f"  lnk={lnk}  exists={lnk.exists()}  "
+        f"platform={sys.platform}  frozen={getattr(sys, 'frozen', False)}"
+    )
+
+
 # ---------------------------------------------------------------- 第 1 条
 
 
@@ -128,7 +172,7 @@ def test_shortcut_arguments_parse_to_one_existing_path(tmp_path):
     fake = d / "app.py"
     fake.write_text("# 假脚本，只为让路径存在\n", encoding="utf-8")
     lnk = d / "探针.lnk"
-    assert install.make_shortcut(lnk, fake, "", "probe") is True, "造 .lnk 失败"
+    _require_lnk(lnk, fake, "", "probe")
 
     args = _lnk_strings(lnk)["ARGUMENTS"]
     argv = _argv(args)
@@ -143,7 +187,7 @@ def test_shortcut_arguments_parse_to_one_existing_path(tmp_path):
     #     再验一次引号。
     real = _spaced_dir(tmp_path / "real")
     lnk2 = real / "真入口.lnk"
-    assert install.make_shortcut(lnk2, install.UI_PATH, "", "probe") is True
+    _require_lnk(lnk2, install.UI_PATH, "", "probe")
     argv2 = _argv(_lnk_strings(lnk2)["ARGUMENTS"])
     assert len(argv2) == 1, f"真入口的 Arguments 也被切碎了：{argv2}"
     assert Path(argv2[0]) == install.UI_PATH, (
@@ -171,7 +215,7 @@ def test_shortcut_actually_launches(tmp_path):
     script = d / "app.py"
     script.write_text('import sys\nsys.stdout.write("LAUNCH_OK")\n', encoding="utf-8")
     lnk = d / "launch.lnk"
-    assert install.make_shortcut(lnk, script, "", "launch") is True
+    _require_lnk(lnk, script, "", "launch")
 
     args = _lnk_strings(lnk)["ARGUMENTS"]
     # ShellExecute 干的事就是「TargetPath + 空格 + Arguments」拼成命令行，

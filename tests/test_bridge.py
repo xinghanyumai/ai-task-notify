@@ -858,6 +858,10 @@ def test_bridge_exposes_only_implemented_methods():
         # W5：`theme.install_tk_exception_hook` 的等价物——页面未捕获的异常
         # 落进 logs/，不然「点了没反应」在日志里查不到任何东西
         "log_js_error",
+        # W9 状态页「启动与自启」：三态读取 + 开关。
+        # 状态**只认启动文件夹里那个 .lnk**，不进 config.json；
+        # `autostart_set` 操作完必须重读，不回显入参
+        "autostart_get", "autostart_set",
     }
 
 

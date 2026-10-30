@@ -26,11 +26,16 @@ channels_list()  → _last_send_times()      → logs.read(2)   ← 读
 
 from __future__ import annotations
 
+import itertools
+import os
 from datetime import datetime, timedelta
 
 import pytest
 
 from wbn import bridge, config, insight, logs
+
+# `_bump_mtime` 的递增计数器，见那个函数的说明
+_bump = itertools.count(1)
 
 _OK_LINE = ("[09:00:00] event=Stop kind=task_done sent=True remote_ok=True"
             " elapsed=1.17s title=✅ WorkBuddy 任务完成")
@@ -64,6 +69,28 @@ def _append(tmp_path, line: str) -> None:
     p = _today_file(tmp_path)
     with p.open("a", encoding="utf-8") as f:
         f.write(line + "\n")
+    _bump_mtime(p)
+
+
+def _bump_mtime(p) -> None:
+    """把 mtime 显式往后推，**每次推得比上一次更远**。
+
+    **为什么需要这一步**：`_log_stamp()`（`wbn/bridge.py:82`，取数在第 101 行）
+    比的是 `st_mtime_ns`——已经是纳秒，不是浮点秒。但**纳秒精度不等于纳秒
+    分辨率**：Windows 的文件时间取自系统时钟，而系统时钟约 15.6ms 才跳一格。
+    连续几次写如果落在同一个 tick 里，`st_mtime_ns` 会**完全相同**，缓存
+    理应命中——生产代码没错，是测试造数据太快。
+
+    实测：GitHub 的 `windows-latest` 上这两条稳定红（`assert 1 == 2`），
+    本机靠时序侥幸通过。所以这里不测「时钟粒度」，只测「stamp 变了会不会
+    重读」——那是这两条用例真正要钉的东西。
+
+    **必须用递增的偏移**（`next(_bump)`）而不是「当前值 + 1ms」：写入会把
+    mtime 打回系统时钟那一格，两次「当前值 + 1ms」会算出同一个数，断言
+    又会假红——正是这个坑。
+    """
+    st = p.stat()
+    os.utime(p, ns=(st.st_atime_ns, st.st_mtime_ns + next(_bump) * 1_000_000))
 
 
 def test_one_page_load_reads_logs_once(tmp_path, counter):
@@ -130,6 +157,7 @@ def test_touch_without_content_change_is_still_invalidated(tmp_path, counter):
 
     p = _today_file(tmp_path)
     p.write_text(p.read_text(encoding="utf-8"), encoding="utf-8")
+    _bump_mtime(p)          # 内容没变，只让 mtime 变（见 `_bump_mtime` 的说明）
 
     api.stats_today()
     assert counter["n"] == 2
