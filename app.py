@@ -35,6 +35,47 @@ ROOT = Path(__file__).resolve().parent
 if str(ROOT) not in sys.path:
     sys.path.insert(0, str(ROOT))
 
+
+# ---------------------------------------------------------- 输出不许打死进程
+
+
+def _harden_stdio() -> None:
+    """把 stdout/stderr 的 `errors` 改成 `replace`，让一行中文不至于带走进程。
+
+    2026-10-30 的 CI 红就是这么来的，值得写清楚：
+
+    `通知.exe` 是 `console=False` 编的，但**只要 stdout 被重定向**（CI 的冒烟
+    步骤、或者用户在 cmd 里 `通知.exe --version > out.txt`），Python 就会按
+    **系统 ANSI 代码页**建一个真的 `sys.stdout`。在英文 Windows 上那是 cp1252，
+    于是 `print("AI 任务通知 1.0.0")` 抛 `UnicodeEncodeError: 'charmap' codec
+    can't encode characters in position 3-6`（position 3-6 正是「任务通知」四个字）。
+    异常从 `main()` 里冒出来，PyInstaller 再弹一个
+    「Unhandled exception in script」对话框——runner 上没有桌面，没人点得掉，
+    进程就永远不退出，冒烟卡满 300 秒。
+
+    本机一直是 cp936（中文），中文编码得出来，所以本地 2.4 秒退出 0，
+    这个 bug 在本地永远复现不了。它不是「CI 环境的问题」，是**任何非中文
+    Windows 上 `--version` 都会崩**。
+
+    改 `errors="replace"` 而不是硬改 utf-8：能编码的照旧（cp936 下中文一字不差），
+    编码不了的降级成 `?`，绝不抛异常。encoding 保持系统原样——真控制台是 cp936
+    时改成 utf-8 只会让中文变乱码，那是用一个 bug 换另一个。
+    """
+    for stream in (sys.stdout, sys.stderr):
+        if stream is None:
+            # 双击启动（无控制台）时 PyInstaller 就把它们设成 None，
+            # 此时 print() 自己会静默丢弃，不会抛。
+            continue
+        try:
+            stream.reconfigure(errors="replace")
+        except (AttributeError, ValueError, OSError):
+            # pytest 的捕获流、被替换成 StringIO 的流没有 reconfigure。
+            # 拿不到就跳过：这只是加固，不是功能。
+            pass
+
+
+_harden_stdio()
+
 # 进程起算的零点。`tools/bench_ui.py` 量的就是这个口径（W6 §4.1 的 A 数）：
 # 双击 → 首屏可交互，含解释器启动 + WebView2 初始化。放在模块顶层而不是
 # `run_ui()` 里，是因为「进程起」比「函数进」早一个 import 的时间——
@@ -573,5 +614,39 @@ def main(argv: list[str] | None = None) -> int:
     return run_ui() if cmd == "ui" else _delegate(cmd, rest)
 
 
+def _main_guarded() -> int:
+    """`__main__` 的唯一入口：兜住未捕获异常，不让 PyInstaller 弹对话框。
+
+    frozen 的 exe 里，从脚本冒出去的异常落到引导器手里，它弹一个
+    「Unhandled exception in script」对话框，**然后等用户点确定**。有桌面的
+    机器上这还能接受；CI 的 runner 上没有桌面，那个框永远点不掉，进程就永远
+    不退出——2026-10-30 的冒烟就是这么把「退出码 1」拖成「300 秒超时」的，
+    连真正的报错都看不见（对话框正文没人读得到，只有 exe 的 stderr 里留了一份）。
+
+    所以自己兜：traceback 打到 stderr（已被 `_harden_stdio` 加固，编码不了也
+    不会二次抛），同一份内容再落进应用日志（用户能截图发过来），退出码 1。
+
+    `SystemExit` 必须原样放行——`main()` 里的 `return 0` 走的是 `sys.exit(0)`，
+    被这里吞掉的话每个子命令都会变成失败。
+    """
+    try:
+        return main()
+    except SystemExit:
+        raise
+    except BaseException:
+        tb = traceback.format_exc()
+        try:
+            print(tb, file=sys.stderr)
+        except Exception:
+            pass
+        try:
+            from wbn import store
+
+            store.log(f"未捕获异常，进程退出：\n{tb}")
+        except Exception:
+            pass
+        return 1
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    sys.exit(_main_guarded())
