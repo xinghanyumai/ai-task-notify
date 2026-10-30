@@ -23,18 +23,6 @@ import shutil
 import subprocess
 import sys
 import time
-from ctypes import (
-    HRESULT,
-    POINTER,
-    WINFUNCTYPE,
-    Structure,
-    byref,
-    c_ubyte,
-    c_ulong,
-    c_ushort,
-    c_void_p,
-    c_wchar_p,
-)
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent
@@ -246,6 +234,24 @@ def _set_lnk_aumid(lnk: Path, app_id: str) -> tuple[bool, str]:
     if sys.platform != "win32":
         return False, "非 Windows，跳过"
 
+    # **这 10 个名字必须在函数里导入，不能放模块顶层。**
+    # `HRESULT` 是 Windows 的 `ctypes` 才有的名字，顶层一导入，Linux 上
+    # `import install` 直接 ImportError——CI 的 ubuntu job 就是这样在**收集阶段**
+    # 崩掉的（exit 2，4 个测试模块连用例都没跑到，W9 §2.1）。
+    # 它们只在下面这段 COM 代码里用，放这里零成本。
+    from ctypes import (  # noqa: PLC0415
+        HRESULT,
+        POINTER,
+        WINFUNCTYPE,
+        Structure,
+        byref,
+        c_ubyte,
+        c_ulong,
+        c_ushort,
+        c_void_p,
+        c_wchar_p,
+    )
+
     class GUID(Structure):
         _fields_ = [("Data1", c_ulong), ("Data2", c_ushort), ("Data3", c_ushort),
                     ("Data4", c_ubyte * 8)]
@@ -332,10 +338,32 @@ def _desktop_dir() -> Path:
     return Path.home() / "Desktop"
 
 
+def _shell_folder(csidl: int) -> Path | None:
+    """用 `shell32.SHGetFolderPathW` 取一个系统已知文件夹。取不到返回 `None`。
+
+    **为什么不走 `_ps("[Environment]::GetFolderPath(...)")`**：起一次
+    PowerShell 实测 **1.28 秒**（2026-10-30 本机）。状态页每次加载都要读一次
+    自启状态，那等于给首屏加一秒多空白；托盘菜单每展开一次也要读。
+    这个 API 是进程内调用，耗时约 0.1ms，而且是同一个已知文件夹定义。
+    """
+    if sys.platform != "win32":
+        return None
+    try:
+        buf = ctypes.create_unicode_buffer(260)          # MAX_PATH
+        # SHGFP_TYPE_CURRENT = 0：要「当前」路径，不是默认路径
+        hr = ctypes.windll.shell32.SHGetFolderPathW(None, csidl, None, 0, buf)
+        if hr != 0 or not buf.value:
+            return None
+        return Path(buf.value)
+    except Exception:                                    # noqa: BLE001
+        # 取不到只是慢一点 / 退回环境变量，不该让安装器或界面崩掉
+        return None
+
+
 def _startup_dir() -> Path:
-    out = _ps("[Environment]::GetFolderPath('Startup')")
-    if out and not out.startswith("__ERR__"):
-        return Path(out)
+    p = _shell_folder(0x07)                              # CSIDL_STARTUP
+    if p is not None:
+        return p
     return Path(os.environ.get("APPDATA", str(Path.home()))) / "Microsoft/Windows/Start Menu/Programs/Startup"
 
 
@@ -414,6 +442,123 @@ def make_shortcut(
     return ok
 
 
+# ------------------------------------------------------------------ 开机自启
+#
+# **自启只有一个真相：启动文件夹里那个 .lnk 在不在。**
+# 不读注册表（`Run` 键是另一条路，本项目从来没走过），也不读 `config.json`——
+# 往 config 里塞一个 `autostart: true` 就会造出「配置说开、实际没开」的第二真相，
+# 那正是本项目一路在躲的东西（W9 §1.2 第 3 条）。
+
+AUTOSTART_NAME = "AI 任务通知.lnk"
+
+
+def _autostart_probe() -> tuple[Path | None, str]:
+    """(那个 .lnk 的路径 | `None`, 读不到的原因)。
+
+    只负责「路径能不能确定」，**不负责「目录在不在」**：`create_shortcuts`
+    在测试里被 monkeypatch 成临时目录时目录本来就不存在，那不该算「读不到」，
+    否则 `install all` 的既有行为会被改掉。
+    """
+    if sys.platform != "win32":
+        return None, "非 Windows 系统，没有启动文件夹"
+    try:
+        return _startup_dir() / AUTOSTART_NAME, ""
+    except OSError as exc:
+        return None, f"读启动目录失败：{exc}"
+
+
+def autostart_path() -> Path:
+    """启动文件夹里那个 .lnk 的完整路径。"""
+    return _startup_dir() / AUTOSTART_NAME
+
+
+def autostart_state() -> tuple[bool | None, str]:
+    """三态：`True` 开 / `False` 关 / `None` **读不到启动目录**。
+
+    为什么要三态：读不到时画成「已关闭」是在替系统撒谎——用户会以为自己
+    关过它，然后去别处找开关。界面上必须说「无法读取启动目录」。
+    """
+    lnk, why = _autostart_probe()
+    if lnk is None:
+        return None, why
+    if not lnk.parent.is_dir():
+        return None, f"启动目录不存在：{lnk.parent}"
+    try:
+        return lnk.exists(), ""
+    except OSError as exc:
+        return None, f"读快捷方式失败：{exc}"
+
+
+def autostart_enabled() -> bool:
+    """开机自启是否开着。**只认文件系统事实。**"""
+    state, _ = autostart_state()
+    return state is True
+
+
+def autostart_report() -> dict:
+    """给界面的一次性快照：`{enabled, path, ok, msg}`。
+
+    `ok=False` 有三种来源：非 Windows、启动目录不存在、读不了那个文件。
+    界面据此显示「无法读取启动目录」而不是「已关闭」。
+    """
+    lnk, why = _autostart_probe()
+    if lnk is None:
+        return {"enabled": False, "path": str(autostart_path()),
+                "ok": False, "msg": why}
+    if not lnk.parent.is_dir():
+        return {"enabled": False, "path": str(lnk),
+                "ok": False, "msg": f"启动目录不存在：{lnk.parent}"}
+    try:
+        on = lnk.exists()
+    except OSError as exc:
+        return {"enabled": False, "path": str(lnk),
+                "ok": False, "msg": f"读快捷方式失败：{exc}"}
+    return {"enabled": on, "path": str(lnk), "ok": True, "msg": ""}
+
+
+def _autostart_target() -> tuple[Path, str]:
+    """自启快捷方式指向什么。
+
+    两种形态的差异和 `create_shortcuts` 原来那段一模一样，抽出来给
+    `set_autostart` 复用——**不许写第二份**（写两份就是「同一件事两个写法」，
+    这个项目的老病）。
+    """
+    if getattr(sys, "frozen", False):
+        # 单 exe 只有一个入口，托盘靠子命令而不是 `tray.py` 这个文件。
+        return UI_PATH, "tray --silent"
+    return (TRAY_PATH if TRAY_PATH.exists() else UI_PATH), "--silent"
+
+
+def set_autostart(on: bool) -> tuple[bool, str]:
+    """开 / 关开机自启，返回 (成功?, 人话说明)。
+
+    **删之前先 `exists()`，文件本来就不在不算失败**——用户点「关」时它可能
+    早被手动删了，这时报错只会让人以为坏了。
+    """
+    lnk, why = _autostart_probe()
+    if lnk is None:
+        return False, why
+
+    if not on:
+        if not lnk.exists():
+            return True, "已经是关闭状态"
+        try:
+            lnk.unlink()
+        except OSError as exc:
+            # **接 `OSError` 而不是 `PermissionError`**：Windows 删文件失败
+            # （被占用 / 只读 / 回收站机制）抛的经常是裸 `OSError`，
+            # 只接 `PermissionError` 会让异常直接穿出去。这个坑本项目踩过。
+            return False, f"删除失败：{exc}"
+        if lnk.exists():
+            return False, "删除后文件仍在"
+        return True, "已关闭"
+
+    target, args = _autostart_target()
+    if not make_shortcut(lnk, target, args, "AI 任务通知 · 开机自启", window_style=7):
+        return False, "创建快捷方式失败（WScript.Shell 没有返回 OK）"
+    return True, "已开启"
+
+
 def create_shortcuts(with_autostart: bool = True) -> None:
     print("\n[创建快捷方式]")
     desktop = _desktop_dir()
@@ -427,23 +572,14 @@ def create_shortcuts(with_autostart: bool = True) -> None:
     print(f"  {'✔' if ok1 else '✘'} 桌面：{desktop / 'AI 任务通知.lnk'}")
 
     if with_autostart:
-        startup = _startup_dir()
-        if getattr(sys, "frozen", False):
-            # 单 exe 只有一个入口，托盘靠子命令而不是 `tray.py` 这个文件。
-            target, args = UI_PATH, "tray --silent"
-        else:
-            target = TRAY_PATH if TRAY_PATH.exists() else UI_PATH
-            args = "--silent"
-        ok2 = make_shortcut(
-            startup / "AI 任务通知.lnk",
-            target,
-            args,
-            "AI 任务通知 · 开机自启",
-            window_style=7,
-        )
-        print(f"  {'✔' if ok2 else '✘'} 开机自启：{startup / 'AI 任务通知.lnk'}")
+        # 走 `set_autostart` 而不是在这里再拼一遍：桌面和自启曾经写在一起，
+        # 结果界面上没法单独开关（W9 的起因）。现在只有一条实现路径。
+        ok2, why = set_autostart(True)
+        print(f"  {'✔' if ok2 else '✘'} 开机自启：{autostart_path()}")
         if ok2:
             print("     （托盘常驻，可在托盘菜单里暂停 / 测试 / 打开设置）")
+        else:
+            print(f"     {why}")
 
 
 def remove_shortcuts() -> None:

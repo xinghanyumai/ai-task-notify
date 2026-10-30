@@ -18,6 +18,7 @@ from __future__ import annotations
 
 import functools
 import json
+import sys
 import threading
 from datetime import datetime, timedelta
 
@@ -47,6 +48,22 @@ def _guard(fn):
             }
 
     return wrapper
+
+
+def _install():
+    """懒加载仓库根的 `install` 模块。
+
+    为什么不在文件顶部 import：`wbn/` 是包，`install.py` 在仓库根。顶层
+    import 会让「import wbn.bridge」依赖「根目录已经在 sys.path 上」，
+    而测试是直接 `from wbn import bridge` 的（没有 app.py 帮忙插路径）。
+    放函数里，谁用谁付一次代价，`wbn` 仍然能单独 import。
+    """
+    root = str(config.ROOT)
+    if root not in sys.path:
+        sys.path.insert(0, root)
+    import install
+
+    return install
 
 
 def _http_timeout() -> int:
@@ -577,6 +594,44 @@ class Bridge:
                 "last": _last_label(rec),
             })
         return out
+
+    # ------------------------------------------------------------ 开机自启
+
+    @_guard
+    def autostart_get(self) -> dict:
+        """开机自启的真实状态：`{enabled, path, ok, msg}`。
+
+        **只认启动文件夹里那个 `.lnk`**——不读 `config.json`，也不读注册表。
+        往 config 里存一个 `autostart: true` 会造出第二真相：配置说开、实际
+        没开，而用户看的是界面。
+
+        `ok=False` 表示**读不到启动目录**（非 Windows / 目录被删 / 权限）。
+        这时 `enabled` 没有意义，界面必须说「无法读取启动目录」，
+        不能说「已关闭」——那是替系统撒谎。
+        """
+        self._touch()
+        return _install().autostart_report()
+
+    @_guard
+    def autostart_set(self, on: bool) -> dict:
+        """开 / 关自启，**操作后重读真实状态**。
+
+        绝不回显入参：用户点了「开」但建快捷方式失败时，界面必须显示关着。
+        「报成功」不算成功，磁盘上变了才算——这是本项目一贯的判据
+        （W9 §1.2 第 1 条）。
+        """
+        self._touch()
+        mod = _install()
+        done, note = mod.set_autostart(bool(on))
+        snap = mod.autostart_report()          # ← 重读，不是回显
+        if not snap["ok"]:
+            return snap                        # 读不到就照实说读不到
+        return {
+            "enabled": snap["enabled"],
+            "path": snap["path"],
+            "ok": done,
+            "msg": note,
+        }
 
     # ------------------------------------------------------------ 通道页
 

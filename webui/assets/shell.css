@@ -481,6 +481,41 @@ body[data-route="channels"] .col { max-width: none; }
   white-space: nowrap;
 }
 
+/* 自启那块的实际路径：长路径单行省略，折行会把行高撑开（W9） */
+.row .desc.path-line {
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 原生 checkbox。只调尺寸和选中色，**不重画外观**——重画就等于把系统
+   高对比度和读屏一起丢掉，而那正是选原生控件唯一的理由。
+   `accent-color` 用现有品牌色，不新造色值。 */
+.toggle-box {
+  width: 16px;
+  height: 16px;
+  margin: 0;
+  flex: 0 0 auto;
+  cursor: pointer;
+  accent-color: var(--brand-ink);
+}
+
+.toggle-box:disabled { cursor: default; opacity: 0.55; }
+
+/* 写入中的忙碌态。**不能靠 `disabled`**：那会把已聚焦的元素 blur 掉，
+   焦点掉回 body（见 `tests/test_no_focus_killing_disabled.py`）。
+   aria-disabled 只是视觉提示，拦截靠 status.js 里那个 asBusy 卫兵。 */
+.toggle-box[aria-disabled="true"] { cursor: progress; opacity: 0.55; }
+
+/* 开关操作失败时那行红字。颜色只从 --danger 取。 */
+.row-error {
+  margin: 0;
+  padding: 0 var(--s4) var(--s2);
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  color: var(--danger);
+}
+
 /* 结果点：绿=成功，红=失败。不写「成功/失败」四个字，省一行宽度 */
 .res-dot {
   width: 6px;

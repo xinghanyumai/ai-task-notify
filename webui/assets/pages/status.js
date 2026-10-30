@@ -54,6 +54,7 @@
     root.appendChild(cards);
 
     state.nodes.chList = block(ctx, root, "通道状态");
+    state.nodes.asBox = block(ctx, root, "启动与自启");
     state.nodes.rcList = block(ctx, root, "最近通知");
 
     state.built = true;
@@ -78,9 +79,10 @@
 
     return Promise.all([
       state.ctx.call("stats_today"),
-      state.ctx.call("channels_list")
+      state.ctx.call("channels_list"),
+      state.ctx.call("autostart_get")
     ]).then(function (res) {
-      paint(res[0], res[1]);
+      paint(res[0], res[1], res[2]);
     }).catch(function (e) {
       showError(e);
     }).then(function () {
@@ -100,6 +102,8 @@
 
     state.nodes.chList.textContent = "";
     state.nodes.chList.appendChild(skeletonList(3));
+    state.nodes.asBox.textContent = "";
+    state.nodes.asBox.appendChild(skeletonList(1));
     state.nodes.rcList.textContent = "";
     state.nodes.rcList.appendChild(skeletonList(3));
   }
@@ -117,7 +121,7 @@
 
   /* ---- 上色 -------------------------------------------------------------- */
 
-  function paint(d, channels) {
+  function paint(d, channels, autostart) {
     var ctx = state.ctx;
     var animate = !state.counted;
 
@@ -142,6 +146,7 @@
     state.counted = true;
 
     paintChannels(channels);
+    paintAutostart(autostart);
     paintRecent(d.recent);
   }
 
@@ -251,6 +256,121 @@
       box.appendChild(row);
     });
     state.nodes.rcList.appendChild(box);
+  }
+
+  /* ---- 启动与自启 --------------------------------------------------------
+   *
+   * **控件必须是原生 `<input type="checkbox">` + `<label for>`。**
+   * 通道页那个 `.switch` 是自绘的（`<button>` 上挂个 role 属性，不是原生控件），本页不用：
+   * 原生控件白拿键盘 Tab / 空格切换、读屏播报、系统高对比度三件事，
+   * 自绘一样都拿不到（本项目 46 条对比度 / 焦点守卫也管不到它）。
+   *
+   * 状态是**三态**：开 / 关 / 读不到启动目录。第三种绝不能画成「已关闭」——
+   * 那是在替系统撒谎，用户会以为自己关过它，然后去别处找开关。
+   */
+
+  var AS_ID = "autostart-toggle";
+
+  function autostartText(known, on) {
+    if (!known) return "无法读取启动目录";
+    return on ? "已开启（开机后托盘常驻）" : "已关闭";
+  }
+
+  function paintAutostart(o) {
+    var ctx = state.ctx;
+    var box = state.nodes.asBox;
+    box.textContent = "";
+
+    o = o || {};
+    var known = o.ok === true;
+    var on = o.enabled === true;
+    var path = o.path || "";
+
+    var row = ctx.el("div", "row");
+
+    var cell = ctx.el("div", "text");
+    var lab = ctx.el("label", "title", "开机自启");
+    lab.setAttribute("for", AS_ID);
+    cell.appendChild(lab);
+
+    /* 副文案是启动文件夹里的真实路径。长路径用 title 兜全文、单行省略——
+       折行会把行高撑开，整块看着像两行内容。 */
+    var pathLine = ctx.el("div", "desc path-line", path || "（读不到路径）");
+    if (path) pathLine.title = path;
+    cell.appendChild(pathLine);
+    row.appendChild(cell);
+
+    var st = ctx.el("span", "row-meta", autostartText(known, on));
+    st.id = "autostart-state";
+    row.appendChild(st);
+
+    var cb = ctx.el("input", "toggle-box");
+    cb.type = "checkbox";
+    cb.id = AS_ID;
+    cb.checked = on;
+    cb.disabled = !known;            /* 读不到就别让人点，点了也没法落地 */
+    cb.setAttribute("aria-describedby", "autostart-state");
+    cb.addEventListener("change", function () {
+      applyAutostart(cb.checked);
+    });
+    row.appendChild(cb);
+
+    box.appendChild(row);
+  }
+
+  /** 点一下 → 落盘 → **用后端重读到的状态覆盖控件**（不是用点击后的值）。
+   *
+   * 用户点了「开」但建快捷方式失败时，界面必须显示关着。把入参回显成
+   * `checked` 是最容易写、也最容易撒谎的一种实现。
+   *
+   * **写入过程中用 `WBN_UI.setBusyAttr`，不用 `disabled`**：给一个**已聚焦**
+   * 的元素设 `disabled` 会把它 blur 掉，焦点掉回 `body`——键盘用户按空格
+   * 切完这个开关，下一个 Tab 就从页面开头重走（`tests/test_no_focus_killing_disabled.py`
+   * 钉的就是这一类）。aria-disabled 只是「看着不可用」，焦点还在原地，
+   * 真正的拦截靠下面那个 `asBusy` 卫兵。
+   */
+  var asBusy = false;
+
+  function applyAutostart(next) {
+    var ctx = state.ctx;
+    if (asBusy) return;              /* 上一次还没回来，别连点 */
+
+    var before = document.getElementById(AS_ID);
+    /* 重画会把这一行整个换掉，旧节点上的焦点随之消失、掉回 body。
+       键盘用户按空格切完开关，下一个 Tab 就从页面开头重走——和设 disabled
+       丢焦点是同一个后果。所以记下「刚才焦点在不在开关上」，画完再放回去。 */
+    var hadFocus = !!before && document.activeElement === before;
+
+    asBusy = true;
+    WBN_UI.setBusyAttr(before, true);
+
+    function settle() {
+      asBusy = false;
+      var now = document.getElementById(AS_ID);
+      WBN_UI.setBusyAttr(now, false);
+      if (hadFocus && now) now.focus();
+    }
+
+    ctx.call("autostart_set", next).then(function (o) {
+      paintAutostart(o);             /* 重画之后 cb 是新的，settle 兜一下 */
+      settle();
+      if (!o || o.ok !== true) {
+        showAutostartError((o && o.msg) || "操作失败，状态未改变");
+      }
+    }).catch(function (e) {
+      settle();
+      /* 连 set 都没走通（bridge 挂了）：回去问一次真实状态，别把控件留在
+         一个谁也不确定的位置上。 */
+      ctx.call("autostart_get").then(paintAutostart).catch(function () {
+        paintAutostart({ ok: false, enabled: false, path: "" });
+      });
+      showAutostartError(String((e && e.message) || e));
+    });
+  }
+
+  function showAutostartError(msg) {
+    if (!msg) return;
+    state.nodes.asBox.appendChild(state.ctx.el("p", "row-error", msg));
   }
 
   /** 空状态三件套：一个图标 + 一句解释 + 一个出口（§3.3）。 */

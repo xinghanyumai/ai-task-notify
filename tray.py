@@ -137,12 +137,27 @@ def run(icon: pystray.Icon) -> None:  # pragma: no cover - GUI 回调
     def is_enabled(_it=None):
         return bool(config.load().get("enabled", True))
 
+    def on_autostart(_i=None, _it=None):
+        # 自启只有一个真相：启动文件夹里那个 .lnk。这里不碰 config.json，
+        # 也不缓存——`autostart_enabled()` 现在是一次进程内 Win32 调用（约 0.1ms），
+        # 快得没必要缓存（W9）。
+        import install
+
+        install.set_autostart(not install.autostart_enabled())
+        icon.update_menu()
+
+    def is_autostart(_it=None):
+        import install
+
+        return install.autostart_enabled()
+
     menu = pystray.Menu(
         pystray.MenuItem(lambda _: status_text(), on_open, default=True),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("打开设置中心", on_open),
         pystray.MenuItem("发送测试通知", on_test),
         pystray.MenuItem("通知已开启", on_toggle, checked=is_enabled),
+        pystray.MenuItem("开机自启", on_autostart, checked=is_autostart),
         pystray.Menu.SEPARATOR,
         pystray.MenuItem("打开日志目录", on_logs),
         pystray.MenuItem("退出", on_quit),
