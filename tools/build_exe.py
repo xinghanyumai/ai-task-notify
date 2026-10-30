@@ -40,6 +40,7 @@ from __future__ import annotations
 
 import argparse
 import os
+import re
 import shutil
 import subprocess
 import sys
@@ -406,6 +407,71 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         pass
 
 
+def _windows(pid: int) -> list[tuple[int, str, str]]:
+    """列出某个进程的顶层窗口：`[(hwnd, 类名, 标题)]`。
+
+    **为什么需要这个**：exe 是 GUI 子系统，脚本里抛异常时 PyInstaller 会弹一个
+    `Unhandled exception in script` 的对话框等人点。runner 上没有桌面，没人点，
+    进程就永远不退出，而 stdout/stderr 一个字都没有——只看「超时」根本分不清
+    是解压慢、死循环还是弹了窗。窗口标题是唯一能从外面看见的信号。
+    """
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    out: list[tuple[int, str, str]] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cb(hwnd, _lparam):
+        owner = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(owner))
+        if owner.value == pid:
+            n = user32.GetWindowTextLengthW(hwnd)
+            title = ctypes.create_unicode_buffer(n + 1)
+            user32.GetWindowTextW(hwnd, title, n + 1)
+            cls = ctypes.create_unicode_buffer(256)
+            user32.GetClassNameW(hwnd, cls, 256)
+            out.append((hwnd, cls.value, title.value))
+        return True
+
+    user32.EnumWindows(cb, 0)
+    return out
+
+
+def _child_texts(hwnd: int) -> list[str]:
+    """取一个窗口里所有子控件的文字——MessageBox 的正文就在 Static 控件里。"""
+    import ctypes
+    from ctypes import wintypes
+
+    user32 = ctypes.windll.user32
+    texts: list[str] = []
+
+    @ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+    def cb(child, _lparam):
+        n = user32.GetWindowTextLengthW(child)
+        if n > 0:
+            buf = ctypes.create_unicode_buffer(n + 1)
+            user32.GetWindowTextW(child, buf, n + 1)
+            if buf.value.strip():
+                texts.append(buf.value)
+        return True
+
+    user32.EnumChildWindows(hwnd, cb, 0)
+    return texts
+
+
+def _dialog_report(pids: list[int]) -> list[str]:
+    """把这几些进程的窗口标题（和对话框正文）收成几行诊断。"""
+    lines = []
+    for pid in pids:
+        for hwnd, cls, title in _windows(pid):
+            lines.append(f"    pid {pid} 窗口：class={cls!r} title={title!r}")
+            if "exception" in title.lower() or "error" in title.lower():
+                for text in _child_texts(hwnd):
+                    lines.append("      对话框正文：" + text.replace("\n", "\n      "))
+    return lines or ["    (这些 pid 没有顶层窗口)"]
+
+
 def _smoke_diag(exe: Path, proc: subprocess.Popen, elapsed: float,
                 out_path: Path, err_path: Path) -> str:
     """冒烟超时时把「卡在哪一层」问出来。
@@ -420,16 +486,24 @@ def _smoke_diag(exe: Path, proc: subprocess.Popen, elapsed: float,
     """
     lines = [f"    等了 {elapsed:.0f}s 还没退出（exe={exe}，cwd={ROOT}）",
              f"    进程还活着：{proc.poll() is None}"]
+    pids: list[int] = [proc.pid]
     # `/V` 会多一列 **Window Title**。exe 是 GUI 子系统，出错时可能弹一个
     # 没人能点的对话框（runner 上没有桌面），标题就在这一列里。
     try:
         tl = subprocess.run(
             ["tasklist", "/FI", f"IMAGENAME eq {exe.name}", "/V", "/FO", "LIST"],
             capture_output=True, text=True, timeout=30, check=False).stdout.strip()
+        csv = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {exe.name}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=30, check=False).stdout
+        for row in re.findall(r'"[^"]*","(\d+)"', csv or ""):
+            if int(row) not in pids:
+                pids.append(int(row))
     except Exception as exc:                # noqa: BLE001
         tl = f"(tasklist 失败：{exc})"
     lines.append("    tasklist /V：")
     lines.append("\n".join("      " + ln for ln in (tl or "(空)").splitlines()))
+    lines.extend(_dialog_report(pids))
     # 解压到哪一步了：`_MEI*` 里文件数 + 总字节。本机实测一份**完整**解压是
     # 104 个文件、约 34MB；数字远小于这个就是**卡在解压**，接近这个就是卡在
     # 解压之后（引导器起子进程 / 弹对话框等人点）。
