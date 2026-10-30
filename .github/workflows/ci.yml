@@ -68,3 +68,57 @@ jobs:
         # 不加 -k：平台差异由用例内的 pytest.mark.skipif 表达，
         # 这样 ubuntu 上被跳过的东西会以 skipped 出现在报告里，而不是消失。
         run: python -m pytest -q
+
+  # ---------------------------------------------------------------------
+  # 打包。**只挂在 test 全绿之后**（`needs: test`）：
+  # 一个连 514 条测试都过不了的提交，产出的 exe 没有分发价值，
+  # 而打包要 2~3 分钟，让它在红灯的提交上白跑是浪费。
+  #
+  # 这个 job 能证明的：exe 打得出来、体积没爆、`--version` 能退出、
+  # webui 文件数对得上（`tools/build_exe.py` 自己会核）。
+  # 它**证明不了**的：「双击能开窗、五页都能进、hook 能发到手机」——
+  # 那两条必须人工在干净机器上过，见 docs/prompts/W7-单文件打包.md §4。
+  # 不许因为 CI 有绿勾就把人工那两条省了。
+  # ---------------------------------------------------------------------
+  package:
+    name: Windows 打包
+    runs-on: windows-latest
+    needs: test
+    timeout-minutes: 20
+
+    env:
+      PYTHONUTF8: "1"
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+          cache-dependency-path: requirements.txt
+
+      - name: 安装依赖
+        run: python -m pip install -r requirements.txt pyinstaller
+
+      # build_exe.py 内部会做四件检查：产物形态 / webui 文件数 / 体积上限 /
+      # --version 冒烟。所以这一步红 = 打包本身有问题，不是「脚本没跑完」。
+      - name: 打包
+        run: python tools/build_exe.py
+
+      # 再单独跑一遍冒烟，用最直白的方式留一条日志。
+      # `console=False` 的 exe 没有 stdout，所以看的是退出码，不是输出。
+      - name: 冒烟（--version）
+        run: |
+          if (-not (Test-Path "dist\通知.exe")) { throw "没产出 dist\通知.exe" }
+          & "dist\通知.exe" --version
+          if ($LASTEXITCODE -ne 0) { throw "冒烟失败：退出码 $LASTEXITCODE" }
+        shell: pwsh
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notify-exe
+          path: dist/通知.exe
+          # 打包是唯一不可逆的交付物，别让它 7 天后自动消失
+          retention-days: 30
+          if-no-files-found: error

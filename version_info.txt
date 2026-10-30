@@ -1,0 +1,42 @@
+# 版本资源（PyInstaller 的 `version=` 参数）。
+#
+# 没有这个文件，exe 在任务管理器 / 文件属性里显示的是一串乱码名，
+# 用户没法确认自己装的是哪一版，客服也没法问「你装的是几版」。
+#
+# 格式是**被 exec 的 Python 字面量**，不是 JSON、不是 ini——PyInstaller
+# 直接把文件内容求值。所以这里的注释必须用 `#`。
+#
+# `080404b0` = 语言 0x0804（简体中文）+ 代码页 0x04b0（1200 = Unicode）。
+# 写成 `040904b0`（英文）也能跑，但中文 Windows 的文件属性页会显示成英文表。
+VSVersionInfo(
+    ffi=FixedFileInfo(
+        filevers=(1, 0, 0, 0),
+        prodvers=(1, 0, 0, 0),
+        mask=0x3F,
+        flags=0x0,
+        OS=0x40004,      # VOS_NT_WINDOWS32
+        fileType=0x1,    # VFT_APP
+        subtype=0x0,
+        date=(0, 0),
+    ),
+    kids=[
+        StringFileInfo(
+            [
+                StringTable(
+                    '080404b0',
+                    [
+                        StringStruct('CompanyName', 'AI 任务通知'),
+                        StringStruct('FileDescription', 'AI 任务通知 · 桌面通知客户端'),
+                        StringStruct('FileVersion', '1.0.0.0'),
+                        StringStruct('InternalName', 'notify'),
+                        StringStruct('LegalCopyright', '个人自用，未授权分发'),
+                        StringStruct('OriginalFilename', '通知.exe'),
+                        StringStruct('ProductName', 'AI 任务通知'),
+                        StringStruct('ProductVersion', '1.0.0.0'),
+                    ],
+                )
+            ]
+        ),
+        VarFileInfo([VarStruct('Translation', [2052, 1200])]),
+    ],
+)

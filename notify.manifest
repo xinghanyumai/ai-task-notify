@@ -1,0 +1,60 @@
+<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<!--
+  exe 的应用程序清单。由 notify.spec 的 `manifest=` 引用。
+
+  为什么必须自己写一份而不是让 PyInstaller 生成：
+  它生成的那份**不含 DPI 声明**，于是 250% 缩放下整个窗口由系统位图拉伸，
+  字全是糊的。这个坑在源码形态看不到——源码跑在 python.exe 上，用的是
+  python.exe 自己的清单。
+
+  这份清单是**完整替换**，不是合并。所以 PyInstaller 默认给的那几项
+  （asInvoker、Windows 兼容性声明）必须在这里重新写一遍，漏了会出真问题：
+    · 漏 requestedExecutionLevel → 某些机器上会被 UAC 虚拟化到
+      VirtualStore，配置写到了 %LOCALAPPDATA%\VirtualStore 里，
+      用户在自己目录里找不到 config.json
+    · 漏 supportedOS → GetVersionEx 撒谎报 6.2（Win8），
+      pywebview 会据此走旧的 WebView2 初始化路径
+-->
+<assembly xmlns="urn:schemas-microsoft-com:asm.v1" manifestVersion="1.0">
+  <assemblyIdentity
+      type="win32"
+      name="WBNotify.Desktop"
+      version="1.0.0.0"
+      processorArchitecture="*"/>
+
+  <trustInfo xmlns="urn:schemas-microsoft-com:asm.v3">
+    <security>
+      <requestedPrivileges>
+        <!-- 普通用户权限运行。本项目不写 Program Files、不改注册表、
+             不装服务，要管理员权限只会有害：每次启动弹 UAC，用户就关掉了。 -->
+        <requestedExecutionLevel level="asInvoker" uiAccess="false"/>
+      </requestedPrivileges>
+    </security>
+  </trustInfo>
+
+  <compatibility xmlns="urn:schemas-microsoft-com:compatibility.v1">
+    <application>
+      <!-- 声明「我认识 Win10/11」。不写的话系统按 Win8 兼容模式跑。 -->
+      <supportedOS Id="{8e0f7a12-bfb3-4fe8-b9a5-48fd50a15a9a}"/> <!-- Win10 / Win11 -->
+      <supportedOS Id="{1f676c76-80e1-4239-95bb-83d0f6d0da78}"/> <!-- Win8.1 -->
+      <supportedOS Id="{4a2f28e3-53b9-4441-ba9c-d69d4a4a6e38}"/> <!-- Win8 -->
+      <supportedOS Id="{35138b9a-5d96-4fbd-8e2d-a2440225f93a}"/> <!-- Win7 -->
+    </application>
+  </compatibility>
+
+  <application xmlns="urn:schemas-microsoft-com:asm.v3">
+    <windowsSettings>
+      <!-- 两条都要写，缺一不可：
+             dpiAware（2005 命名空间）是老 API，Win10 1703 之前的系统只认它；
+             dpiAwareness（2016 命名空间）是新 API，Win10 1703+ 优先用它。
+           只写新不写旧 → 老系统仍糊；只写旧不写新 → 新系统只拿到
+           system DPI，多显示器不同缩放时会糊。
+           `true/pm` 的 pm = per-monitor。 -->
+      <dpiAware xmlns="http://schemas.microsoft.com/SMI/2005/WindowsSettings">true/pm</dpiAware>
+      <dpiAwareness xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">permonitorv2</dpiAwareness>
+
+      <!-- 配置里可能有很长的日志路径；不声明的话 260 字符上限会咬人。 -->
+      <longPathAware xmlns="http://schemas.microsoft.com/SMI/2016/WindowsSettings">true</longPathAware>
+    </windowsSettings>
+  </application>
+</assembly>

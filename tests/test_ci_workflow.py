@@ -33,9 +33,20 @@ def _triggers(doc: dict) -> dict:
     return doc.get("on") or doc.get(True) or {}
 
 
-def _steps(doc: dict) -> list[dict]:
-    (job,) = doc["jobs"].values()
-    return job["steps"]
+def _job(doc: dict, name: str = "test") -> dict:
+    """按名字取 job。
+
+    W7 之前这里写的是 `(job,) = doc["jobs"].values()`——「只有一个 job」。
+    加了 `package` 之后那种写法会当场炸，而且炸的方式是解包报错，
+    看不出是哪条约定破了。改成按名字取，并另有一条测试专门守
+    「job 的集合就是 test + package」。
+    """
+    assert name in doc["jobs"], f"没有名为 {name} 的 job：{list(doc['jobs'])}"
+    return doc["jobs"][name]
+
+
+def _steps(doc: dict, name: str = "test") -> list[dict]:
+    return _job(doc, name)["steps"]
 
 
 def _find_step(steps: list[dict], needle: str) -> tuple[int, dict]:
@@ -60,7 +71,7 @@ def test_runs_on_push_and_pull_request(workflow):
 
 def test_matrix_is_two_os_by_three_python(workflow):
     """验收要求：PR 上能看到 6 个 job。"""
-    (job,) = workflow["jobs"].values()
+    job = _job(workflow)
     matrix = job["strategy"]["matrix"]
 
     assert matrix["os"] == ["windows-latest", "ubuntu-latest"]
@@ -69,7 +80,7 @@ def test_matrix_is_two_os_by_three_python(workflow):
 
 
 def test_fail_fast_is_on(workflow):
-    (job,) = workflow["jobs"].values()
+    job = _job(workflow)
     assert job["strategy"]["fail-fast"] is True, "失败即停：不能让 5 个绿勾掩盖 1 个红叉"
 
 
@@ -106,7 +117,7 @@ def test_pytest_step_does_not_exclude_by_name(workflow):
 
 def test_windows_stdio_is_utf8(workflow):
     """Windows runner 默认 cp936，断言里的中文/符号会在输出时 encode 失败。"""
-    (job,) = workflow["jobs"].values()
+    job = _job(workflow)
     assert job["env"]["PYTHONUTF8"] == "1"
 
 
@@ -118,6 +129,49 @@ def test_python_is_set_up_before_dependencies(workflow):
     )
     install_i, _ = _find_step(steps, "pip install")
     assert setup_i < install_i
+
+
+# ---------------------------------------------------------------- 打包 job
+
+
+def test_jobs_are_exactly_test_and_package(workflow):
+    """两个 job，不多不少。
+
+    这条替代了原来那句 `(job,) = doc["jobs"].values()`——那种写法在加
+    `package` 时直接解包报错，报的是「too many values to unpack」，
+    看不出是哪条约定破了。现在约定写成断言，破的时候一眼能读懂。
+    """
+    assert set(workflow["jobs"]) == {"test", "package"}
+
+
+def test_package_needs_test(workflow):
+    """打包必须挂在测试全绿之后：红灯提交产出的 exe 没有分发价值。"""
+    assert _job(workflow, "package").get("needs") == "test"
+
+
+def test_package_runs_build_script_not_raw_pyinstaller(workflow):
+    """走 tools/build_exe.py，不要直接 `pyinstaller notify.spec`。
+
+    直接跑 PyInstaller 会跳过四道核对（产物形态 / 子命令模块 / webui 文件数 /
+    体积），而**那四道正是「本机测不出来」的那部分**。
+    """
+    steps = _steps(workflow, "package")
+    _, step = _find_step(steps, "tools/build_exe.py")
+    assert "notify.spec" not in str(step["run"]), "别绕过 build_exe.py 直接跑 spec"
+
+
+def test_package_smoke_checks_exit_code(workflow):
+    """`console=False` 的 exe 没有 stdout，冒烟只能看退出码。"""
+    steps = _steps(workflow, "package")
+    _, step = _find_step(steps, "--version")
+    assert "LASTEXITCODE" in str(step["run"]), "冒烟必须断言退出码，不能只看跑过了"
+
+
+def test_package_uploads_exe_artifact(workflow):
+    steps = _steps(workflow, "package")
+    upload = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact")]
+    assert upload, "没有上传产物，CI 打包就白打了"
+    assert upload[0]["with"]["path"] == "dist/通知.exe"
 
 
 # ---------------------------------------------------------------- pytest 配置
