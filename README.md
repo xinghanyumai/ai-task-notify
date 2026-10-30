@@ -77,6 +77,39 @@ WorkBuddy 点窗口关闭按钮只是隐藏到托盘，要右键托盘图标选�
 端到端只有一个验证方法：在 WorkBuddy 里跑一个长任务，然后看手机。
 测试消息收得到、真实任务一条都没有的话，看 [docs/troubleshooting.md](docs/troubleshooting.md)。
 
+## 打成单文件 exe（可选）
+
+不想在目标机器上装 Python，就打包一个 exe 拷过去：
+
+```bash
+.venv\Scripts\python.exe -m pip install pyinstaller
+.venv\Scripts\python.exe tools\build_exe.py
+```
+
+产物是 `dist\通知.exe`（约 19MB，一个文件）。`build_exe.py` 会在打包前后做七道
+核对：产物形态、五个子命令模块在不在包里、pywebview 的注入脚本在不在、
+`webui/` 文件数源码 == exe、体积上限、`--version` 冒烟。**任何一道红都别绕过**——
+它们挡的是「exe 能启动但一件正事都干不了」那类问题，本机测不出来。
+
+```bash
+dist\通知.exe                 # 开设置窗口（双击就是这个）
+dist\通知.exe install         # 挂 hooks + 建快捷方式
+dist\通知.exe uninstall       # 撤掉
+dist\通知.exe tray --silent   # 托盘常驻
+dist\通知.exe --version       # 版本号
+```
+
+配置和日志写在 **exe 旁边**（`config.json` / `logs/` / `state/`）。放在
+`C:\Program Files` 这种写不进去的目录时，自动回落到
+`%LOCALAPPDATA%\WBNotify\`——状态页会显示实际用的路径。
+
+排查问题用调试版（带控制台，能看见 traceback）：
+
+```bash
+set WBN_CONSOLE=1 && .venv\Scripts\python.exe -m PyInstaller --noconfirm notify.spec
+dist\通知-debug.exe
+```
+
 ## 选哪个通道
 
 内置 10 个通道，可以同时开多个，任一成功即视为送达。默认只开「本地日志」，
@@ -152,6 +185,18 @@ WorkBuddy 点窗口关闭按钮只是隐藏到托盘，要右键托盘图标选�
 `selftest.py --status` 确认，再换企业微信自建应用（同样免费免实名）。
 详情最多四行、每行约 18 个汉字，因为微信卡片
 一个变量只占一行。完整清单见 [docs/troubleshooting.md](docs/troubleshooting.md#已知限制)。
+
+exe 形态另外三条：
+
+- **每次 hook 事件要多等约 2 秒。** onefile 每次启动都要把 19MB 解压到
+  `%TEMP%`。宿主的 hook 超时是 10–15 秒，不会超时，但 agent 的每次事件都被
+  拖了一下。嫌慢就用源码形态（`python app.py install`），那条路径 ~70ms。
+- **WebView2 沙箱默认开着**，只在判定「窗口一片黑」时自动带 `--no-sandbox`
+  重启一次。想强制带沙箱排查：`set WBN_WEBVIEW_SANDBOX=1`。
+- **没在「没装 Python 的干净机器」上验过**（开发机只有一台）。本机能做到的
+  最大程度是核对包内模块/文件清单 + 用 CDP 驱动五个页面全部渲染 + 打通
+  hook→派发→通道全链路；目标机器缺 VC++ 运行库或 WebView2 运行时这类问题，
+  只能到那台机器上才知道。
 
 ## 卸载
 

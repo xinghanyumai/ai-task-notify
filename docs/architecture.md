@@ -146,86 +146,147 @@ hook 是同步执行的，它崩了或卡住，对话就废了。所以整条链
 - 推送失败只影响后台进程，同时入队，下次事件时重试，最多 5 次
 - `state/runtime.json`、`state/queue.jsonl` 被手改坏时，所有数字读取走宽容转换
 
-## 为什么用 Python 加 Tkinter（已作废，见 ADR-007）
+## 为什么核心链路零依赖，只有 UI 层例外
 
-> ⚠️ 本节论证的是 2026-10 的选型，已被 ADR-007 推翻。保留原因：它解释了
-> 「核心链路零第三方依赖」这条原则的来处——这条原则**仍然有效**，只是 UI 层例外。
+2026-10 的初版选型是「全栈 Tkinter」，那条路已被 ADR-007 推翻（Tk 8.6 在
+Windows 上不支持彩色 emoji，且界面观感与现代桌面应用差距太大）。但**它背后
+那条原则没被推翻，反而更硬了**：
 
-核心链路零第三方依赖，只用标准库（`json`、`urllib`、`smtplib`、`hashlib`、`tkinter`）。
-hook 进程启动快，也不会因为某个包缺失就整个失效。
+> 发通知的那条链路，不许依赖任何第三方包。
 
-Tkinter 是标准库，配置界面不用装 Qt 或 Electron，双击即开。
-代价是 Tk 8.6 在 Windows 上不支持彩色 emoji，界面里的 ✅ 会显示成方框勾。
-这个代价可以接受，因为推到手机上的是正常彩色 emoji。
+所以现在分成两层，判断标准是「这个包坏了，通知还发不发得出去」：
 
-只有托盘图标用了 `pystray` 和 `Pillow`，缺了自动降级成直接开设置窗口。
+| 层 | 用什么 | 依赖 | 坏了会怎样 |
+|---|---|---|---|
+| **通知链路** | `hook.py` → `dispatch.py` → `wbn/*` | **只用标准库**（`json` / `urllib` / `smtplib` / `hashlib`） | — |
+| 设置界面 | `app.py` + pywebview + WebView2 | `pywebview`（+ pythonnet） | 弹原生提示框，通知照发 |
+| 托盘 | `tray.py` | `pystray` + `Pillow` | 没托盘图标，通知照发 |
+
+三条推论，都是拿这个标准量出来的：
+
+1. **`hook.py` 只有约 70ms 的预算**，所以它不 import `wbn` 的重模块，也不 import
+   `webview`——宿主每发一个事件都要等它一次，慢一点就是在拖慢宿主。
+2. **UI 起不来不算故障**。`app.py` 的降级路径用 `ctypes.windll.user32.MessageBoxW`
+   而不是 `tkinter.messagebox`：后者会把整个 Tk 拖进 exe（约 5MB）并拖慢启动，
+   而它换来的只是一个「确定」按钮。这也是 `excludes` 里敢写 `tkinter` 的前提。
+3. **`pystray` / `Pillow` 缺失时 `tray.py` 自动降级**，不是崩——它们只是入口，
+   不是链路。
+
+代价说清楚：UI 层现在有两个第三方依赖，而 pywebview 依赖系统的 WebView2
+运行时。这就是为什么 `app.py` 有一整套「WebView2 缺失 / 起不来 / 画不出来」
+的分支（`FALLBACK_REASONS` 四种原因），也是为什么这台机器上必须加
+`--no-sandbox`（见下文「踩过的坑」）。
 
 ## 目录结构
 
 > **W5 删掉了 tkinter 层 6084 行**（`ui.py` / `wbn/widgets.py` / `theme.py` /
-> `tokens.py` / `anim.py` / `splash.py`）和三个 Tk 专用检查脚本。下面是**修正过**
-> 的现状；完整的结构说明与逐文件职责由 W7 §1.1 重画（那时打包结构才定型）。
+> `tokens.py` / `anim.py` / `splash.py`）和三个 Tk 专用检查脚本。
 > 退路是 `git tag tkinter-final`。
+>
+> 本节由 W7 §1.1 重画：打包结构定型之后，目录树才第一次能写对。
+> **这棵树是被测试守着的**——`tests/test_doc_layout.py` 会检查树里每个路径
+> 真实存在、且 `*.py` 一个不少。改目录忘了改这里，测试会红。
 
 ```
 .
-├── app.py             唯一入口：ui（默认）/ tray / hook / dispatch / install / selftest
-├── hook.py            宿主调用的入口，约 70ms 返回
-├── dispatch.py        异步派发进程
-├── tray.py            托盘常驻（可选）
-├── install.py         安装器：写 hooks、建快捷方式
-├── selftest.py        自检：模拟 4 类事件，验证到底能不能收到
-├── config.json        你的配置，首次运行自动生成，含凭证，权限已收紧
-├── webui/             pywebview 的页面层（W1 起）
-│   ├── index.html     页面入口，用 Path.as_uri() 加载；带 9 条 CSP 指令
+├── app.py               唯一入口：ui（默认）/ tray / hook / dispatch / install / uninstall / selftest / --version
+├── hook.py              宿主调用的钩子，约 70ms 返回（打包后由 exe 的 `hook` 子命令承担）
+├── dispatch.py          异步派发进程，由 hook 拉起
+├── tray.py              托盘常驻（可选）
+├── install.py           安装器：写 hooks、建快捷方式、写 AUMID
+├── selftest.py          自检：模拟 4 类事件，验证到底能不能收到
+├── config.example.json  配置模板，复制成 config.json 再填
+├── requirements.txt     运行期第三方依赖（只有托盘与 UI 需要）
+├── requirements-dev.txt 开发 / CI 依赖（pytest / ruff / pyyaml / playwright）
+├── pyproject.toml       pytest 与 ruff 的配置
+├── notify.spec          PyInstaller 配置（W7）
+├── notify.manifest      exe 清单：permonitorv2 DPI + asInvoker + Win10 兼容声明
+├── version_info.txt     exe 的版本资源（文件属性里的版本号）
+├── webui/               前端（W1 起）
+│   ├── index.html       页面入口，用 Path.as_uri() 加载；带 9 条 CSP 指令
 │   └── assets/
-│       ├── tokens.css 设计 token（颜色/字号/间距/圆角/动效），唯一色值来源
-│       ├── shell.css  壳布局 + 通用组件，不出现字面色值
+│       ├── tokens.css   设计 token（颜色/字号/间距/圆角/动效），唯一色值来源
+│       ├── shell.css    壳布局 + 通用组件，不出现字面色值
+│       ├── channels.css 通道页专用样式
 │       ├── theme-boot.js <head> 里的同步脚本，首屏定主题，防 FOUC
-│       ├── shell.js   主题 / hash 路由 / bridge / 侧栏 / 顶栏
-│       └── pages/status.js 「运行状态」页，全站样板页
-├── tools/             开发期脚本，不参与运行
-│   ├── shot_webview.py WebView2 窗口截图（WGC，ImageGrab 只能拍到黑块）
-│   ├── make_icon.py   生成多尺寸图标 assets/icon.ico
-│   └── bench_ui.py    首屏可交互耗时基线（W5 重写）
-├── wbn/               核心引擎
-│   ├── config.py      默认值、深合并、原子读写、文件权限收紧
-│   ├── events.py      事件归类 + transcript 摘要提取
-│   ├── filters.py     触发条件判定（时段/项目/关键词/限流）
-│   ├── render.py      模板渲染（{占位符} 替换）
-│   ├── channels.py    10 个推送通道实现
-│   ├── sanitize.py    日志脱敏、URL 协议校验、邮件头防注入
-│   ├── store.py       去重、限流计数、会话计时、失败队列
-│   ├── pipeline.py    流水线编排 + 测试发送
-│   ├── insight.py     config/日志 → 前端可直接渲染的数据（零 UI 依赖，两套界面共用）
-│   ├── logs.py        唯一的日志解析层：文本 → Facts（只做结构，不做业务判断；无状态）
-│   ├── bridge.py      暴露给 JS 的 API（config_get / config_save），返回值统一 {ok,data,error}
-│   └── winapi.py      Windows 进程级 API（AppUserModelID、命名互斥量），只依赖 ctypes
-├── tests/             pytest 用例
-├── state/             运行时状态（去重表、会话计时、失败队列、token 缓存）
-├── logs/              运行日志，按天切分，默认保留 14 天
-└── assets/            图标与界面截图
+│       ├── shell.js     主题 / hash 路由 / bridge / 侧栏 / 顶栏
+│       └── pages/
+│           ├── status.js    「运行状态」页，全站样板页
+│           ├── channels.js  「通知通道」页
+│           ├── triggers.js  「触发规则」页
+│           ├── templates.js 「消息模板」页
+│           └── guide.js     「使用指南」页
+├── wbn/                 核心引擎（零 UI 依赖）
+│   ├── __init__.py      只放 `__version__`（exe 的 `--version` 读这里）
+│   ├── config.py        默认值、深合并、原子读写、权限收紧、frozen 路径解析
+│   ├── events.py        事件归类 + transcript 摘要提取
+│   ├── filters.py       触发条件判定（时段/项目/关键词/限流）
+│   ├── render.py        模板渲染（{占位符} 替换）
+│   ├── channels.py      10 个推送通道实现
+│   ├── sanitize.py      日志脱敏、URL 协议校验、邮件头防注入
+│   ├── spawn.py         拉起子进程时的环境变量（清 `_PYI_*`，见「踩过的坑」）
+│   ├── store.py         去重、限流计数、会话计时、失败队列
+│   ├── pipeline.py      流水线编排 + 测试发送
+│   ├── insight.py       config/日志 → 前端可直接渲染的数据
+│   ├── logs.py          唯一的日志解析层：文本 → Facts（只做结构，不做业务判断）
+│   ├── bridge.py        暴露给 JS 的 API，返回值统一 {ok,data,error}
+│   └── winapi.py        Windows 进程级 API（AUMID、命名互斥量），只依赖 ctypes
+├── tools/               开发 / 验收脚本，**不打包**
+│   ├── build_exe.py     打包 + 打包后七道核对（W7）
+│   ├── bench_ui.py      首屏可交互耗时基线（源码形态 / exe 形态两种口径）
+│   ├── a11y_contrast.py 扫真实计算样式的对比度（playwright + CDP）
+│   ├── shot_webview.py  WebView2 窗口截图（WGC；ImageGrab 只能拍到黑块）
+│   ├── make_icon.py     生成多尺寸图标 assets/icon.ico
+│   ├── accept_*.py      各轮验收用的一次性驱动脚本
+│   ├── launch_*.py      同上：把界面拉起来、摆好场景
+│   ├── prepare_*.py     同上：准备验收用的界面状态
+│   ├── w35_scenarios.py 同上：W3.5 的场景清单
+│   └── verify_matrix_against_old.py  同上：新旧并排核对
+├── tests/               pytest 用例与守卫（JS 源码扫描 / 焦点 / Markdown 星号 / 文档目录树…）
+├── docs/                设计文档、ADR、路线图、验收基线
+├── state/               运行时状态（去重表、会话计时、失败队列、token 缓存）
+├── logs/                运行日志，按天切分，默认保留 14 天
+└── assets/              图标与界面截图
 ```
 
-`config.json`、`state/`、`logs/` 全部基于 `wbn/config.py` 里的
-`ROOT = Path(__file__).parent.parent` 推导。所以这个项目刻意不做成可安装包：
-一旦 `pip install` 到 site-packages，`ROOT` 会变成 Python 安装目录，
-配置和日志就写到不该去的地方。解压到哪里就在哪里跑。
+**路径解析分两个根，不许混**（`wbn/config.py`）：
 
-## 踩过的坑：本机 WebView2 曾经一片黑（2026-10-27，已解决）
+| 变量 | 源码形态 | exe 形态 | 装什么 |
+|---|---|---|---|
+| `config.ROOT` | 仓库根 | exe 所在目录（不可写时回落 `%LOCALAPPDATA%\WBNotify`） | `config.json`、`state/`、`logs/` |
+| `config.BUNDLE` | 仓库根 | `sys._MEIPASS`（退出即删） | `webui/`、`assets/` |
+
+`config.json`、`state/`、`logs/` 全部基于 `config.ROOT` 推导。所以这个项目刻意
+不做成可安装包：一旦 `pip install` 到 site-packages，`ROOT` 会变成 Python 安装
+目录，配置和日志就写到不该去的地方。解压到哪里就在哪里跑。
+
+`BUNDLE` 是**只读**的：exe 形态下它在 `%TEMP%\_MEIxxxxxx`，程序一退就被删。
+把配置写进去的症状是「填好的凭证重启就没了」，而且本机（源码形态）永远复现不了
+——这是 R2，`tests/test_frozen_paths.py` 是唯一能挡住它的东西。
+
+## 踩过的坑：本机 WebView2 曾经一片黑（2026-10-27 发现，**2026-10-30 已不可复现**）
+
+> **W7 复测结论（2026-10-30）**：源码形态和 exe 形态在**不加** `--no-sandbox`
+> 的情况下都能正常渲染（截图与首屏打点都通），5 轮中位数还比关沙箱快一点点
+> （2549 vs 2674ms，在噪声里）。所以 `app.py` 的默认已经改成**带沙箱**，
+> 只在看门狗判定黑窗（bridge 10s 没通）时带 `--no-sandbox` 重启一次自己。
+> 下面这段保留，因为它解释了那个降级路径为什么存在。
 
 **症状**：`python app.py` 开出窗口，原生边框、标题、尺寸、最小尺寸全对，
 但内容区是一整块黑（`background_color` 设成浅色时是一整块浅色）。
 
-**根因：Chromium 的渲染进程沙箱在这台机器上起不来，浏览器进程起来后立刻退出。**
+**当时的根因：Chromium 的渲染进程沙箱在这台机器上起不来，浏览器进程起来后立刻退出。**
 pywebview 完全没有察觉——初始化回调报 `IsSuccess=True`，前端照样能调通
 bridge，Python 侧看不出任何异常，只是画面一次都没合成过。
 
-**解法**：给 WebView2 加 `--no-sandbox`（`app.py` 里通过
+**当时的解法**：给 WebView2 加 `--no-sandbox`（`app.py` 里通过
 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS` 注入）。这个窗口只加载本地
 `webui/index.html`，不加载任何远端页面，关沙箱的实际暴露面很小。
 **一旦以后要在这个窗口里打开外部网页，必须重新评估。**
-想恢复沙箱：设环境变量 `WBN_WEBVIEW_SANDBOX=1`。
+
+**现在的做法（W7 起）**：默认带沙箱；看门狗判定黑窗时
+`_retry_without_sandbox()` 带 `--no-sandbox` 重启一次自己（换进程，
+因为 `webview.start()` 一个进程只能调一次）。三道闸防重启风暴，见函数注释。
 
 排查时排除过的方向（都验过，别重复走）：
 
@@ -247,6 +308,58 @@ bridge，Python 侧看不出任何异常，只是画面一次都没合成过。
 - **pywebview 6.x 从非 GUI 线程调 `evaluate_js` 会死锁**（`Semaphore` 等不到
   `ContinueWith` 的 continuation），而且死锁时连 GIL 一起占住，看门狗线程都跑不了。
   自动化验收别用 `evaluate_js` 驱动，直接对真窗口发鼠标事件更可靠。
+
+## 踩过的坑：打包后「能启动」和「能用」差三个东西（2026-10-30）
+
+W7 第一版 exe 打包一次就成功了：19MB、`--version` 退出码 0、
+`webui` 文件数 11 == 11、体积远低于上限。**然后它一件正事都干不了。**
+三个坑一个比一个隐蔽，而且**在本机上全都测不出来**：
+
+### 1. `importlib.import_module(变量)` 让五个子命令模块根本没进包
+
+`app.py` 的 `_delegate()` 用 `importlib.import_module(cmd)` 分发子命令，
+`cmd` 是运行时变量。PyInstaller 只做静态分析，看到这种写法就当没 import。
+
+于是 `hook` / `dispatch` / `tray` / `install` / `selftest` 一个都没进 PYZ。
+`通知.exe --version` 正常（走的是 app.py 自己），`通知.exe hook` 在干净机器上
+`ModuleNotFoundError`——**整个产品最核心的那条链路不在包里**。
+
+**判据**：`notify.spec` 的 `hiddenimports` 必须列全这五个；
+`tools/build_exe.py` 的 `check_modules()` 会把它们从 PYZ 里捞出来点名核对。
+**只看「exe 能启动」永远发现不了这个。**
+
+### 2. pywebview 的 `js/` 目录不在上游 hook 里，界面会变成一块死页面
+
+`_pyinstaller_hooks_contrib` 的 `hook-webview.py` 只收 `webview/lib`（.dll），
+**没收 `webview/js`**（api.js / state.js / finish.js / customize.js / lib/*.js）。
+那些文件是 pywebview 在导航完成后从磁盘读出来注入页面的。
+
+症状极难自查：窗口正常、标题栏正常、CSS 正常、骨架屏都在，
+**只有 `window.pywebview` 不存在**，于是所有 bridge 调用永不返回，页面停在
+「正在读取…」。Python 侧一行异常都没有（`get_js_dir()` 抛的
+FileNotFoundError 被 pywebview 的 logger 吞了），只有 10 秒看门狗报
+`no_render`——指向的还是 WebView2，方向完全错。
+
+**解法**：`datas` 里加 `collect_data_files("webview", subdir="js")`。
+`check_datas()` 守这一条。
+
+### 3. exe 拉起自己时，继承的 `_PYI_*` 会让子进程挂死
+
+onefile 的 bootloader 用 `_PYI_PARENT_PROCESS_LEVEL` 等变量告诉子进程
+「父进程已经解压好了，直接复用 `_MEIPASS`」。我们的程序**也会 spawn 自己**
+（`hook → dispatch`、`tray → 打开设置`），继承来的变量让子进程去复用
+**一个马上就要被父进程删掉的临时目录**。
+
+症状：hook 退出码 0、`Popen` 不抛异常、日志目录根本没被创建、
+通知一条都发不出去。给 `通知.exe --version` 手工加上那三个变量能直接复现
+（60 秒不返回）。开发态完全正常，因为 python.exe 不认这些变量。
+
+**解法**：`wbn/spawn.py` 的 `child_env()` 清掉 `_PYI_*` 与老名字 `_MEIPASS*`，
+hook / tray / 黑窗重启三处都用它。`tests/test_self_spawn_env.py` 守契约。
+
+> 三个坑的共同点：**它们都不在「exe 能不能启动」这个判据里**。
+> 所以 `tools/build_exe.py` 的四道核对（子命令模块 / 运行期数据 /
+> webui 文件数 / 体积）不是锦上添花——它们是唯一能在本机发现这三类问题的东西。
 
 ## 前端：三层文件，一条铁律
 
