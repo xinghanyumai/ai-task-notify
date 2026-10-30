@@ -1167,6 +1167,66 @@ body[data-route="channels"] .col { max-width: none; }
 
 .sub-head:first-child { margin-top: 0; }
 
+/* ---- 指南页页内导航（W7.4） --------------------------------------------
+   **不是 `<a href="#id">`。** `shell.js:349` 的 `routeFromHash()` 把
+   `location.hash` 当路由名，`go()` 里不认识的值直接落回 `DEFAULT_ROUTE`
+   —— 用锚链接点一下，人就跳到状态页了。所以导航项全是 `<button data-goto>`，
+   点击只 `scrollIntoView`，hash 始终停在 `#guide`。
+
+   视觉上是一条「索引条」，不是卡片：这一页的主人是正文，导航是目录。
+   所以只有一条下边线（--border，装饰分隔线），不加底色、不加阴影。
+
+   边框用 --border-input 而**不是 --border-strong**：后者是装饰分隔线，
+   对白卡只有 1.45:1；chip 的边框是「这里可以点」的唯一信息，按 WCAG 1.4.11
+   要 3:1（同 .btn-secondary 的理由，见上）。 */
+.guide-nav {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s2);
+  margin: var(--s5) 0 var(--s6);
+  padding-bottom: var(--s4);
+  border-bottom: 1px solid var(--border);
+}
+
+.guide-chip {
+  height: 32px;
+  padding: 0 var(--s3);
+  border: 1px solid var(--border-input);
+  border-radius: var(--r-pill);
+  background: transparent;
+  color: var(--fg-muted);
+  font-family: inherit;
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+  cursor: pointer;
+  transition: background var(--dur-fast) var(--ease),
+              color var(--dur-fast) var(--ease);
+}
+
+.guide-chip:hover { background: var(--bg-hover); color: var(--fg); }
+
+/* 「其他通道」组内的二级索引：9 个通道各一枚。比顶部那排小一号、加底色，
+   让「这是一排东西」和「这是一排入口」在视觉上分开。 */
+.guide-index {
+  display: flex;
+  flex-wrap: wrap;
+  gap: var(--s1) var(--s2);
+  margin: var(--s3) 0 var(--s1);
+}
+
+.guide-chip.is-sub {
+  height: 28px;
+  padding: 0 var(--s2);
+  border-color: transparent;
+  background: var(--bg-subtle);
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+}
+
+/* 滚过去的落点离容器顶边留一点气，否则标题贴着上边缘像被切了。
+   只匹配本页自己加的锚点，不外溢到别的 id。 */
+[id^="guide-"] { scroll-margin-top: var(--s3); }
+
 /* 项目符号列表 */
 .bullets {
   margin: var(--s2) 0 0;

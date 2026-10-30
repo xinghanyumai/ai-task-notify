@@ -121,57 +121,90 @@
      每个通道两段：**要填什么**（字段名和通道页一致）+ **去哪拿**（具体到菜单路径）。
      不写「按提示填写」：通道页的 help 已经很长，这一页的价值就是摊开对比。 */
   var OTHERS = [
-    { name: "企业微信 · 自建应用",
+    { key: "wxwork-app", name: "企业微信 · 自建应用",
       need: "要填：企业 ID（corpid）、应用 Secret、AgentId、收件人（填 @all 就发给可见范围内所有人）。",
       where: "去哪拿：企业微信后台 → 我的企业 → 复制「企业 ID」；应用管理 → 自建 → " +
              "创建应用，详情页里有 AgentId 和 Secret；同一页的「可见范围」把自己加进去，" +
              "否则发不出去。" },
-    { name: "企业微信 · 群机器人",
+    { key: "wxwork-bot", name: "企业微信 · 群机器人",
       need: "要填：Webhook 地址（一长串 URL，不需要别的）。",
       where: "去哪拿：企业微信群里 → 右上角「…」→ 群机器人 → 添加 → 复制 Webhook 地址。" +
              "没有企业的话可以在 work.weixin.qq.com 免费注册一个自己用。" },
-    { name: "钉钉 · 群机器人",
+    { key: "dingtalk", name: "钉钉 · 群机器人",
       need: "要填：Webhook 地址；如果建机器人时勾了「加签」，再填加签密钥（secret）。",
       where: "去哪拿：钉钉群 → 群设置 → 智能群助手 → 添加机器人 → 自定义 → " +
              "复制 Webhook；加签密钥在同一步的「安全设置」里，只在勾了加签时才有。" },
-    { name: "飞书 · 群机器人",
+    { key: "feishu", name: "飞书 · 群机器人",
       need: "要填：Webhook 地址。",
       where: "去哪拿：飞书群 → 群设置 → 群机器人 → 添加 → 自定义机器人 → 复制 Webhook 地址。" },
-    { name: "Bark（iPhone）",
+    { key: "bark", name: "Bark（iPhone）",
       need: "要填：设备 Key（那串字母数字，不是整条 URL）。",
       where: "去哪拿：App Store 装 Bark，打开 App 首页会显示 " +
              "https://api.day.app/XXXXXXXX，斜杠后面那一段就是 key。" +
              "用自建服务器的话把「服务器」改成自己的地址。" },
-    { name: "ntfy（跨平台）",
+    { key: "ntfy", name: "ntfy（跨平台）",
       need: "要填：Topic（自己起一个别人猜不到的名字，越随机越好）。",
       where: "去哪拿：不用注册。手机装 ntfy App 后订阅同一个 topic 名；" +
              "电脑装 ntfy 桌面客户端订阅同名 topic 就能弹 Windows 通知。" },
-    { name: "邮件（SMTP）",
+    { key: "smtp", name: "邮件（SMTP）",
       need: "要填：SMTP 服务器、端口、账号（完整邮箱地址）、密码。" +
             "注意：密码要填授权码，不是登录密码。",
       where: "去哪拿：QQ 邮箱 → 设置 → 账户 → 开启「SMTP 服务」→ 生成授权码；" +
              "服务器填 smtp.qq.com、端口 465、勾上 SSL。收件人留空就发给自己。" },
-    { name: "自定义 Webhook",
+    { key: "webhook", name: "自定义 Webhook",
       need: "要填：URL；请求体想自己定就写 body_template，可用 {title} {content} " +
             "{kind} {project} 占位。",
       where: "去哪拿：不用拿——这是给你自己的服务用的。默认按 POST JSON 发 " +
              "{\"title\":…,\"content\":…}，对方能收 JSON 就行。" },
-    { name: "本机落盘",
+    { key: "log", name: "本机落盘",
       need: "不用填任何东西，开关打开就生效。",
       where: "作用：只往 logs/ 写一份记录，不发到任何地方。用来留档、也用来排查" +
              "「到底有没有触发」——它是唯一不会因为网络问题失败的通道。" }
   ];
 
+  /* 页内导航（W7.4）。
+   *
+   * **不许用 `<a href="#guide-others">`。** `shell.js:349` 的 `routeFromHash()`
+   * 把 `location.hash` 当路由名，`go()` 里不认识的直接落回 `DEFAULT_ROUTE`
+   * （状态页）——点一下导航，人就被弹到别的页面去了。所以这里全是
+   * `<button data-goto>`，点击只调 `scrollIntoView`，**一行都不碰 location.hash**。
+   *
+   * 也不做滚动联动的高亮：这一页是长文，IntersectionObserver 在快速滚动时
+   * 会来回抖，收益不成比例（任务书 §2.1）。 */
+  var NAV = [
+    { id: "guide-wxmp",    label: "微信测试号" },
+    { id: "guide-others",  label: "其他通道（" + OTHERS.length + " 个）" },
+    { id: "guide-phone",   label: "手机弹窗" },
+    { id: "guide-desktop", label: "电脑弹窗" },
+    { id: "guide-trouble", label: "排查" }
+  ];
+
   /* ---- 渲染 -------------------------------------------------------------- */
 
-  function group(title, desc) {
+  function group(title, desc, id) {
     var ctx = state.ctx;
     var g = ctx.el("section", "group");
+    if (id) g.id = id;
     g.appendChild(ctx.el("h2", null, title));
     if (desc) g.appendChild(ctx.el("p", "desc", desc));
     var body = ctx.el("div", "body");
     g.appendChild(body);
     return { root: g, body: body };
+  }
+
+  /** 滚到某个锚点。不动焦点——把焦点搬到目标段落会让键盘用户丢失位置。 */
+  function jump(id) {
+    var target = document.getElementById(id);
+    if (target) target.scrollIntoView({ block: "start" });
+  }
+
+  /** 一个导航 chip。文字就是去处，所以不再加 aria-label（读屏会念两遍）。 */
+  function chip(label, target, extra) {
+    var b = state.ctx.el("button", "guide-chip" + (extra ? " " + extra : ""), label);
+    b.type = "button";
+    b.setAttribute("data-goto", target);
+    b.addEventListener("click", function () { jump(target); });
+    return b;
   }
 
   function build() {
@@ -181,8 +214,14 @@
     /* 开场：一段承诺。它不是标题（顶栏已经有了），是正文的第一段。 */
     state.root.appendChild(ctx.el("p", "page-sub", INTRO));
 
+    /* ---- 页内导航：进页面就知道「去哪看什么」 ---- */
+    var nav = ctx.el("nav", "guide-nav");
+    nav.setAttribute("aria-label", "本页导航");
+    NAV.forEach(function (n) { nav.appendChild(chip(n.label, n.id)); });
+    state.root.appendChild(nav);
+
     /* ---- 四步 ---- */
-    var g1 = group("四步走通", "");
+    var g1 = group("四步走通", "", "guide-wxmp");
     STEPS.forEach(function (s, i) {
       var row = ctx.el("div", "step");
 
@@ -209,16 +248,28 @@
 
     /* ---- 其他通道 ---- */
     var gOther = group("其他通道怎么配",
-      "不走微信的话看这里。字段名和「通知通道」页上的一致，照着填即可。");
+      "不走微信的话看这里。字段名和「通知通道」页上的一致，照着填即可。",
+      "guide-others");
+
+    /* 二级索引：9 张卡片各在哪儿。文字直接取 `OTHERS[].name`，
+       和下面的卡片标题是**同一个字段**——两处分别写一遍迟早对不上。 */
+    var index = ctx.el("div", "guide-index");
     OTHERS.forEach(function (o) {
-      gOther.body.appendChild(ctx.el("h3", "sub-head", o.name));
+      index.appendChild(chip(o.name, "guide-ch-" + o.key, "is-sub"));
+    });
+    gOther.body.appendChild(index);
+
+    OTHERS.forEach(function (o) {
+      var head = ctx.el("h3", "sub-head", o.name);
+      head.id = "guide-ch-" + o.key;
+      gOther.body.appendChild(head);
       gOther.body.appendChild(ctx.el("p", "step-text", o.need));
       gOther.body.appendChild(ctx.el("p", "step-text", o.where));
     });
     state.root.appendChild(gOther.root);
 
     /* ---- 手机弹窗 ---- */
-    var g2 = group("手机弹窗怎么开", POPUP_DESC);
+    var g2 = group("手机弹窗怎么开", POPUP_DESC, "guide-phone");
     POPUP.forEach(function (block) {
       g2.body.appendChild(ctx.el("h3", "sub-head", block.name));
       var ul = ctx.el("ul", "bullets");
@@ -228,7 +279,7 @@
     state.root.appendChild(g2.root);
 
     /* ---- 电脑弹窗 ---- */
-    var g3 = group("电脑上也要弹窗", DESKTOP_DESC);
+    var g3 = group("电脑上也要弹窗", DESKTOP_DESC, "guide-desktop");
     DESKTOP.forEach(function (p) {
       g3.body.appendChild(ctx.el("h3", "sub-head", p.name));
       g3.body.appendChild(ctx.el("p", "step-text", p.text));
@@ -236,7 +287,7 @@
     state.root.appendChild(g3.root);
 
     /* ---- 排查 ---- */
-    var g4 = group("收不到？按这个顺序查", "");
+    var g4 = group("收不到？按这个顺序查", "", "guide-trouble");
     /* 最后一个分组不用额外加留白：`.group` 的 margin-bottom 就是 --s6，
        再往下是滚动容器的内边距，和 tkinter 版一样。 */
     CHECKS.forEach(function (c, i) {
