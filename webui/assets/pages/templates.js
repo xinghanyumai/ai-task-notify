@@ -270,8 +270,45 @@
       onEdit("templates", ta.value);
     });
     contentField.appendChild(ta);
-    contentField.appendChild(ctx.el("p", "field-hint",
-      "换行会原样保留。`**粗体**` 这类 markdown 记号在纯文本通道里会被去掉。"));
+    /* 这一栏的说明（W7.0 §4）。原来的「换行会原样保留」在微信上是**假的**：
+       `_flatten()` 先把内容压成一行，微信卡片的正文取的是 AI 摘要
+       （`_wxmp_values` 里 `detail = summary`，只有摘要为空才回落到正文）。
+       三件事必须分开说，压成「部分通道不支持」等于没说：
+         1. 标题去哪 —— 所有通道都用
+         2. 正文去哪 —— 只对 Markdown 通道生效；微信不用这一栏
+         3. 微信卡片长什么样由谁决定 —— 测试号后台的模板内容，改这里不会变
+       只说「不生效」不说「那要怎么改」，等于把问题推回给用户。
+
+       段用 `{b: …}` 表示要加粗的那一段：这里是 DOM 文本，不是 markdown，
+       写成 `**加粗**` 会原样显示两个星号。 */
+    var notes = ctx.el("ul", "field-notes");
+    [
+      { label: "标题",
+        parts: ["所有通道都用它，微信卡片的第一行也是它。"] },
+      { label: "正文",
+        parts: ["只对 Markdown 通道生效：企业微信（自建应用 / 群机器人）、钉钉群机器人。" +
+                "飞书、bark、ntfy、邮件、Webhook 按纯文本发，" +
+                "markdown 记号（两个星号包住的粗体、竖线表格）会被去掉。"] },
+      { label: "微信",
+        parts: ["不用这一栏——微信卡片上的正文是 AI 回复的摘要，不是你写在这里的字。" +
+                "卡片有几行、标签写什么、卡片标题叫什么，都由你在测试号后台" +
+                "「新增测试模板」时填的内容决定。",
+                { b: "想改微信卡片，就去测试号后台改那个模板" },
+                "，改这里不会变。"] }
+    ].forEach(function (row) {
+      var li = ctx.el("li");
+      li.appendChild(ctx.el("strong", null, row.label));
+      li.appendChild(document.createTextNode(" → "));
+      row.parts.forEach(function (part) {
+        if (typeof part === "string") {
+          li.appendChild(document.createTextNode(part));
+        } else {
+          li.appendChild(ctx.el("strong", null, part.b));
+        }
+      });
+      notes.appendChild(li);
+    });
+    contentField.appendChild(notes);
     state.nodes.content = ta;
     g.body.appendChild(contentField);
 

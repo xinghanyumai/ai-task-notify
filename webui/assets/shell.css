@@ -917,6 +917,21 @@ body[data-route="channels"] .col { max-width: none; }
   word-break: break-word;
 }
 
+/* 表单里的**多行**说明（W7.0：模板页正文那一栏要去哪、不去哪、不去哪时该改什么）。
+   字号沿用 hint，不跟着 `.bullets` 的正文尺寸走——它仍然是「字段说明」，
+   不是正文。`strong` 只做标签强调，颜色提到 --fg，别让三行糊成一片。 */
+.field-notes {
+  margin: 0;
+  padding-left: var(--s4);
+  font-size: var(--fs-label);
+  line-height: var(--lh-label);
+  color: var(--fg-subtle);
+  word-break: break-word;
+}
+
+.field-notes li + li { margin-top: var(--s1); }
+.field-notes strong { color: var(--fg); font-weight: var(--fw-semibold); }
+
 /* 校验失败的那一行说明。**不弹窗**（§3.4），就在字段下面说一句。
    `data-level="warn"` 用于「值合法、但看着像手滑」——比如超上限，
    这时**不改用户的值**，只提醒（W4 审计 A4）。 */

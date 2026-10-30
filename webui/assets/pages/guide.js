@@ -116,6 +116,52 @@
       text: "打开 logs/notify-日期.log，里面每条都有 ok=True/False 和原始返回。" }
   ];
 
+  /* 「其他通道怎么配」（W7.0）。原来这一页只有微信测试号四步，其余 9 个通道
+     只在「电脑上也要弹窗」里被顺带提了一句——用户配 bark / 钉钉时这一页等于没有。
+     每个通道两段：**要填什么**（字段名和通道页一致）+ **去哪拿**（具体到菜单路径）。
+     不写「按提示填写」：通道页的 help 已经很长，这一页的价值就是摊开对比。 */
+  var OTHERS = [
+    { name: "企业微信 · 自建应用",
+      need: "要填：企业 ID（corpid）、应用 Secret、AgentId、收件人（填 @all 就发给可见范围内所有人）。",
+      where: "去哪拿：企业微信后台 → 我的企业 → 复制「企业 ID」；应用管理 → 自建 → " +
+             "创建应用，详情页里有 AgentId 和 Secret；同一页的「可见范围」把自己加进去，" +
+             "否则发不出去。" },
+    { name: "企业微信 · 群机器人",
+      need: "要填：Webhook 地址（一长串 URL，不需要别的）。",
+      where: "去哪拿：企业微信群里 → 右上角「…」→ 群机器人 → 添加 → 复制 Webhook 地址。" +
+             "没有企业的话可以在 work.weixin.qq.com 免费注册一个自己用。" },
+    { name: "钉钉 · 群机器人",
+      need: "要填：Webhook 地址；如果建机器人时勾了「加签」，再填加签密钥（secret）。",
+      where: "去哪拿：钉钉群 → 群设置 → 智能群助手 → 添加机器人 → 自定义 → " +
+             "复制 Webhook；加签密钥在同一步的「安全设置」里，只在勾了加签时才有。" },
+    { name: "飞书 · 群机器人",
+      need: "要填：Webhook 地址。",
+      where: "去哪拿：飞书群 → 群设置 → 群机器人 → 添加 → 自定义机器人 → 复制 Webhook 地址。" },
+    { name: "Bark（iPhone）",
+      need: "要填：设备 Key（那串字母数字，不是整条 URL）。",
+      where: "去哪拿：App Store 装 Bark，打开 App 首页会显示 " +
+             "https://api.day.app/XXXXXXXX，斜杠后面那一段就是 key。" +
+             "用自建服务器的话把「服务器」改成自己的地址。" },
+    { name: "ntfy（跨平台）",
+      need: "要填：Topic（自己起一个别人猜不到的名字，越随机越好）。",
+      where: "去哪拿：不用注册。手机装 ntfy App 后订阅同一个 topic 名；" +
+             "电脑装 ntfy 桌面客户端订阅同名 topic 就能弹 Windows 通知。" },
+    { name: "邮件（SMTP）",
+      need: "要填：SMTP 服务器、端口、账号（完整邮箱地址）、密码。" +
+            "**密码要填授权码，不是登录密码。**",
+      where: "去哪拿：QQ 邮箱 → 设置 → 账户 → 开启「SMTP 服务」→ 生成授权码；" +
+             "服务器填 smtp.qq.com、端口 465、勾上 SSL。收件人留空就发给自己。" },
+    { name: "自定义 Webhook",
+      need: "要填：URL；请求体想自己定就写 body_template，可用 {title} {content} " +
+            "{kind} {project} 占位。",
+      where: "去哪拿：不用拿——这是给你自己的服务用的。默认按 POST JSON 发 " +
+             "{\"title\":…,\"content\":…}，对方能收 JSON 就行。" },
+    { name: "本机落盘",
+      need: "不用填任何东西，开关打开就生效。",
+      where: "作用：只往 logs/ 写一份记录，不发到任何地方。用来留档、也用来排查" +
+             "「到底有没有触发」——它是唯一不会因为网络问题失败的通道。" }
+  ];
+
   /* ---- 渲染 -------------------------------------------------------------- */
 
   function group(title, desc) {
@@ -160,6 +206,16 @@
       g1.body.appendChild(row);
     });
     state.root.appendChild(g1.root);
+
+    /* ---- 其他通道 ---- */
+    var gOther = group("其他通道怎么配",
+      "不走微信的话看这里。字段名和「通知通道」页上的一致，照着填即可。");
+    OTHERS.forEach(function (o) {
+      gOther.body.appendChild(ctx.el("h3", "sub-head", o.name));
+      gOther.body.appendChild(ctx.el("p", "step-text", o.need));
+      gOther.body.appendChild(ctx.el("p", "step-text", o.where));
+    });
+    state.root.appendChild(gOther.root);
 
     /* ---- 手机弹窗 ---- */
     var g2 = group("手机弹窗怎么开", POPUP_DESC);
