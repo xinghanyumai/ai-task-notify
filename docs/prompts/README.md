@@ -36,7 +36,8 @@
 | 逐项回归、查 a11y、量性能 | **W6** ✅ | [W6-复核-回归与可访问性.md](W6-复核-回归与可访问性.md) |
 | 落地 W6 的 8 条裁定：两处缺陷 + 三条预算 | **W6.3** ✅ | [W6.3-复核裁定落地.md](W6.3-复核裁定落地.md) |
 | 焦点丢失收口（三页的 `disabled`）+ 阈值校正 | **W6.4** ✅ | [W6.4-焦点丢失收口.md](W6.4-焦点丢失收口.md) |
-| `paintDetail()` 的焦点守卫（机制代替记性） | **W6.5** | [W6.5-paintDetail焦点守卫.md](W6.5-paintDetail焦点守卫.md) |
+| `paintDetail()` 的焦点守卫（机制代替记性） | **W6.5** ✅ | [W6.5-paintDetail焦点守卫.md](W6.5-paintDetail焦点守卫.md) |
+| 入口修好（命令行引号）+ 模板页与指南补全 | **W7.0** | [W7.0-入口修好与说明补全.md](W7.0-入口修好与说明补全.md) |
 | **打成单文件 exe** | **W7** | [W7-单文件打包.md](W7-单文件打包.md) |
 | **发版、升级路径、卸载** | **W8** | [W8-发布与分发.md](W8-发布与分发.md) |
 | 开源发布 | **P5** | [P5-开源发布.md](P5-开源发布.md) |
@@ -1155,6 +1156,55 @@ W6.4 修了 save 和 toggle 的焦点，但漏了第 8 处：channels.js:877 的
 做完按 §4 八项汇报。W6.5 绿了直接进 W7。
 ```
 
+### W7.0 · 入口修好 + 说明补全
+
+```
+@docs/prompts/W7.0-入口修好与说明补全.md
+@skill:tdd
+用户报三件事：桌面图标打不开、模板不知有没有用、指南只有微信。
+三个根因 PM 都已实测钉死（见 §0），不用再查。
+
+P0 双击打不开的真因不是 ui.py（上一轮误判）：
+install.py:make_shortcut() 里 arg_line = str(script) 没加双引号。
+路径 D:\Code\Work buddy 通知\app.py 含空格 → Windows 拆成两个参数 →
+Python 把 D:\Code\Work 当脚本 → 找不到 → pythonw 静默退出。
+实测：无引号报 can't open file 'D:\\Code\\Work\\'；加引号窗口正常起来。
+同一文件里 hook_command() 是加引号的——一处加一处不加。
+
+改成 arg_line = f'"{script}"'。args（--silent）不用加引号。
+
+三条守卫（tests/test_shortcut_launch.py），核心是第 1 条：
+用 shell32.CommandLineToArgvW 解析 .lnk 的 Arguments，断言切出的第一个参数
+就是完整脚本路径且文件存在。不许写 assert args.startswith('"')——那是看长相，
+测「Windows 会怎么理解」才是同一把尺子。造 .lnk 时 tmp_path 必须放进含空格的目录。
+变异必须验：M1 改回 str(script) / M2 去掉 hook_command 的引号 / M3 UI_PATH 改 ui.py。
+
+P1 模板页（templates.js 第 274 行 hint）：现在写「换行会原样保留」在微信上是假的。
+必须说清三件事：标题所有通道都生效；正文微信不生效（微信显示 AI 摘要）；
+微信卡片几行/标签/卡片标题由测试号那边的模板内容决定。
+还要有一句指向「想改微信卡片就去测试号后台改模板」——只说"不生效"等于把问题推回用户。
+
+P1 指南（guide.js）：4 步全是微信，其余 9 个通道没有配置步骤。
+新增「其他通道怎么配」分组，每个通道两到三行，必须写清「要填什么 + 去哪拿」。
+硬约束：只许新增，不许改现有文案——test_guide_copy.py 用 fixtures 快照逐段比对，
+改现有段落必红。要改必须同步更新快照并说明哪段、为什么。不许改快照让测试变绿。
+
+顺带：飞书 help 38 字、钉钉 58 字、log 27 字，能补就补到 ntfy 那个量级（112 字）。
+
+AUMID 那笔（任务栏 Python 图标）仍然要做，参考实现和五个不能改的细节在 §7。
+
+发现但本轮不修：已有实例时双击"看起来没反应"（单实例锁 + focus_existing 实测有效），
+登记 R52 P3；.lnk 没有 HasLinkInfo，登记 R53 P4。
+
+不许用 os.startfile 验证「双击能开」——它走 open 动词，可能被 shell 扩展劫持
+（这台机器有华为 ShareMenu），和用户双击不是同一路径。
+
+真机验证第 4 条：删旧 .lnk → install.py shortcut --no-autostart →
+先确认没有残留实例（单实例锁会混淆判断）→ 双击 → 窗口出现。
+
+做完按 §10 十项汇报。
+```
+
 ### W7 · 单文件打包
 
 ```
@@ -1162,14 +1212,31 @@ W6.4 修了 save 和 toggle 的焦点，但漏了第 8 处：channels.js:877 的
 @skill:ci-cd-and-automation
 按 W7 打成单文件 exe。这是全项目唯一不可逆的交付物。
 
+前置已满足：W6 系列收口，502 passed, 1 skipped，ruff 干净。
+
 硬约束：
 - config.ROOT 必须支持 frozen（exe 目录）与只读回落（%LOCALAPPDATA%）
 - 前端资源走 sys._MEIPASS，配置和日志写 exe 旁边，两者不许混
 - 必须声明 permonitorv2 DPI，否则 250% 下全糊
 - 不许为了打包通过而 excludes 掉还在用的模块
 
+excludes 要排掉开发工具链（任务书 §3 已列）：
+cv2 / windows_capture（只给 tools/shot_webview.py）、playwright（只给 tools/a11y_contrast.py）
+排掉后必须启动 exe 验五页 + 发一条测试消息，证明没排到在用的模块。
+
+两条必须给的数字（§0.0）：
+- 首屏 A 的 exe 形态（源码是 2056–2101ms，exe 自解压会再涨）
+- 内存的 exe 形态（源码私有 349.6MB / 工作集 601MB）
+**两条都要给"exe 形态的新预算应该是多少"，不许沿用源码数字。**
+
+一条容易漏的判据（第 8 条）：
+webui 文件数核对 —— 源码侧 N 个、exe 内 M 个，N 必须等于 M。
+漏一个 .css/.js 的后果是源码正常、exe 白屏，本机测不出来。
+
 做完停下来，给我：1) onefile/onedir 选择 + 冷启动三次实测
-2) 干净机器验证截图 3) 配置落盘路径 4) hook 链路是否通
+2) excludes 逐项说明 3) 干净机器截图 4) 配置落盘路径 5) hook 链路
+6) 首屏与内存的 exe 实测 + 新预算 7) webui 文件数两个数
+8) --no-sandbox 结论（保留还是改探测式）
 ```
 
 ### W8 · 发布与分发
