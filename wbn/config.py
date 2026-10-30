@@ -3,7 +3,10 @@
 设计要点：
 - 用户 config.json 只写需要覆盖的字段，其余从 DEFAULT_CONFIG 深合并补全，
   这样升级版本时新增配置项会自动出现，不会因为缺字段报 KeyError。
-- 所有路径基于本文件位置推导，整个目录可以整体搬走。
+- 所有路径基于 `_resolve_root()` 推导，整个目录可以整体搬走。
+- **打包后数据目录和资源目录是两个地方**：资源（webui/、图标）在
+  `sys._MEIPASS`（只读、退出即删），配置 / 日志 / 状态在 exe 旁边（或回落
+  `%LOCALAPPDATA%`）。两者混用就是 R2：用户填的 10 个通道凭证重启全没。
 """
 
 from __future__ import annotations
@@ -12,13 +15,69 @@ import copy
 import json
 import os
 import subprocess
+import sys
 from pathlib import Path
 
-ROOT = Path(__file__).resolve().parent.parent
+
+def _resolve_root() -> Path:
+    """**数据**根目录：配置、日志、状态写这里。
+
+    - 源码态：仓库根（`wbn/` 的上一级）
+    - 打包后：**exe 所在目录**（绿色便携，拷走整个文件夹就带走配置）
+    - exe 目录不可写时（放在 `C:\\Program Files`）：回落 `%LOCALAPPDATA%\\WBNotify`
+
+    为什么不能用 `Path(__file__)`：PyInstaller onefile 把代码解压到
+    `%TEMP%\\_MEIxxxxxx`，`__file__` 指着那里，**退出即删**。照那个路径存配置，
+    用户重启后所有凭证、日志、状态全没——而且不会有任何报错。
+    """
+    if not getattr(sys, "frozen", False):
+        return Path(__file__).resolve().parent.parent
+
+    exe_dir = Path(sys.executable).resolve().parent
+    # 真去写一个文件再删，而不是 `os.access(dir, W_OK)`：Windows 上后者对
+    # 目录基本恒为 True（它只看只读属性，不看 ACL），Program Files 会漏判。
+    try:
+        probe = exe_dir / ".wbn_write_probe"
+        probe.touch()
+        probe.unlink()
+    except OSError:
+        base = os.environ.get("LOCALAPPDATA") or str(Path.home())
+        return Path(base) / "WBNotify"
+    return exe_dir
+
+
+def _resolve_bundle() -> Path:
+    """**资源**根目录：webui/、assets/ 这些只读文件从这里读。
+
+    源码态和 `_resolve_root()` 是同一个目录；打包后是 `_MEIPASS` 那个临时解压
+    目录。分开两个函数是为了让「哪个路径能写」在调用处一眼可辨——
+    `ROOT` 能写、`BUNDLE` 不能写。
+    """
+    meipass = getattr(sys, "_MEIPASS", None)
+    if meipass:
+        return Path(meipass)
+    return Path(__file__).resolve().parent.parent
+
+
+ROOT = _resolve_root()
+BUNDLE = _resolve_bundle()
 CONFIG_PATH = ROOT / "config.json"
 STATE_DIR = ROOT / "state"
 LOG_DIR = ROOT / "logs"
 SESSION_DIR = STATE_DIR / "sessions"
+
+
+def resource(*parts: str) -> Path:
+    """拼一个**只读资源**路径（webui/index.html、assets/icon.ico…）。
+
+    永远不要拿它当写入目标——打包后那是 `%TEMP%` 里的解压目录，写进去的东西
+    进程退出就没了。
+
+    每次调用重新解析而不是复用模块级 `BUNDLE`：`_MEIPASS` 是**运行时**才有的，
+    而且测试要能 monkeypatch 它。这个函数一次启动只被调几次，不值得缓存。
+    """
+    return _resolve_bundle().joinpath(*parts)
+
 
 # 已下线的通道类型。老版本 config.json 里可能还留着，加载时静默丢弃，
 # 免得界面上冒出无法配置、也发不出去的僵尸通道。

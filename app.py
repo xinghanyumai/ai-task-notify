@@ -10,12 +10,15 @@ pywebview 没装、WebView2 缺失，都不影响发通知。所以本文件**�
     hook          宿主事件钩子（stdin 读 payload）   hook.main()
     dispatch      后台发通知（hook 派生的子进程）    dispatch.main()
     install       写 hooks / 建快捷方式              install.main()
+    uninstall     移除 hooks / 删快捷方式            install.main()
     selftest      自检与诊断                        selftest.main()
+    --version     打印版本号（CI 冒烟用）            本文件
 
     python app.py                            # = ui
     python app.py selftest --status
     python app.py install all --no-autostart
     python app.py hook --app WorkBuddy < payload.json
+    python app.py --version
 """
 
 from __future__ import annotations
@@ -39,7 +42,7 @@ if str(ROOT) not in sys.path:
 _PROCESS_T0 = time.perf_counter()
 
 WIN_TITLE = "AI 任务通知"
-SUBCOMMANDS = ("ui", "tray", "hook", "dispatch", "install", "selftest")
+SUBCOMMANDS = ("ui", "tray", "hook", "dispatch", "install", "uninstall", "selftest")
 
 # 窗口开出来之后，前端多少秒内必须调通一次 bridge。正常机器上 < 1s。
 # 超时说明 WebView2 只是"建了窗口但没渲染"，见 run_ui() 里的说明。
@@ -201,10 +204,84 @@ def fallback_no_webview(reason: str) -> None:
 # ------------------------------------------------------------------ 开窗
 
 
+def _sandbox_off_args() -> bool:
+    """要不要给 WebView2 加 `--no-sandbox`。
+
+    | 环境变量 | 含义 |
+    |---|---|
+    | `WBN_WEBVIEW_SANDBOX=1` | 强制带沙箱，**并且禁止降级**（排查用） |
+    | `WBN_WEBVIEW_NOSANDBOX=1` | 强制关沙箱（降级重启时由父进程设） |
+    | 都不设 | 带沙箱；只有看门狗判定黑窗时才降级一次 |
+
+    单独抽成函数是为了能测：这条判断以前是内联的 `if ... != "1"`，
+    谁也没法在不真起窗口的前提下验证它。
+    """
+    if os.environ.get("WBN_WEBVIEW_SANDBOX") == "1":
+        return False
+    return os.environ.get("WBN_WEBVIEW_NOSANDBOX") == "1"
+
+
+def _retry_without_sandbox() -> bool:
+    """黑窗降级：带 `--no-sandbox` 重启一次自己。返回 True = 已经交棒。
+
+    **为什么是重启而不是改参数重来**：`webview.start()` 在一个进程里只能调
+    一次，参数在它之前就定死了。要换 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`
+    只能换进程。
+
+    三道闸，防止重启风暴：
+      1. 用户显式要求带沙箱（`WBN_WEBVIEW_SANDBOX=1`）→ 不降级
+      2. 已经降级过一次（`WBN_WEBVIEW_NOSANDBOX=1`）→ 不再降级，走提示框
+      3. 起不来（Popen 抛异常）→ 返回 False，走提示框
+    """
+    if os.environ.get("WBN_WEBVIEW_SANDBOX") == "1":
+        return False
+    if os.environ.get("WBN_WEBVIEW_NOSANDBOX") == "1":
+        return False
+
+    import subprocess
+
+    from wbn import config as _cfg
+    from wbn.spawn import child_env
+
+    env = child_env()
+    env["WBN_WEBVIEW_NOSANDBOX"] = "1"
+    # 让子进程跳过单实例锁：父进程此刻还握着它。
+    env["WBN_REPLACING_SELF"] = "1"
+    # 打点文件别传给子进程，否则 bench 会把「重启后那次」当成第二轮
+    env.pop("WBN_BENCH_FILE", None)
+
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable]
+    else:
+        py = Path(sys.executable).with_name("pythonw.exe")
+        cmd = [str(py if py.exists() else sys.executable), str(Path(__file__).resolve())]
+
+    try:
+        subprocess.Popen(
+            cmd,
+            cwd=str(_cfg.ROOT),
+            env=env,
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=0x08000000 if sys.platform == "win32" else 0,
+        )
+    except Exception as exc:
+        _log(f"带 --no-sandbox 重启失败：{exc}")
+        return False
+    return True
+
+
 def run_ui() -> int:
     # 基准测试时跳过单实例锁：`tools/bench_ui.py` 要连续起好几个进程，
     # 而锁的语义是「只许一个」——不跳的话第二次起就静默退出，量不到东西。
-    if os.environ.get("WBN_BENCH") != "1" and not acquire_single_instance():
+    #
+    # `WBN_REPLACING_SELF` 同理：黑窗降级会带 `--no-sandbox` 重启自己，
+    # 那时父进程还握着锁没放，不跳的话子进程会以为「已有实例在跑」→
+    # 去 focus 一个马上就要销毁的窗口 → 直接退出。降级变成死路。
+    if os.environ.get("WBN_BENCH") != "1" and os.environ.get(
+        "WBN_REPLACING_SELF"
+    ) != "1" and not acquire_single_instance():
         focus_existing()
         return 0
 
@@ -267,15 +344,21 @@ def run_ui() -> int:
     # 任务栏按 AppUserModelID 分组，不设的话按钮上是 Python 的图标
     set_app_user_model_id()
 
-    # **Chromium 的沙箱在本机起不来**：浏览器进程静默退出，窗口开出来是一整块
-    # 黑，而 pywebview 的初始化回调照样报 IsSuccess=True、前端也照样能调通
-    # bridge——所以 Python 侧看不出任何异常（排查过程见 architecture.md 的
-    # 「已知问题」）。加 --no-sandbox 才能画出来。
+    # **沙箱默认开着。** 2026-10-27 那台机器上 Chromium 沙箱起不来，窗口是一片
+    # 黑（浏览器进程静默退出，而 pywebview 的初始化回调照样报 IsSuccess=True、
+    # 前端也照样能调通 bridge——所以 Python 侧看不出任何异常），当时加了
+    # `--no-sandbox` 才画得出来。
     #
-    # 关沙箱的代价：这个窗口只加载本地 webui/index.html，不加载任何远端页面，
-    # 实际暴露面很小。**一旦以后要在这个窗口里打开外部网页，必须重新评估**。
-    # 想恢复沙箱：设环境变量 WBN_WEBVIEW_SANDBOX=1。
-    if os.environ.get("WBN_WEBVIEW_SANDBOX") != "1":
+    # **2026-10-30（W7）重测：这个故障已经不复现了。** 源码形态和 exe 形态
+    # 在不加 `--no-sandbox` 的情况下都能正常渲染（截图见 tmp/w7/sandbox_on.png，
+    # 首屏打点也通）。所以不再无条件关沙箱——一个没有必要的安全降级会跟着
+    # exe 发给每一个用户，那是净损失。
+    #
+    # 但「这台机器能跑」不等于「所有机器能跑」：AppLocker、杀软、残留的
+    # WebView2 用户数据目录都可能让浏览器进程起不来。所以留一条**失败即降级**
+    # 的路：看门狗判定「bridge 超时没通」（正是黑窗的症状）时，带
+    # `--no-sandbox` 重启一次自己，见 `_retry_without_sandbox()`。
+    if _sandbox_off_args():
         os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--no-sandbox")
 
     alive = threading.Event()
@@ -287,7 +370,7 @@ def run_ui() -> int:
         alive.set()
         if os.environ.get("WBN_BENCH") == "1":
             ms = (time.perf_counter() - _PROCESS_T0) * 1000
-            print(f"[bench] first-interactive {ms:.0f}ms", flush=True)
+            _bench(f"[bench] first-interactive {ms:.0f}ms")
 
     api = Bridge(on_activity=_first_activity)
 
@@ -305,8 +388,12 @@ def run_ui() -> int:
     # 这条是 W6.3 §2 的判据 2：**A 是架构决定的，B 才是防回归的**。
     if os.environ.get("WBN_BENCH") == "1":
         ms = (time.perf_counter() - _PROCESS_T0) * 1000 - _t_thirdparty * 1000
-        print(f"[bench] self-code {ms:.0f}ms", flush=True)
-    index = (ROOT / "webui" / "index.html").as_uri()   # 中文/空格会被 percent-encode
+        _bench(f"[bench] self-code {ms:.0f}ms")
+    # 前端资源从**只读资源根**取，不是从 ROOT：打包后 ROOT 是 exe 旁边（可写，
+    # 放配置和日志），webui/ 在 `_MEIPASS` 那个临时解压目录里。混用的后果是
+    # 源码态正常、exe 里白屏（W7 §3.1 ①）。
+    from wbn import config as _cfg
+    index = _cfg.resource("webui", "index.html").as_uri()   # 中文/空格会被 percent-encode
     try:
         win = webview.create_window(
             WIN_TITLE, index,
@@ -363,7 +450,12 @@ def run_ui() -> int:
             f"WebView2 窗口 {UI_ALIVE_TIMEOUT:.0f}s 内没有调通 bridge，"
             "判定 UI 未启动"
         )
-        fallback_no_webview("no_render")
+        # 先试一次「关沙箱重启」——2026-10-27 那个黑窗就是这个原因。
+        # 成功交棒的话就不再弹提示框（用户会看到新进程的窗口）。
+        if _retry_without_sandbox():
+            _log("已带 --no-sandbox 重启一次（黑窗降级）")
+        else:
+            fallback_no_webview("no_render")
         for w in list(getattr(webview, "windows", [])):
             try:
                 w.destroy()
@@ -378,6 +470,7 @@ def run_ui() -> int:
         # 与 create_window 失败同一类：运行时在，但初始化起不来
         _log(f"webview.start() 抛异常：{traceback.format_exc()}")
         fallback_no_webview("no_runtime")
+    # 看门狗交棒了：新进程已经带 `--no-sandbox` 起来了，本进程安静退出。
     return 0
 
 
@@ -388,6 +481,27 @@ def _log(msg: str) -> None:
 
         store.log(f"[app] {msg}")
     except Exception:
+        pass
+
+
+def _bench(line: str) -> None:
+    """打一条耗时点。stdout + （可选）文件。
+
+    为什么不能只 print：exe 是 `console=False` 编的，**没有 stdout**，
+    print 的内容直接进黑洞，重定向也读不到。而 §0.0 要求 exe 形态的 A 数
+    必须重测——没有输出通道，这条要求就只能靠人掐秒表，不可复现。
+
+    所以多给一条文件通道：`WBN_BENCH_FILE` 指向哪就写哪（`tools/bench_ui.py
+    --exe` 会传一个临时文件）。源码形态不设这个变量，行为和以前完全一样。
+    """
+    print(line, flush=True)
+    path = os.environ.get("WBN_BENCH_FILE")
+    if not path:
+        return
+    try:
+        with open(path, "a", encoding="utf-8") as fh:
+            fh.write(line + "\n")
+    except OSError:
         pass
 
 
@@ -402,8 +516,15 @@ def _delegate(cmd: str, rest: list[str]) -> int:
     """
     import importlib
 
-    mod = importlib.import_module(cmd)
-    saved, sys.argv = sys.argv, [cmd] + rest
+    # `uninstall` 不是独立模块：卸载逻辑住在 install.py，是它的一个 action。
+    # 对外仍然给一个平级的子命令名——用户想的是「卸载」，不是
+    # 「用安装器执行卸载动作」。
+    if cmd == "uninstall":
+        mod_name, argv = "install", ["install", "uninstall", *rest]
+    else:
+        mod_name, argv = cmd, [cmd, *rest]
+    mod = importlib.import_module(mod_name)
+    saved, sys.argv = sys.argv, argv
     try:
         return mod.main(rest) if cmd == "dispatch" else mod.main()
     except SystemExit as e:
@@ -431,6 +552,14 @@ def main(argv: list[str] | None = None) -> int:
     argv = list(sys.argv[1:] if argv is None else argv)
     if argv and argv[0] in ("-h", "--help", "help"):
         print(usage())
+        return 0
+
+    # `--version` 单独处理：它是 CI 的冒烟判据（exe 能不能起来），
+    # 不许落到下面的 else 分支去开窗口——那会让 CI 挂住 10 秒然后超时。
+    if argv and argv[0] in ("-V", "--version", "version"):
+        from wbn import __version__
+
+        print(f"AI 任务通知 {__version__}")
         return 0
 
     if argv and argv[0] in SUBCOMMANDS:

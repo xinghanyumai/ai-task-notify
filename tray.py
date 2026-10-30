@@ -21,6 +21,7 @@ sys.path.insert(0, str(ROOT))
 
 from wbn import channels as ch_mod  # noqa: E402
 from wbn import config, pipeline  # noqa: E402
+from wbn.spawn import child_env  # noqa: E402
 from wbn.winapi import (  # noqa: E402
     acquire_single_instance,
     set_app_user_model_id,
@@ -44,7 +45,9 @@ def pythonw() -> str:
 
 def make_image() -> Image.Image:
     """托盘图标：直接复用 assets/icon.ico，和窗口、桌面快捷方式保持一致。"""
-    ico = ROOT / "assets" / "icon.ico"
+    # 走 config.resource：打包后图标在 `_MEIPASS` 里，不在 exe 旁边
+    from wbn import config as _cfg
+    ico = _cfg.resource("assets", "icon.ico")
     try:
         img = Image.open(ico)
         img.size = (64, 64)          # 从 ICO 里挑 64px 那一帧
@@ -81,12 +84,24 @@ def status_text() -> str:
 def open_ui() -> None:
     # 走 app.py：它带单实例锁，点两次托盘不会再开出两个各存一份配置的窗口，
     # 也会在 WebView2 缺失时弹出原生提示框（不再降级到 tkinter——W5 已下线）。
+    # 打包后没有 app.py 这个文件：exe 不带子命令就是 ui。
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable]
+    else:
+        cmd = [pythonw(), str(ROOT / "app.py")]
     subprocess.Popen(
-        [pythonw(), str(ROOT / "app.py")],
+        cmd,
         stdin=subprocess.DEVNULL,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
-        cwd=str(ROOT),
+        # cwd 必须是 exe 旁边（`config.ROOT`），不是 `__file__` 的目录：
+        # 打包后后者是 `_MEIPASS`，退出即删，拿它当工作目录等于把子进程拴在
+        # 一个待删的临时目录上。
+        cwd=str(config.ROOT),
+        # 清掉 `_PYI_*`：不清的话子进程会去复用本进程的 `_MEIPASS`，
+        # 而托盘一退出那个目录就没了——「点打开设置没反应」。
+        # 详见 `wbn/spawn.py`。
+        env=child_env(),
         creationflags=0x08000000 if sys.platform == "win32" else 0,
     )
 

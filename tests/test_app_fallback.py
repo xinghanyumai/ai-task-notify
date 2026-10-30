@@ -288,9 +288,28 @@ def test_watchdog_timeout_reports_no_render(monkeypatch):
 
     `UI_ALIVE_TIMEOUT` 临时调到 0.05s 只是为了不真等 10 秒；**源文件里的常量
     没动**，`test_platform.py` 之外也没有别处改它。
+
+    **必须把 `_retry_without_sandbox` 按成 False。** W7 给看门狗加了一步
+    「先带 --no-sandbox 重启自己」；不按的话这条测试会真的 spawn 一个
+    `pythonw app.py` 出来（跑测试的机器上就多一个真窗口），而且 reason
+    一个都不记——那正是它第一版红掉的原因。
     """
+    monkeypatch.setattr(app, "_retry_without_sandbox", lambda: False)
     fake = _FakeWebview(hold=0.4)
     recorded = _run_ui(monkeypatch, webview=fake, winforms=_fake_winforms(),
                        timeout=0.05)
     assert recorded == ["no_render"]
     assert fake.calls == ["create_window", "start"], "这条必须真走到开窗之后"
+
+
+def test_watchdog_hands_off_instead_of_complaining(monkeypatch):
+    """能降级时**不弹提示框**——用户马上会看到新进程的窗口。
+
+    这条和上一条是一对：上一条守「降不了级要说清楚」，这一条守
+    「降得了级就别打扰」。两条都断掉的话，黑窗自救就是死代码。
+    """
+    monkeypatch.setattr(app, "_retry_without_sandbox", lambda: True)
+    fake = _FakeWebview(hold=0.4)
+    recorded = _run_ui(monkeypatch, webview=fake, winforms=_fake_winforms(),
+                       timeout=0.05)
+    assert recorded == [], "交棒成功就不该再弹提示框"

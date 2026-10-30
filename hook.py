@@ -29,6 +29,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from wbn import config, store  # noqa: E402
 from wbn.sanitize import clean_obj  # noqa: E402
+from wbn.spawn import child_env  # noqa: E402
 
 DISPATCH = Path(__file__).resolve().parent / "dispatch.py"
 
@@ -125,14 +126,28 @@ def spawn_dispatch(payload: dict, app: str) -> None:
     flags = 0
     if os.name == "nt":
         flags = 0x00000008 | 0x08000000  # DETACHED_PROCESS | CREATE_NO_WINDOW
+    # 打包后没有 dispatch.py 这个文件了：单 exe 只有一个入口，子命令靠参数。
+    # **这一行漏了就是「开发态能跑、装完 hook 静默失败」**——子进程找不到
+    # dispatch.py，被 DETACHED 挡住，连 stderr 都没有（W7 §1 那个坑）。
+    if getattr(sys, "frozen", False):
+        cmd = [sys.executable, "dispatch", "--stdin"]
+    else:
+        cmd = [pythonw(), str(DISPATCH), "--stdin"]
     proc = subprocess.Popen(
-        [pythonw(), str(DISPATCH), "--stdin"],
+        cmd,
         stdin=subprocess.PIPE,
         stdout=subprocess.DEVNULL,
         stderr=subprocess.DEVNULL,
         close_fds=True,
         creationflags=flags,
-        cwd=str(Path(__file__).resolve().parent),
+        # 工作目录一律用数据根：源码态它就是仓库根（和原来一样），
+        # 打包后它是 exe 旁边——不能是 `__file__` 的目录，那是退出即删的 _MEIPASS
+        cwd=str(config.ROOT),
+        # **必须换一份环境变量**：继承来的 `_PYI_PARENT_PROCESS_LEVEL` 会让
+        # 子进程以为自己该复用父进程的 `_MEIPASS`，而父进程（就是本进程）
+        # 投递完就退出、退出即删——子进程于是挂死，一个通知都发不出去。
+        # 详见 `wbn/spawn.py`。
+        env=child_env(),
     )
     try:
         proc.stdin.write(data)
