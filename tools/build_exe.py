@@ -69,6 +69,11 @@ SIZE_LIMIT_MB = 40
 # `--version` 退出码 0，全绿，而五个子命令一个都没进包）。
 EXE_SIZE_RANGE_MB = (18.0, 26.0)
 
+# 冒烟等多久（秒）。本机 2.4s；2026-10-30 的 runner 上 120s 都没退出来，
+# 所以放宽到 300s 再看一轮——**这是为了区分「慢」和「真卡死」，不是为了让它绿**：
+# 超时仍然红，只是红的时候会带上诊断（见 `_smoke_diag`）。
+SMOKE_TIMEOUT_S = 300
+
 # 除 webui/ 之外必须存在的**数据文件**（相对 exe 根）。
 #
 # `webview/js/` 是 pywebview 注入 `window.pywebview` 用的脚本，**上游 hook 没收**。
@@ -401,6 +406,39 @@ def _kill_tree(proc: subprocess.Popen) -> None:
         pass
 
 
+def _smoke_diag(exe: Path, proc: subprocess.Popen, elapsed: float,
+                out_path: Path, err_path: Path) -> str:
+    """冒烟超时时把「卡在哪一层」问出来。
+
+    exe 是 GUI 子系统，出错时**可能弹一个没人能点的对话框**（runner 上没有桌面），
+    于是进程永远不退出、stdout/stderr 一个字都没有。光看「超时」分不清是
+    「解压慢」「弹窗等人点」还是「代码死循环」，所以这三样一起收：
+
+    - 进程还在不在（在 = 不是崩了，是卡着）
+    - `%TEMP%` 下有没有 `_MEI*`（有 = 引导器解压过，问题在解压之后）
+    - exe 自己写了什么（GUI 程序正常是空的，非空就是真报错）
+    """
+    lines = [f"    等了 {elapsed:.0f}s 还没退出（exe={exe}，cwd={ROOT}）",
+             f"    进程还活着：{proc.poll() is None}"]
+    try:
+        tl = subprocess.run(
+            ["tasklist", "/FI", f"IMAGENAME eq {exe.name}", "/FO", "CSV", "/NH"],
+            capture_output=True, text=True, timeout=30, check=False).stdout.strip()
+    except Exception as exc:                # noqa: BLE001
+        tl = f"(tasklist 失败：{exc})"
+    lines.append(f"    tasklist：{tl or '(空)'}")
+    try:
+        mei = sorted(p.name for p in Path(tempfile.gettempdir()).glob("_MEI*"))
+    except Exception as exc:                # noqa: BLE001
+        mei = [f"(列不出来：{exc})"]
+    lines.append(f"    %TEMP% 下 _MEI* 共 {len(mei)} 个：{mei[:5]}")
+    lines.append("    --- exe 的 stdout ---")
+    lines.append(out_path.read_bytes().decode("utf-8", "replace") or "(空)")
+    lines.append("    --- exe 的 stderr ---")
+    lines.append(err_path.read_bytes().decode("utf-8", "replace") or "(空)")
+    return "\n".join(lines)
+
+
 def check_smoke(exe: Path) -> None:
     """`通知.exe --version` 能不能起来。
 
@@ -423,12 +461,14 @@ def check_smoke(exe: Path) -> None:
     就是无限等——runner 上正好是这种情况。
 
     所以改成**重定向到临时文件**：没有管道，就没有「等管道关闭」这一步，
-    `wait(timeout=120)` 才是真正的墙钟上限。
+    `wait(timeout=SMOKE_TIMEOUT_S)` 才是真正的墙钟上限。改完之后 runner 上
+    如实报出 `✘ 120s 没退出`——管道问题解决了，剩下的是 exe 自己不肯退出。
     """
     print("\n[7/7] 冒烟：--version")
     with tempfile.TemporaryDirectory() as td:
         out_path, err_path = Path(td) / "out.txt", Path(td) / "err.txt"
         with out_path.open("wb") as out_f, err_path.open("wb") as err_f:
+            t0 = time.perf_counter()
             proc = subprocess.Popen(
                 [str(exe), "--version"],
                 cwd=str(ROOT),
@@ -436,10 +476,12 @@ def check_smoke(exe: Path) -> None:
                 stderr=err_f,
             )
             try:
-                code = proc.wait(timeout=120)
+                code = proc.wait(timeout=SMOKE_TIMEOUT_S)
             except subprocess.TimeoutExpired:
+                elapsed = time.perf_counter() - t0
+                diag = _smoke_diag(exe, proc, elapsed, out_path, err_path)
                 _kill_tree(proc)
-                _die("  ✘ 120s 没退出。多半是 `--version` 落到了开窗口那条路上。")
+                _die(f"  ✘ {SMOKE_TIMEOUT_S}s 没退出。\n{diag}")
         out = out_path.read_bytes().decode("utf-8", "replace")
         err = err_path.read_bytes().decode("utf-8", "replace")
 
@@ -448,7 +490,7 @@ def check_smoke(exe: Path) -> None:
         # 这两份是空的；一旦有内容，那就是它真正的报错，比退出码有用得多。
         _die(f"  ✘ 退出码 {code}（exe={exe}，cwd={ROOT}）\n"
              f"  --- stdout ---\n{out}\n  --- stderr ---\n{err}")
-    print("  ✔ 退出码 0")
+    print(f"  ✔ 退出码 0（{time.perf_counter() - t0:.1f}s）")
 
 
 def report(exe: Path, build_s: float) -> None:
