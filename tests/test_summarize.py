@@ -308,3 +308,108 @@ def test_identifiers_without_conclusion_use_last_sentence():
 
     assert out, "空手了"
     assert "install.py" in out, f"标识符没保留：{out!r}"
+
+
+# ---------------------------------------------------------------- W18 末行不许被截
+#
+# W17 把排序修对了，但真实模板（3 槽 width=36）下末行还是 `…`：
+# `现在所有 675 个用例都通过了，CI…`——「也绿了」没了。
+#
+# 根因是**预算算的是名义宽度**：`summarize_for_card` 按半角宽度总和挑句，
+# 认为 3 × 36 = 108 就装得下；而 `_wrap_detail` 真折行时行尾会白扔十几个半角位
+# （`_take_width` 宁可短行，也要断在词后面）。实测 101 个半角的内容只落得下 92。
+#
+# **判据必须打在 `_wxmp_values` 上，不能打在 `summarize_for_card` 上**——
+# 截断发生在折行那一步，只测摘要根本测不出来（摘要本身一个字都没少）。
+
+import pytest  # noqa: E402
+
+# `width = _CARD_WIDTH(42) - _label_width(标签)`，所以换标签就能造出指定宽度，
+# 不必去改 `_CARD_WIDTH`。
+_LABEL_BY_WIDTH = {36: "详情：", 34: "详情栏：", 38: "详：", 24: "详细信息（补充）："}
+
+
+def _tpl_for(slots: int, width: int) -> str:
+    """造一个「详情槽 = slots、值区宽 = width」的模板。"""
+    lab = _LABEL_BY_WIDTH[width]
+    lines = ["状态：{{title.DATA}}", "项目：{{project.DATA}}", f"{lab}{{{{detail.DATA}}}}"]
+    for i in range(2, slots + 1):
+        lines.append(f"{lab}{{{{detail{i}.DATA}}}}")
+    lines.append("时间：{{time.DATA}}")
+    return "\n".join(lines)
+
+
+def _render_card(slots: int, width: int) -> list[str]:
+    """按 (槽位数, 值区宽度) 渲染一张真实卡片，返回 detail..detailN。"""
+    summary = summarize(CARD_INPUT, 200)
+    fields = {
+        "kind": "task_done", "kind_label": "任务完成", "emoji": "✅",
+        "title": "✅ WorkBuddy 任务完成", "project": "Work buddy 通知",
+        "duration": "1 分 46 秒", "summary": summary, "error": "",
+        "host": "XingHan", "date": "2026-11-01",
+    }
+    v = channels._wxmp_values(
+        fields["title"], CARD_INPUT, fields, "00:30", wrap=True,
+        tpl_content=_tpl_for(slots, width),
+    )
+    return [v[k] for k in ("detail", "detail2", "detail3", "detail4")[:slots]]
+
+
+@pytest.mark.parametrize(
+    "slots,width", [(1, 36), (2, 36), (3, 36), (4, 36), (3, 24), (3, 38)]
+)
+def test_last_line_is_never_ellipsised(slots: int, width: int):
+    """§3.1 表驱动：六组里末行都不许出现 `…`。
+
+    唯一例外是 `slots=1`——一个详情槽只装得下一行，而结论句本身就有 58 个
+    半角，超预算是必然的。那一格只断言「截断后结论关键词还在」。
+    """
+    segs = _render_card(slots, width)
+    joined = "".join(segs)
+    last = segs[-1]
+
+    if slots > 1:
+        assert not last.endswith(channels._ELLIPSIS_CHAR), (
+            f"{slots} 槽 width={width} 末行被截：{segs}"
+        )
+    # 无论截不截，结论都得看得见
+    assert any(k in joined for k in ("675", "通过", "CI")), f"结论丢了：{segs}"
+
+
+def test_real_template_three_slots_is_complete():
+    """§3.2 真实模板（3 槽 width=36）：末行完整，且 L1 不许退回计数句。
+
+    这一条同时钉住 W17 的成果——`· 新增 _our_hook_exe_paths()` 必须还在第一行。
+    """
+    segs = _render_card(3, 36)
+    joined = "".join(segs)
+
+    assert not segs[-1].endswith(channels._ELLIPSIS_CHAR), f"末行还是被截：{segs}"
+    assert sum(k in joined for k in ("675", "通过", "CI")) >= 2, f"结论不够：{segs}"
+
+    ids = ("is_our_hook", "onedir", "install.py", "_our_hook_exe_paths", "wbn")
+    assert any(k in segs[0] for k in ids), f"L1 退化成计数句了：{segs[0]!r}"
+
+
+def test_four_slots_stay_complete():
+    """§3.3 4 槽不许退化：`is_our_hook` 仍在 L1、末行完整、`CI 也绿了` 还在。"""
+    segs = _render_card(4, 36)
+    joined = "".join(segs)
+
+    assert "is_our_hook" in segs[0], f"L1 丢了 is_our_hook：{segs[0]!r}"
+    assert not segs[-1].endswith(channels._ELLIPSIS_CHAR), f"末行被截：{segs}"
+    assert "CI 也绿了" in joined, f"结论不完整：{segs}"
+
+
+def test_tight_wrap_is_only_the_fallback():
+    """兜底的 0.95 断句阈值只许走重试那条路，不许改成默认。
+
+    默认 0.7 是「宁可短行，读起来连贯」——那是所有卡片每天都在走的路，
+    为了几格截断把它整体收紧，等于让每张卡片都断在中文词中间。
+    """
+    import inspect
+
+    sig = inspect.signature(channels._wrap_detail)
+    assert sig.parameters["break_at"].default == 0.7, "兜底阈值被改成默认了"
+    assert channels._TIGHT_BREAK_AT > 0.7, "兜底阈值没有比默认更紧"
+

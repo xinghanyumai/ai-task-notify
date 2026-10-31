@@ -832,6 +832,19 @@ _NO_LINE_START = "，,、。．.；;：:！!？?）)］]｝}」』》〉”’"
 # 所以末行要按 3 预留，否则每行比预算宽 1，最坏把最后一个字顶出去被微信硬切。
 _ELLIPSIS_W = 3
 
+# 截断标记本身。**必须是一个字符 U+2026**，不是三个点——`_wrap_detail` 按
+# `_ELLIPSIS_W` 预留宽度，写成 `...` 会占 3 个半角位但被当成 3 个字符，
+# 折行时又会被当断点拆开。W18 的「末行有没有被截」判据也认这一个字符。
+_ELLIPSIS_CHAR = "…"
+
+# 末行被截时的**兜底折行**：把 `_take_width` 的断句阈值从 0.7 提到 0.95，
+# 让它宁可切在中文词中间，也要把行尾那十几个半角位用满。只在「已经确认
+# 被截」的那一次重试用，正常卡片仍是 0.7（读起来连贯优先）。
+#
+# 为什么不干脆提到 1.0：实测 1.0 会把 `改成` 劈成 `改` / `成`，而 0.95 在
+# 3 槽 width=34（预算 102、摘要 101）这一格刚好够用，多留 5% 的体面。
+_TIGHT_BREAK_AT = 0.95
+
 
 def _take_width(text: str, budget: int, break_at: float = 0.7) -> str:
     """取一段文本里能放进 budget 个半角单位的最长前缀。
@@ -870,7 +883,9 @@ def _take_width(text: str, budget: int, break_at: float = 0.7) -> str:
     return head
 
 
-def _wrap_detail(text: str, width: int = 34, max_lines: int = 4) -> str:
+def _wrap_detail(
+    text: str, width: int = 34, max_lines: int = 4, break_at: float = 0.7
+) -> str:
     r"""把长文本按卡片宽度折成多行，行间用 `\n` 连接——**只在本模块内部用**。
 
     **这里的 `\n` 从来不会发到手机上。** 它是 `_wrap_detail` → `_wxmp_values`
@@ -898,6 +913,11 @@ def _wrap_detail(text: str, width: int = 34, max_lines: int = 4) -> str:
     width 按半角单位算，34 ≈ 17 个汉字，是「详情：」标签占位之后一行
     还能安全放下的宽度。max_lines 控制卡片高度：超出的部分折进最后一行
     并加省略号，免得卡片长得收不住。
+
+    `break_at` 直接透传给 `_take_width`：标点落在前缀多少比例之后才值得
+    为断句少放几个字。默认 0.7 是「宁可短行，读起来连贯」；卡片折行偶尔
+    会在行尾白扔 10 个半角位（`_take_width` 的既定取舍，见 W18 §1），
+    真要装不下时由 `_wxmp_values` 用 0.9 再折一次——那是**兜底**，不是默认。
     """
     flat = _flatten(text)
     if not flat:
@@ -907,16 +927,16 @@ def _wrap_detail(text: str, width: int = 34, max_lines: int = 4) -> str:
     rest = flat
     while rest and len(lines) < max_lines:
         last = len(lines) == max_lines - 1
-        head = _take_width(rest, width)
+        head = _take_width(rest, width, break_at)
         if not head:                      # 防御：一个字符都放不下
             head = rest[:1]
         tail = rest[len(head):].lstrip(" 　" + _NO_LINE_START)
 
         # 到了最后一行还有内容没放下 → 先留出 `…` 的 3 个半角位再切
         if last and tail:
-            head = _take_width(rest, width - _ELLIPSIS_W) or rest[:1]
+            head = _take_width(rest, width - _ELLIPSIS_W, break_at) or rest[:1]
             tail = rest[len(head):].lstrip(" 　" + _NO_LINE_START)
-            head = head.rstrip(" 　") + "…"
+            head = head.rstrip(" 　") + _ELLIPSIS_CHAR
 
         rest = tail
         lines.append(head.rstrip(" 　"))
@@ -1087,14 +1107,50 @@ def _wxmp_values(
     # 空格，`具体来说…：` + 五条步骤 + 结论粘成**一整句**，而它以「具体来说」
     # 开头会被当成客套话整句丢掉——实测过，四行只剩一句「好的，我已经完成了…」。
     # 摘要要看到句子边界，就必须在压平之前做。
+    budget = slots * width
+    detail_src = detail
+    did_summary = False
     if not from_error and detail.strip():
-        detail = events.summarize_for_card(detail, slots * width)
+        detail = events.summarize_for_card(detail_src, budget)
+        did_summary = True
 
     flat_detail = _flatten(detail)
     if not flat_detail:
         segs: list[str] = []
     elif slots >= 2:
         segs = _wrap_detail(flat_detail, width, slots).split("\n")
+        # **折行有损耗，预算算的是名义宽度。** `summarize_for_card` 按半角宽度
+        # 总和挑句子，认为 `slots × width` 就装得下；但 `_wrap_detail` 真折行时
+        # ① 词边界放不下就整词推到下一行，② 行首禁则（`，` `。` `）`）被迫提前断。
+        # 实测 3 槽 width=36：三行浪费 12 个半角位，正好够「也绿了」四个字，
+        # 于是末行变成 `现在所有 675 个用例都通过了，CI…`。
+        #
+        # 修法是**渲染后校验 + 一次回退**：看见末行是 `…` 就再折一次。
+        #
+        # **回退折得更紧，不是把预算缩到 0.8 重挑句子——实测那样会丢内容。**
+        # 3 槽 width=36 的可用量只有 79 半角，而末句（`5. 重新打包并验证` +
+        # 结论）自己就占 58，剩下 21 只够装 `4. 补了 4 条单元测试`（20）——
+        # 0.8 预算（86）重挑出来必然是「计数句 + 结论」，L1 从
+        # `· 新增 _our_hook_exe_paths()` 掉成 `· 补了 4 条单元测试 5.`，
+        # 正是 W17 §2.1 与 W18 §3.2 都禁止的那种退化（实测见 W18 报告）。
+        # 所以回退保持句子不变，只把 `_take_width` 的断句阈值提到 0.9，
+        # 让它把行尾那 10 个半角位用满——一句话都不丢，只是折得紧一点。
+        #
+        # 三条纪律：
+        # · 最多重试一次，不写循环。两次还截断就说明单句本身超预算，认了。
+        # · 重试结果**必须仍然没有 `…`** 才采纳，否则保留第一次的——不能越改越糟。
+        # · 失败类（`detail` 来源是 error）不重试：错误信息截断比少一句更糟，
+        #   宁可截也要保原文。
+        if (
+            did_summary
+            and len(segs) == slots
+            and segs[-1].endswith(_ELLIPSIS_CHAR)
+        ):
+            segs2 = _wrap_detail(
+                flat_detail, width, slots, break_at=_TIGHT_BREAK_AT
+            ).split("\n")
+            if not (len(segs2) == slots and segs2[-1].endswith(_ELLIPSIS_CHAR)):
+                segs = segs2
     else:
         segs = [_clip_line(flat_detail, width)]
     while len(segs) < len(_DETAIL_SLOTS):
