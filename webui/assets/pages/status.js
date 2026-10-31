@@ -45,6 +45,12 @@
     state.nodes.sub = ctx.el("p", "page-sub", "正在读取…");
     root.appendChild(state.nodes.sub);
 
+    /* 配置损坏的警示条挂在这里，**内容由 paintConfigHealth 决定**：
+       它只在真出问题时才往这个容器里塞 DOM，正常时容器是空的。
+       不许先建好再 `display:none` —— 读屏仍然会念它（本项目老规矩）。 */
+    state.nodes.healthBox = ctx.el("div", "health-box");
+    root.appendChild(state.nodes.healthBox);
+
     var cards = ctx.el("div", "cards");
     state.nodes.cardBoxes = [];
     CARDS.forEach(function (c) {
@@ -86,10 +92,15 @@
          不许因此让整页报错（status 页的其它三块跟它无关）。 */
       state.ctx.call("sandbox_pref_get").catch(function () {
         return { prefer_no_sandbox: false };
+      }),
+      /* 同上：老后端没有这个方法就当「健康」，不许因此整页报错。 */
+      state.ctx.call("config_health").catch(function () {
+        return { ok: true, broken_backup: "", msg: "" };
       })
     ]).then(function (res) {
       paint(res[0], res[1], res[2]);
       paintSandboxPref(res[3]);
+      paintConfigHealth(res[4]);
     }).catch(function (e) {
       showError(e);
     }).then(function () {
@@ -155,6 +166,41 @@
     paintChannels(channels);
     paintAutostart(autostart);
     paintRecent(d.recent);
+  }
+
+  /** 配置读不出来时的那条警示。
+   *
+   * **只在 `ok === false` 时创建节点**，`ok` 为真时把容器清空（DOM 里没有它）。
+   * 用 `display:none` 藏起来是最省事的写法，但读屏会照样把那段话念出来，
+   * 用户会听到「配置文件读不出来」然后发现界面一切正常——比不说更糟。
+   *
+   * 文案必须回答三个问题：**出了什么事 / 我的凭证去哪了 / 我现在看到的是什么**。
+   * 只说「配置损坏」等于让用户自己去猜要不要重填一遍。
+   */
+  function paintConfigHealth(o) {
+    var ctx = state.ctx;
+    var box = state.nodes.healthBox;
+    if (!box) return;
+    box.textContent = "";
+
+    o = o || {};
+    if (o.ok !== false) return;
+
+    var bar = ctx.el("div", "health-warn");
+    bar.setAttribute("role", "alert");
+
+    var body = ctx.el("div");
+    body.appendChild(ctx.el("b", null, "配置文件读不出来，现在显示的是默认配置"));
+    var backup = o.broken_backup || "";
+    body.appendChild(ctx.el("div", null,
+      (o.msg || "配置文件解析失败。") +
+      (backup ? "" : "（备份也失败了，请先别关掉这个窗口，手动把 config.json 复制一份）")));
+    if (backup) {
+      body.appendChild(ctx.el("div", null,
+        "备份文件：" + backup + "　—— 你的 appsecret / webhook 都还在里面，复制回 config.json 就能恢复。"));
+    }
+    bar.appendChild(body);
+    box.appendChild(bar);
   }
 
   /** 数字从 0 滚到目标值，300ms ease-out。只做一次，之后直接落字。 */
@@ -311,6 +357,16 @@
     st.id = "autostart-state";
     row.appendChild(st);
 
+    /* 「打开启动文件夹」——原生 button，白拿 Tab / 回车 / 读屏 / 高对比度。
+       放在 checkbox 左边（次要动作在前，主开关靠右，和整页一致）。
+       **读不到目录时不禁用**：用户需要知道「为什么打不开」，点一下看到
+       具体错误，比按钮凭空消失有用得多。 */
+    var open = ctx.el("button", "btn btn-secondary", "打开启动文件夹");
+    open.type = "button";
+    open.setAttribute("aria-label", "打开启动文件夹");
+    open.addEventListener("click", openAutostartFolder);
+    row.appendChild(open);
+
     var cb = ctx.el("input", "toggle-box");
     cb.type = "checkbox";
     cb.id = AS_ID;
@@ -423,6 +479,22 @@
   function showAutostartError(msg) {
     if (!msg) return;
     state.nodes.asBox.appendChild(state.ctx.el("p", "row-error", msg));
+  }
+
+  /** 点「打开启动文件夹」→ 让系统资源管理器弹出来。
+   *
+   * 成功时**不留任何提示**：窗口已经跳出来了，再写一行「已打开」是废话。
+   * 失败必须说清楚原因（非 Windows / 目录不存在 / 权限），否则用户只会
+   * 觉得这个按钮是坏的。
+   */
+  function openAutostartFolder() {
+    state.ctx.call("autostart_open_folder").then(function (o) {
+      if (!o || o.ok !== true) {
+        showAutostartError((o && o.msg) || "打不开启动文件夹");
+      }
+    }).catch(function (e) {
+      showAutostartError(String((e && e.message) || e));
+    });
   }
 
   /** 空状态三件套：一个图标 + 一句解释 + 一个出口（§3.3）。 */

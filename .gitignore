@@ -3,6 +3,9 @@
 # 新克隆的仓库请复制 config.example.json 为 config.json 再填写。
 config.json
 config.json.tmp
+# 配置损坏时的备份（W10 §4）。**里面是真实凭证**，绝不能进仓库——
+# 它和 config.json 一样是私密的，只是名字不同。
+config.json.broken-*
 *.secret.json
 
 # ---------------------------------------------------------------- 运行时数据

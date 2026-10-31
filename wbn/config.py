@@ -16,6 +16,8 @@ import json
 import os
 import subprocess
 import sys
+import threading
+from datetime import datetime
 from pathlib import Path
 
 
@@ -349,14 +351,100 @@ def _merge_channels(defaults: list, user: list | None) -> list:
     return out + extras
 
 
+# 上一次 `load()` 是不是踩到了读不出来的 config.json。
+# 存人话，给 `bridge.config_health()` 直接用。**会话级粘性**：只有真的
+# 解析成功一次才清空——清早了的话，隔离完（文件已改名）下一次 `load()`
+# 看到「文件不存在」就会把这条错误抹掉，警示条还没画出来就消失了。
+_last_load_error: str = ""
+
+# 隔离坏配置时互斥：见 `_quarantine_broken_config()` 里关于并发的说明。
+_quarantine_lock = threading.Lock()
+
+
+def _newest_broken(path: Path) -> str:
+    """目录里最新的那个 `*.broken-*` 文件名（没有则空串）。"""
+    try:
+        done = sorted(path.parent.glob(path.name + ".broken-*"))
+    except OSError:
+        return ""
+    return done[-1].name if done else ""
+
+
+def _quarantine_broken_config(path: Path) -> str:
+    """把读不出来的 config.json **改名**备份，返回备份文件名（失败返回空串）。
+
+    **绝不删。** 那是用户唯一一份凭证副本：微信 appsecret、webhook 的 key
+    全在里面。用户看到「通道全变待配置」时的正确反应，是去这个备份里
+    把值抄回来——文件没了就真丢了。
+
+    文件名用本地时间 `YYYYmmdd-HHMMSS`，字典序就是时间序，好找好排序。
+
+    **加锁是因为并发不是失败**：前端一进页面就同时发好几个 bridge 调用
+    （`stats_today` / `channels_list` / `config_get` 都会 `load()`），
+    谁先读到坏文件谁去改名，剩下的那几个 `replace` 必然扑空——源文件已经
+    没了。不加锁的话它们会去查 `path.exists()`，而此时改名可能还没落盘，
+    于是报一句「原文件备份失败」吓用户，其实备份好好的。
+    """
+    with _quarantine_lock:
+        if not path.exists():
+            return _newest_broken(path)      # 兄弟线程已经改走了，不算失败
+        stamp = datetime.now().strftime("%Y%m%d-%H%M%S")
+        target = path.with_name(f"{path.name}.broken-{stamp}")
+        n = 1
+        while target.exists():               # 同一秒内损坏两次也不覆盖
+            target = path.with_name(f"{path.name}.broken-{stamp}-{n}")
+            n += 1
+        try:
+            path.replace(target)
+        except OSError:
+            return _newest_broken(path)
+        return target.name
+
+
+def _config_shape_error(user) -> str:
+    """`user` 能不能当配置用。返回人话原因，空串表示没问题。
+
+    **语法正确的 JSON 也可能是坏配置**：`[]`、`null`、`{"channels": "..."}`。
+    这类东西下一步会炸在 `deep_merge` 里，用户看到的是
+    `AttributeError: 'str' object has no attribute 'items'`——一句他完全
+    没法处理的话。所以在这里统一判成「坏配置」，走同一条备份路径。
+    """
+    if not isinstance(user, dict):
+        return f"顶层不是对象，是 {type(user).__name__}"
+    chans = user.get("channels")
+    if chans is not None and not isinstance(chans, list):
+        return f"channels 不是数组，是 {type(chans).__name__}"
+    return ""
+
+
 def load() -> dict:
-    """读取配置并与默认值合并。配置文件缺失或损坏时回退到默认值。"""
+    """读取配置并与默认值合并。配置文件缺失或损坏时回退到默认值。
+
+    **损坏不等于没配过。** 旧版这里 `except: user = {}` 一了百了：用户看到
+    所有通道突然「待配置」，以为凭证丢了，其实只是程序假装没看见。现在改成
+    「改名备份 + 记一条人话」，见 `_quarantine_broken_config()`。
+    """
+    global _last_load_error
     user = {}
     if CONFIG_PATH.exists():
+        reason = ""
         try:
             user = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        except Exception:
+        except Exception as e:
+            reason = f"解析失败（{type(e).__name__}）"
+        else:
+            reason = _config_shape_error(user)
+
+        if reason:
+            backup = _quarantine_broken_config(CONFIG_PATH)
+            _last_load_error = (
+                f"配置文件读不出来：{reason}。"
+                + (f"原文件已备份为 {backup}。" if backup else "原文件备份失败。")
+                + "当前显示的是默认配置，你的凭证还在那个备份里。"
+            )
             user = {}
+        else:
+            _last_load_error = ""
     cfg = deep_merge(DEFAULT_CONFIG, user)
     cfg["channels"] = _merge_channels(
         DEFAULT_CONFIG["channels"], user.get("channels") if isinstance(user, dict) else None

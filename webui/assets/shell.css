@@ -516,6 +516,29 @@ body[data-route="channels"] .col { max-width: none; }
   color: var(--danger);
 }
 
+/* 配置损坏警示条。**整块由 JS 按需创建**，不是先建好再藏起来——
+   `display:none` 的节点读屏仍然会念，本项目已经吃过一次这个亏。 */
+.health-box:empty { display: none; }
+.health-warn {
+  display: flex;
+  gap: var(--s3);
+  align-items: flex-start;
+  margin: 0 0 var(--s4);
+  padding: var(--s3) var(--s4);
+  border: 1px solid var(--danger);
+  border-radius: var(--r-md);
+  background: var(--danger-soft);
+  color: var(--text);
+  font-size: var(--fs-aux);
+  line-height: var(--lh-aux);
+}
+.health-warn b {
+  display: block;
+  color: var(--danger);
+  font-size: var(--fs-body);
+  margin-bottom: 2px;
+}
+
 /* 结果点：绿=成功，红=失败。不写「成功/失败」四个字，省一行宽度 */
 .res-dot {
   width: 6px;

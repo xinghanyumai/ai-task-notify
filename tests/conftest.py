@@ -42,6 +42,11 @@ def isolated_state(tmp_path, monkeypatch):
     # 后果是开发者本机下次启动悄悄关掉沙箱，而且没人知道是谁写的。
     monkeypatch.setattr(store, "UI_PREF_PATH", state / "ui.json", raising=True)
 
+    # `config._last_load_error` 是模块级、会话级粘性的（故意：隔离完 config.json
+    # 之后文件就不存在了，下一次 load 不能把这条错误抹掉）。粘性状态跨用例泄漏
+    # 会让「配置健康」相关断言随机红，所以每个用例开头清一次。
+    monkeypatch.setattr(config, "_last_load_error", "", raising=True)
+
     return tmp_path
 
 

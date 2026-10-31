@@ -595,6 +595,29 @@ class Bridge:
             })
         return out
 
+    # ------------------------------------------------------------ 配置健康
+
+    @_guard
+    def config_health(self) -> dict:
+        """配置文件这轮到底读没读出来。
+
+        `ok=False` 时 `broken_backup` 是备份文件名（没有则为空串），
+        `msg` 是人话。**必须条件渲染**：这条一出现就说明用户看到的
+        「通道全空」不是他的错，不说清楚他会去重填一遍凭证。
+        """
+        self._touch()
+        err = getattr(config, "_last_load_error", "") or ""
+        backup = ""
+        if err:
+            # 从人话里取文件名太脆，直接列一遍目录取最新的那个
+            try:
+                cands = sorted(config.CONFIG_PATH.parent.glob(
+                    config.CONFIG_PATH.name + ".broken-*"))
+                backup = cands[-1].name if cands else ""
+            except OSError:
+                backup = ""
+        return {"ok": not err, "broken_backup": backup, "msg": err}
+
     # ------------------------------------------------------------ 开机自启
 
     @_guard
@@ -659,6 +682,34 @@ class Bridge:
 
         store.set_prefer_no_sandbox(False)
         return {"prefer_no_sandbox": store.prefer_no_sandbox()}
+
+    @_guard
+    def autostart_open_folder(self) -> dict:
+        """打开启动文件夹，让用户自己看见那个 `.lnk` 在不在。
+
+        **不做「自定义自启路径」**：改了目标路径自启就失效，那是伪需求。
+        用户真正要的是「我能确认它在哪、它真的存在」——这个按钮就够。
+
+        读不到目录时**也允许点**（`ok=False` + 人话）：按钮消失了用户就
+        永远不知道为什么会打不开。返回 `ok=False` 不代表按钮不该存在。
+        """
+        self._touch()
+        import os
+
+        if sys.platform != "win32":
+            return {"ok": False, "msg": "非 Windows 系统，没有启动文件夹"}
+        mod = _install()
+        try:
+            folder = mod.autostart_path().parent
+        except OSError as exc:
+            return {"ok": False, "msg": f"读启动目录失败：{exc}"}
+        if not folder.is_dir():
+            return {"ok": False, "msg": f"启动目录不存在：{folder}"}
+        try:
+            os.startfile(str(folder))       # noqa: S606 - 打开的是系统目录
+        except OSError as exc:
+            return {"ok": False, "msg": f"打不开启动目录：{exc}"}
+        return {"ok": True, "msg": str(folder)}
 
     # ------------------------------------------------------------ 通道页
 
