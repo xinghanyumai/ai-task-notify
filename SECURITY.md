@@ -42,4 +42,16 @@
 带 `WBN_SCRUB=1` 脱敏）已随 tkinter 层在 W5 删除，**重拍截图时要手工清空凭证**，
 现在的 `tools/shot_webview.py` 不做脱敏。
 
+### 历史提交里残留过一个测试号 AppID
+
+`822c601` 到 `eaa1217` 之间的提交里，`webui/assets/shell.css` 的注释带过一个
+真实微信测试号 AppID（`wxf38b0…b0e5`）。当前 HEAD 已移除，但 git 历史里仍在。
+
+**这是 AppID，不是 AppSecret。** AppID 是公开标识，调用接口还需要 Secret，
+而 Secret 从未进过仓库（`config.json` 一直在 `.gitignore` 里）。
+
+没有改写历史，因为改写 public 仓库的历史会让所有 commit hash 变化、
+打断已有的 CI 记录和外部引用，代价大于一个测试号 AppID 的暴露面。
+如果你 fork 了这个仓库并打算长期维护，可以用 `git filter-repo` 自行清理。
+
 安全设计的完整说明见 [docs/security.md](docs/security.md)。
