@@ -221,13 +221,20 @@ def record_send() -> None:
 
 
 def enqueue(item: dict) -> None:
-    """发送失败的消息进队列，等托盘/下次 hook 时重试。"""
+    """发送失败的消息进队列，等托盘/下次 hook 时重试。
+
+    **写不进去必须留痕**：磁盘满 / 目录权限被改 / 杀软锁文件，任何一种
+    都会让「待重试」的消息直接蒸发。原来这里是 `except OSError: pass`，
+    用户只会觉得「这条没发出去，也没重试」，日志里一个字都查不到。
+
+    复用 `log()`（同文件，自带脱敏 + 吞异常），不另写一套日志。
+    """
     config.ensure_dirs()
     try:
         with QUEUE_PATH.open("a", encoding="utf-8") as f:
             f.write(json.dumps(clean_obj(item), ensure_ascii=False) + "\n")
-    except OSError:
-        pass
+    except OSError as e:
+        log(f"重试队列写入失败，这条消息不会再重试：{type(e).__name__}: {e}")
 
 
 def load_queue() -> list[dict]:
