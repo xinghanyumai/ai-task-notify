@@ -1656,8 +1656,11 @@ def _send_log(c: dict, title: str, content: str, fields: dict) -> tuple[bool, st
 
 CLAWBOT_BASE = "https://ilinkai.weixin.qq.com"
 CLAWBOT_SEND_URL = f"{CLAWBOT_BASE}/ilink/bot/sendmessage"
-# iLink 的协议版本号，跟着 WorkBuddy 客户端走。发错了服务端会直接拒。
-CLAWBOT_CHANNEL_VERSION = "1.0.2"
+# iLink 的协议版本号。**必须和宿主 `WeixinApi.buildBaseInfo()` 逐字一致**：
+# 宿主原文是 `{channel_version: 'workbuddy-desktop-1.0.0'}`。
+# 之前写成 "1.0.2" 是个 bug——服务端解析阶段就拒（`ret:-1`，0.2 秒返回，
+# 压根没进 35 秒长轮询），所有用户的 clawbot 通道都是坏的。
+CLAWBOT_CHANNEL_VERSION = "workbuddy-desktop-1.0.0"
 
 # 默认探测目录。`-ai` 后缀是关键：第三方文档里写的 `~/.workbuddy/` 是 legacy 路径，
 # 那里没有 cursor 文件。
@@ -1780,10 +1783,16 @@ def _mask_token(text: str, token: str) -> str:
 def _clawbot_headers(token: str) -> dict:
     """iLink 的三个鉴权头。
 
-    `X-WECHAT-UIN` 是个 base64 的随机 uint32，每次请求都要新生成
-    （服务端拿它做重放判断）。复用同一个值会被当成重复消息丢掉。
+    `X-WECHAT-UIN` 是**随机 uint32 的十进制字符串，再 base64**——不是把 4 个
+    原始字节拿去 base64。宿主原文：
+
+        let e = randomBytes(4).readUInt32BE(0);
+        Buffer.from(String(e), 'utf-8').toString('base64')
+
+    两种写法长度差一倍（十进制串 16 字符 / 原始字节 8 字符），服务端认前者。
+    每次请求都要新生成（服务端拿它做重放判断），复用同一个值会被当重复消息丢掉。
     """
-    uin = base64.b64encode(random.getrandbits(32).to_bytes(4, "big")).decode()
+    uin = base64.b64encode(str(random.getrandbits(32)).encode()).decode()
     return {
         "Authorization": f"Bearer {token}",
         "AuthorizationType": "ilink_bot_token",

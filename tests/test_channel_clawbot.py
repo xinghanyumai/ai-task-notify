@@ -347,6 +347,53 @@ def test_send_clawbot_survives_every_discovery_failure(
     assert "Traceback" not in msg and "Error" not in msg, msg
 
 
+# ------------------------------------------------- 协议对齐（2026-10-31 从宿主读出）
+#
+# 这三条守的是「和宿主 WeixinApi 逐字对齐」。宿主一改，这三条先红，
+# 不用等用户发现通道发不出去。
+
+
+def test_channel_version_matches_the_host_client():
+    """版本号必须是宿主那个串。
+
+    服务端拿它做协议协商，`1.0.2` 这种「看着像版本号」的值会被直接拒
+    （实测 `ret:-1`，0.2 秒返回，压根没进长轮询）。
+    """
+    assert channels.CLAWBOT_CHANNEL_VERSION == "workbuddy-desktop-1.0.0"
+
+    body = {"msg": {"to_user_id": "x"}, "base_info": {"channel_version": channels.CLAWBOT_CHANNEL_VERSION}}
+    assert "workbuddy-desktop-1.0.0" in json.dumps(body)
+
+
+def test_wechat_uin_is_base64_of_the_decimal_string(monkeypatch):
+    """`X-WECHAT-UIN` = 十进制字符串的 base64，**不是** 4 个原始字节的 base64。
+
+    宿主原文：`Buffer.from(String(e), 'utf-8').toString('base64')`。
+    两种写法长度差一倍，一眼能分开：十进制串 base64 是 16 字符，
+    4 字节 base64 只有 8 字符。
+    """
+    monkeypatch.setattr(channels.random, "getrandbits", lambda n: 1234567890)
+
+    headers = channels._clawbot_headers("tok")
+
+    expected = base64.b64encode(b"1234567890").decode()
+    assert headers["X-WECHAT-UIN"] == expected
+    assert len(headers["X-WECHAT-UIN"]) == 16, "4 字节 base64 只有 8 字符，16 才说明是十进制串"
+
+
+def test_uin_is_regenerated_per_request(monkeypatch):
+    """每次请求换一个 UIN：服务端拿它做重放判断，复用会被当重复消息丢掉。"""
+    seq = iter([111111111, 222222222])
+    monkeypatch.setattr(channels.random, "getrandbits", lambda n: next(seq))
+
+    a = channels._clawbot_headers("tok")["X-WECHAT-UIN"]
+    b = channels._clawbot_headers("tok")["X-WECHAT-UIN"]
+
+    assert a == base64.b64encode(b"111111111").decode()
+    assert b == base64.b64encode(b"222222222").decode()
+    assert a != b
+
+
 @pytest.mark.parametrize("ctype", ["clawbot"])
 def test_clawbot_is_registered_everywhere(ctype):
     """注册表三处齐了才算「加进通道」：元数据 / 分组 / 必填项。

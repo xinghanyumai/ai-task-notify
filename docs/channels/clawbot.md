@@ -40,6 +40,47 @@ ASCII 夹在中间。目录里可能有多个文件（重新绑定后 bot_id 会
 > 注意是 `~/.workbuddy-ai/`（带 `-ai`）。第三方包文档里写的 `~/.workbuddy/` 是 legacy 路径，
 > 那里没有 cursor 文件。
 
+## 协议事实（2026-10-31 从宿主 `app.asar` 读出）
+
+宿主自己的 `WeixinApi` 类就在 `D:\APP\WorkBuddyAI\resources\app.asar` 里（明文 JS）。
+**宿主一改协议，这张表就是比对基准**——照它核一遍，比在微信里试错快得多。
+
+```js
+function buildBaseInfo(){ return { channel_version: `workbuddy-desktop-1.0.0` } }
+
+function randomWechatUin(){
+  let e = (0,c.randomBytes)(4).readUInt32BE(0);
+  return Buffer.from(String(e), `utf-8`).toString(`base64`)   // 十进制字符串再 base64
+}
+
+async post(e, t, n, r){
+  let i = JSON.stringify({ ...t, base_info: buildBaseInfo() })  // base_info 顶层合并
+  ...
+}
+
+async getUpdates(e, t, n){ return this.post(`getupdates`, { get_updates_buf: e }, r + 1e4, n) }
+async sendMessage(e){ return this.post(`sendmessage`, e, 15e3) }
+```
+
+| 项 | 宿主 | 我们 | 判定 |
+|---|---|---|---|
+| `base_info.channel_version` | `workbuddy-desktop-1.0.0` | 同 | ✅ 已对齐（`channels.py` 的 `CLAWBOT_CHANNEL_VERSION`） |
+| `base_info` 位置 | `post()` 里顶层 `{...body, base_info}` | 顶层 `base_info` | ✅ |
+| 游标 `get_updates_buf` | `loadPersistedCursor()` 返回磁盘**原字符串**，原样传 | 同 | ✅ 传 base64 串，**不许解码** |
+| `X-WECHAT-UIN` | `b64encode(String(uint32))` = 十进制字符串的 base64（16 字符） | 同 | ✅ 已对齐（`_clawbot_headers`） |
+| 其余头 | `Content-Type` / `AuthorizationType` / `Content-Length` / `Authorization: Bearer` | 前两个 + `Authorization`，`Content-Length` 由 urllib 自动加 | ✅ 实质一致 |
+| `sendmessage` body | `{msg:{from_user_id:"", to_user_id, client_id, message_type:2, message_state:2, context_token, item_list:[{type:1,text_item:{text}}]}}` | 逐字段一致 | ✅ |
+| URL | `apiBaseUrl + "/ilink/bot/" + name` | `https://ilinkai.weixin.qq.com/ilink/bot/...` | ✅ |
+| `getupdates` 超时语义 | **长轮询**，默认 35s；请求超时 = poll + 10s；`AbortError` 一律返回 `{ret:0, msgs:[], get_updates_buf:<原游标>}` | `SEND_TIMEOUT = 8` | ⚠️ 探针要**把超时当「没消息」**，不是当失败 |
+
+两个曾经踩过的坑，写在这里防止复发：
+
+1. **`channel_version` 不能写 `1.0.2`。** 服务端拿它做协议协商，写错会在**解析阶段**
+   就拒：`{"ret":-1}`、0.2 秒返回——不是 35 秒长轮询超时。这个症状很容易被误判成
+   「没消息」或「游标失效」。
+2. **`X-WECHAT-UIN` 不是 4 个原始字节的 base64。** 十进制串 base64 是 16 字符，
+   原始字节 base64 只有 8 字符，长度一眼就能分开。
+
 ## 常见报错
 
 | 返回 | 意思 | 怎么办 |
