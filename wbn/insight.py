@@ -335,6 +335,11 @@ def channel_state(
         label = channels.FIELD_LABELS.get(ctype, {}).get(miss[0], miss[0])
         more = f" 等 {len(miss)} 项" if len(miss) > 1 else ""
         return f"待配置：缺 {label}{more}", LEVEL_MUTED, False
+    # `clawbot` 的 `REQUIRED` 是空的（凭证可以自动探测），所以「字段齐全」
+    # 不等于「能用」。不单独判一次凭证的话，一个从没绑过微信的配置会显示成
+    # 「已配置，未启用」——用户点开发现根本发不出去。
+    if ctype == "clawbot" and not channels.clawbot_credential(ch)[0]:
+        return "未配置：先去 WorkBuddy 里绑定微信", LEVEL_MUTED, False
     if ch.get("enabled"):
         if last and last.get("ok") is False:
             why = (last.get("msg") or "").strip()

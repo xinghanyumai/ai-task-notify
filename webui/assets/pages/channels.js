@@ -462,6 +462,9 @@
     state.nodes.why = why;
     state.nodes.result = result;
     state.nodes.switch = sw;
+    /* 每次换通道都要清掉，否则会拿着上一个通道的节点（已从 DOM 上摘掉）
+       去写「当前凭证」，这个通道就永远显示不出自己的凭证来源。 */
+    if (!hasField(ctype, "bot_token")) state.nodes.cred = null;
     paintResult();
 
     save.addEventListener("click", function () { saveChannel(ctype); });
@@ -520,7 +523,23 @@
     }
 
     if (f.hint) wrap.appendChild(ctx.el("p", "field-hint", f.hint));
+    /* clawbot 的凭证可能根本不在这个框里（自动探测来的）。不说清楚的话，
+       用户会以为自己漏填了，然后去 WorkBuddy 外面瞎找。 */
+    if (f.key === "bot_token") {
+      state.nodes.cred = ctx.el("p", "field-hint", credText(ctype));
+      wrap.appendChild(state.nodes.cred);
+    }
     return wrap;
+  }
+
+  /* 当前凭证来源。**填了就以「手动填写」为准**，不等后端回话——
+     用户刚敲完一个字就该看到反馈，否则会以为没生效。 */
+  function credText(ctype) {
+    var v = state.draft[ctype] || {};
+    if (String(v.bot_token || "").trim()) return "当前凭证：手动填写";
+    var st = stateOf(ctype);
+    var src = (st && st.credential) || "未配置";
+    return "当前凭证：" + src;
   }
 
   function boolNode(ctype, f, value) {
@@ -590,6 +609,8 @@
 
     var miss = missingInDraft(ctype);
     var ready = miss.length === 0;
+
+    if (state.nodes.cred) state.nodes.cred.textContent = credText(ctype);
     /* 缺字段的说明**继续显示**，但它现在是「测试按钮」的说明，不是保存的：
        D16 定了保存不卡必填——半成品存不下来，用户填了 8 个字段差 1 个、
        关掉窗口就全丢，这个损失比「存了一份不全的配置」大得多。

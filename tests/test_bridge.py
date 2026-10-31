@@ -112,8 +112,8 @@ def test_config_save_only_touches_patched_field(isolated_state):
     # 其它顶层字段一个没动
     for key in ("app_name", "triggers", "filters", "templates", "titles", "advanced", "ui"):
         assert after[key] == before[key], f"{key} 被意外改动"
-    # 10 个通道和它们的凭证都还在
-    assert len(after["channels"]) == len(before["channels"]) == 10
+    # 11 个通道和它们的凭证都还在（10 条原有 + W10 的 clawbot）
+    assert len(after["channels"]) == len(before["channels"]) == 11
     assert after["channels"] == before["channels"]
 
 
@@ -209,7 +209,7 @@ def test_stats_today_supplies_denominator(isolated_state):
     「启用通道 2/2」就会冒充「2/10」。
     """
     got = bridge.Bridge().stats_today()["data"]
-    assert got["total_channels"] == len(config.load()["channels"]) == 10
+    assert got["total_channels"] == len(config.load()["channels"]) == 11
     assert "channels" not in got
 
 
@@ -231,12 +231,12 @@ def test_chain_sentence_tracks_mute(isolated_state):
 
 
 def test_channels_list_covers_every_channel(isolated_state):
-    """10 条通道一条不漏，状态文案来自 `insight.channel_state`，一字不差。"""
+    """11 条通道一条不漏，状态文案来自 `insight.channel_state`，一字不差。"""
     from wbn import insight
 
     cfg = config.load()
     rows = bridge.Bridge().channels_list()["data"]
-    assert len(rows) == 10
+    assert len(rows) == 11
 
     for row in rows:
         want = insight.channel_state(row["type"], config.get_channel(cfg, row["type"]))
@@ -272,7 +272,7 @@ def test_channels_list_reads_last_send_from_today_log(isolated_state):
 def test_channels_list_survives_missing_log(isolated_state):
     """今天还没有日志文件是很常见的（刚过零点）。不许因此整页报错。"""
     rows = bridge.Bridge().channels_list()["data"]
-    assert len(rows) == 10
+    assert len(rows) == 11
     assert all(r["last"] is None for r in rows)
 
 
@@ -492,7 +492,7 @@ def test_groups_cover_every_channel_exactly_once(isolated_state):
     data = bridge.Bridge().channels_meta()["data"]
     flat = [t for g in data["groups"] for t in g["types"]]
     assert sorted(flat) == sorted(data["meta"])
-    assert len(flat) == len(set(flat)) == 10
+    assert len(flat) == len(set(flat)) == 11
 
 
 def test_meta_fields_are_objects_not_tuples(isolated_state):

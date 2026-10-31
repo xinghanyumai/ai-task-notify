@@ -13,6 +13,8 @@ import base64
 import hashlib
 import hmac
 import json
+import pathlib
+import random
 import re
 import time
 import unicodedata
@@ -98,6 +100,34 @@ CHANNEL_META: dict[str, dict] = {
             ("secret", "应用 Secret", "password", "", "应用详情页"),
             ("agentid", "AgentId", "text", "", "应用详情页，纯数字"),
             ("touser", "收件人", "text", "@all", "@all 或成员 UserID"),
+        ],
+    },
+    "clawbot": {
+        "label": "微信 ClawBot（WorkBuddy 助理）",
+        "summary": "复用 WorkBuddy 已经绑定的微信助理，不用再申请任何账号",
+        "help": (
+            "走的是 WorkBuddy 自己的 ClawBot（微信助理）通道：消息以「助理回复」的\n"
+            "形式进微信，和你平时跟它对话是同一个会话。\n"
+            "\n"
+            "凭证不用填。只要你在 WorkBuddy 里绑定过微信，程序会自动去\n"
+            "  ~/.workbuddy-ai/claw-state/weixin/\n"
+            "读 bot_token（界面会显示成「自动探测（e4457217…）」）。\n"
+            "\n"
+            "⚠ 不要去跑 `--login` 之类的重新登录命令：那会把 WorkBuddy 原生的\n"
+            "微信连接顶掉，你的助理就掉线了。要换 bot 请在 WorkBuddy 里操作。\n"
+            "\n"
+            "如果发送时报 `invalid arguments` 或 `ret=-2`，意思是「没有最近活跃会话」。\n"
+            "解决办法：先在微信里给这个助理随便发一句话（把它「热」起来），再点测试。\n"
+            "会话一直热不起来，就把你自己的微信用户 ID 填到「接收者 ID」里。\n"
+            "\n"
+            "这条通道读的是 WorkBuddy 的内部状态文件，不是公开 API——宿主改了目录\n"
+            "结构或编码方式它就断。所以留了「bot_token」让你手动填，绕过自动探测。"
+        ),
+        "fields": [
+            ("bot_token", "bot_token", "password", "", "留空自动探测，填了就优先用你填的"),
+            ("to_user_id", "接收者 ID", "text", "", "可选，留空发到最近活跃会话"),
+            ("context_token", "context_token", "text", "", "可选，一般留空"),
+            ("auto_discover", "自动探测凭证", "bool", "1", "没填 token 时去 WorkBuddy 目录找"),
         ],
     },
     "bark": {
@@ -219,6 +249,7 @@ CHANNEL_META: dict[str, dict] = {
 # 每个通道的列表图标。单独一张表，改图标不用动上面的元数据。
 _CHANNEL_ICONS = {
     "wxmp": "chat",
+    "clawbot": "chat",
     "wecom_app": "briefcase",
     "bark": "phone",
     "ntfy": "bolt",
@@ -239,7 +270,7 @@ for _t, _ic in _CHANNEL_ICONS.items():
 # 才能拿到一份常量——W5 已经把那个文件删了，这个理由现在更硬。
 # 分组顺序是「自建 → 第三方 → 本机」，越靠前越推荐。
 CHANNEL_GROUPS: list[tuple[str, list[str]]] = [
-    ("自建推送", ["wxmp", "wecom_app"]),
+    ("自建推送", ["wxmp", "clawbot", "wecom_app"]),
     ("第三方", ["bark", "ntfy", "wecom_bot", "dingtalk_bot",
                 "feishu_bot", "smtp", "webhook"]),
     ("本机", ["log"]),
@@ -255,6 +286,9 @@ LOCAL_CHANNELS: frozenset[str] = frozenset({"log"})
 # 「填齐了才算配好」的必填字段。openid 不在里面——它会自动从关注者列表拉取。
 REQUIRED: dict[str, tuple[str, ...]] = {
     "wxmp": ("appid", "secret", "template_id"),
+    # 空元组是**故意的**：ClawBot 的凭证可以自动探测，写 ("bot_token",)
+    # 会让「探测成功」也显示成「待配置」，用户被逼着去填一个他并不知道的值。
+    "clawbot": (),
     "wecom_app": ("corpid", "secret", "agentid"),
     "bark": ("key",),
     "ntfy": ("topic",),
@@ -319,7 +353,7 @@ def auto_enable(cfg: dict) -> tuple[list[str], list[str]]:
         ctype = ch.get("type")
         if ctype not in CHANNEL_META:
             continue
-        ready = is_ready(ctype, ch)
+        ready = _auto_ready(ctype, ch)
         if ready:
             if not ch.get("enabled") and not ch.get("manual_off"):
                 ch["enabled"] = True
@@ -330,6 +364,23 @@ def auto_enable(cfg: dict) -> tuple[list[str], list[str]]:
                 turned_off.append(short_label(ctype))
             ch.pop("manual_off", None)
     return turned_on, turned_off
+
+
+def _auto_ready(ctype: str, ch: dict) -> bool:
+    """自动启用用的「配好了」判据。
+
+    绝大多数通道直接等于 `is_ready`。**`clawbot` 是唯一的例外**：
+    它的 `REQUIRED` 是空元组（凭证能自动探测），但「能自动启用」和
+    「必填项齐全」是两件事。
+
+    而且这里**只认手动填的 token，不认自动探测的**。理由不是技术性的：
+    自动探测在任何装过 WorkBuddy 并绑过微信的机器上都会成功，那是**环境的
+    事实**，不是用户对这条通道的意图。按探测结果自动打开，等于让所有人
+    存一次配置就悄悄多收一份微信通知。用户亲手填了 token 才算表态。
+    """
+    if ctype == "clawbot":
+        return bool(str(ch.get("bot_token") or "").strip())
+    return is_ready(ctype, ch)
 
 
 # ---------------------------------------------------------------- 工具
@@ -372,11 +423,22 @@ def _http(
         return 0, redact(f"{type(e).__name__}: {e}", 300)
 
 
-def _post_json(url: str, body: dict, timeout: int = SEND_TIMEOUT) -> tuple[int, str]:
+def _post_json(
+    url: str, body: dict, timeout: int = SEND_TIMEOUT, headers: dict | None = None
+) -> tuple[int, str]:
+    """POST 一个 JSON。
+
+    `headers` 默认 `None`：原有 7 个调用点靠这个保持请求头一模一样
+    （只多一个 `Content-Type`）。需要额外头的只有 ClawBot 那条通道，
+    它要 `Authorization` / `AuthorizationType` / `X-WECHAT-UIN` 三个。
+    """
+    hdrs = {"Content-Type": "application/json; charset=utf-8"}
+    if headers:
+        hdrs.update(headers)
     return _http(
         url,
         json.dumps(body, ensure_ascii=False).encode("utf-8"),
-        {"Content-Type": "application/json; charset=utf-8"},
+        hdrs,
         "POST",
         timeout,
     )
@@ -1577,6 +1639,240 @@ def _send_log(c: dict, title: str, content: str, fields: dict) -> tuple[bool, st
         return False, redact(f"{type(e).__name__}: {e}", 200)
 
 
+# ---------------------------------------------------------------- ClawBot
+#
+# 这条通道和别的 9 条都不一样：**凭证可能不在配置里**。
+#
+# WorkBuddy 自己绑了一个微信助理（bot），它的 bot_token 落在宿主的运行时状态
+# 目录里。用户在 WorkBuddy 里绑过微信，这里就能白捡一个可用的推送通道，
+# 不用再去申请测试号。
+#
+# 代价是：那个目录**不是公开 API**。WorkBuddy 改了目录结构或编码方式，它就断。
+# 所以做了三级来源（手动填 > 自动探测 > 没有），并且探测失败一律返回人话——
+# 这段代码跑在「发通知」的热路径上，抛异常等于整条通知丢了。
+#
+# ⚠ token 一个字符都不许进日志。`redact()` 兜不住 `<8hex>@im.bot:060000<32hex>`
+# 这个形状（中间那段 `@im.bot:` 打断了十六进制串），必须自己截成前 8 位。
+
+CLAWBOT_BASE = "https://ilinkai.weixin.qq.com"
+CLAWBOT_SEND_URL = f"{CLAWBOT_BASE}/ilink/bot/sendmessage"
+# iLink 的协议版本号，跟着 WorkBuddy 客户端走。发错了服务端会直接拒。
+CLAWBOT_CHANNEL_VERSION = "1.0.2"
+
+# 默认探测目录。`-ai` 后缀是关键：第三方文档里写的 `~/.workbuddy/` 是 legacy 路径，
+# 那里没有 cursor 文件。
+CLAWBOT_STATE_DIR = pathlib.Path.home() / ".workbuddy-ai" / "claw-state" / "weixin"
+
+# token 在 base64 解码后的字节流里是明文 ASCII，外面裹着一层 protobuf。
+# 所以直接对字节做正则，不用先解 protobuf——省一个依赖，也不怕宿主改字段号。
+_CLAWBOT_TOKEN_RE = re.compile(rb"[0-9a-f]{8,}@im\.bot:[0-9a-f]+")
+
+_CLAWBOT_NO_CRED = (
+    "未配置 bot_token，且没找到 WorkBuddy 的 ClawBot 凭证"
+    "（需要先在 WorkBuddy 里绑定微信）"
+)
+
+
+def clawbot_discover(state_dir: pathlib.Path | str | None = None) -> tuple[str, str]:
+    """从 WorkBuddy 的运行时状态目录里翻 bot_token。
+
+    返回 `(token, 失败原因)`。成功时原因为空串，失败时 token 为空串。
+    **四种失败都要返回人话**，一个异常都不许抛：
+
+    1. 目录不存在 / 里面没有 cursor 文件
+    2. cursor 文件不是合法 JSON
+    3. `get_updates_buf` 不是合法 base64
+    4. base64 解得开，但里面没有 bot_token（宿主换了编码方式）
+
+    目录下可能有多个文件（重新绑定后 bot_id 会变），取 mtime 最新的那个。
+    """
+    d = pathlib.Path(state_dir) if state_dir else CLAWBOT_STATE_DIR
+    try:
+        files = list(d.glob("*_im.bot.cursor.json"))
+    except OSError as e:  # 路径太长 / 权限 / 盘符没了
+        return "", f"没找到 ClawBot 凭证目录（{type(e).__name__}）：{d}"
+    if not files:
+        return "", f"没找到 ClawBot 凭证：{d} 下没有 *_im.bot.cursor.json"
+
+    try:
+        newest = max(files, key=lambda p: p.stat().st_mtime)
+    except OSError as e:
+        return "", f"读不出 ClawBot 游标文件的时间戳（{type(e).__name__}）"
+
+    try:
+        raw = json.loads(newest.read_text(encoding="utf-8"))
+    except OSError as e:
+        return "", f"读不出 ClawBot 游标文件（{type(e).__name__}）：{newest.name}"
+    except ValueError:
+        return "", f"ClawBot 游标文件不是合法 JSON：{newest.name}"
+
+    buf = raw.get("get_updates_buf") if isinstance(raw, dict) else None
+    if not buf:
+        return "", f"ClawBot 游标文件里没有 get_updates_buf：{newest.name}"
+
+    try:
+        decoded = base64.b64decode(str(buf), validate=True)
+    except Exception:
+        return "", f"ClawBot 游标的 get_updates_buf 不是合法 base64：{newest.name}"
+
+    m = _CLAWBOT_TOKEN_RE.search(decoded)
+    if not m:
+        # 这里只报「没解析出」，不把 decoded 打出来——里面可能有半截凭证
+        return "", f"ClawBot 游标里没解析出 bot_token（WorkBuddy 可能改了格式）：{newest.name}"
+    return m.group(0).decode("ascii"), ""
+
+
+def _auto_discover_enabled(ch: dict) -> bool:
+    """`auto_discover` 的容错解析。界面可能给 bool、`"1"`、`"true"`、空串。"""
+    val = ch.get("auto_discover", True)
+    if isinstance(val, str):
+        return val.strip().lower() not in ("", "0", "false", "no", "off")
+    return bool(val)
+
+
+def _clawbot_resolve(channel: dict | None) -> tuple[str, str, str]:
+    """按优先级取凭证，返回 `(token, 来源, 失败原因)`。
+
+    来源是 `"manual"` / `"auto"` / `""`。**手动填的优先，而且填了就不再去翻
+    目录**：自动探测依赖宿主内部结构，宿主改了就断。用户能手动填，
+    就永远留一条活路。
+
+    第三个返回值是探测失败的原因，只给错误信息用——用户看到「未配置」时，
+    得知道是「目录没有」还是「格式变了」，否则没法自救。
+    """
+    ch = channel or {}
+    manual = str(ch.get("bot_token") or "").strip()
+    if manual:
+        return manual, "manual", ""
+    if not _auto_discover_enabled(ch):
+        return "", "", "自动探测已关闭"
+    token, why = clawbot_discover()
+    return (token, "auto", "") if token else ("", "", why)
+
+
+def clawbot_credential(channel: dict | None) -> tuple[str, str]:
+    """按优先级取凭证，返回 `(token, 来源)`。来源是 `"manual"` / `"auto"` / `""`。"""
+    token, source, _why = _clawbot_resolve(channel)
+    return token, source
+
+
+def clawbot_source_label(channel: dict | None) -> str:
+    """界面上「凭证从哪来」的那行字。三态，不许合并成两态。
+
+    自动探测必须带上 bot_id 前 8 位：目录里可能躺着好几个历史 bot，
+    不显示探到的是哪一个，用户没法判断是不是过期的那个。
+    """
+    token, source = clawbot_credential(channel)
+    if source == "manual":
+        return "手动填写"
+    if source == "auto":
+        return f"自动探测（{token[:8]}…）"
+    return "未配置"
+
+
+def _mask_token(text: str, token: str) -> str:
+    """把 token 换成 `前 8 位…`。**所有**要落盘/展示的 ClawBot 文本都过这里。"""
+    if token:
+        text = str(text).replace(token, f"{token[:8]}…")
+    return text
+
+
+def _clawbot_headers(token: str) -> dict:
+    """iLink 的三个鉴权头。
+
+    `X-WECHAT-UIN` 是个 base64 的随机 uint32，每次请求都要新生成
+    （服务端拿它做重放判断）。复用同一个值会被当成重复消息丢掉。
+    """
+    uin = base64.b64encode(random.getrandbits(32).to_bytes(4, "big")).decode()
+    return {
+        "Authorization": f"Bearer {token}",
+        "AuthorizationType": "ilink_bot_token",
+        "X-WECHAT-UIN": uin,
+    }
+
+
+def _clawbot_json(text: str) -> dict:
+    """把响应体解析成 dict。解析不了就当空对象——空对象按「成功」算。"""
+    try:
+        data = json.loads(text or "{}")
+    except ValueError:
+        return {}
+    return data if isinstance(data, dict) else {}
+
+
+def _clawbot_verdict(code: int, text: str, token: str) -> tuple[bool, str]:
+    """判断一次响应算不算成功，并生成**已经脱敏**的失败描述。"""
+    if not 200 <= code < 300:
+        return False, _err(code, _mask_token(text, token))
+
+    data = _clawbot_json(text)
+    ret = data.get("ret")
+    errcode = data.get("errcode")
+    if ret in (None, 0) and errcode in (None, 0):
+        return True, ""
+
+    detail = " ".join(
+        f"{k}={v}" for k, v in (("ret", ret), ("errcode", errcode)) if v not in (None, 0)
+    )
+    errmsg = str(data.get("errmsg") or data.get("errmsg_zh") or "").strip()
+    msg = f"{detail} {errmsg}".strip() or _err(code, text)
+    if ret == -2 or errcode == -14:
+        msg += "（没有最近活跃会话：先在微信里给助理发一句话再试）"
+    return False, _mask_token(msg, token)
+
+
+def _send_clawbot(
+    channel: dict, title: str, content: str, timeout: int = SEND_TIMEOUT
+) -> tuple[bool, str]:
+    """ClawBot 主动推送。凭证来源见 `CHANNEL_META['clawbot']['help']`。
+
+    iLink 的 `sendmessage` 不吃 markdown，所以正文就是「标题 + 空行 + 正文」
+    的纯文本。
+
+    **失败重试一次**：`ret=-2` / `errcode=-14` 的意思是「你带的 context_token
+    已经过期/对不上」，去掉它重发就能落到最近活跃会话。第二次还失败就如实返回，
+    不再试——重试三次以上用户会在微信里看到一堆重复消息。
+    """
+    token, _source, why = _clawbot_resolve(channel)
+    if not token:
+        # 探测原因要带上：只说「未配置」，用户分不清是没绑微信、还是宿主
+        # 改了目录结构（后者他得去手动填 token，前者得先去绑）。
+        return False, f"{_CLAWBOT_NO_CRED}。探测结果：{why}" if why else _CLAWBOT_NO_CRED
+
+    text = f"{title}\n\n{content}" if content else title
+    to_user = str(channel.get("to_user_id") or "").strip()
+    context = str(channel.get("context_token") or "").strip()
+
+    def _attempt(ctx: str) -> tuple[int, str]:
+        msg = {
+            "from_user_id": "",
+            "to_user_id": to_user,
+            # client_id 只用于服务端去重，每次尝试都要新的，否则重试会被吞
+            "client_id": f"wbn-{int(time.time() * 1000):x}-{random.getrandbits(32):08x}",
+            "message_type": 2,
+            "message_state": 2,
+            "item_list": [{"type": 1, "text_item": {"text": text}}],
+        }
+        if ctx:
+            msg["context_token"] = ctx
+        body = {"msg": msg, "base_info": {"channel_version": CLAWBOT_CHANNEL_VERSION}}
+        return _post_json(CLAWBOT_SEND_URL, body, timeout, headers=_clawbot_headers(token))
+
+    code, raw = _attempt(context)
+    ok, why = _clawbot_verdict(code, raw, token)
+    if ok:
+        return True, "已发送"
+
+    data = _clawbot_json(raw)
+    retryable = data.get("ret") == -2 or data.get("errcode") == -14
+    if not (retryable and context):
+        return False, why
+
+    code, raw = _attempt("")
+    ok, why = _clawbot_verdict(code, raw, token)
+    return (True, "已发送（已去掉 context_token）") if ok else (False, why)
+
+
 # ---------------------------------------------------------------- 统一入口
 
 
@@ -1592,6 +1888,8 @@ def send_one(
     try:
         if ctype == "wxmp":
             return _send_wxmp(channel, title, content, fields, timeout)
+        if ctype == "clawbot":
+            return _send_clawbot(channel, title, content, timeout)
         if ctype == "wecom_app":
             return _send_wecom_app(channel, title, content, timeout)
         if ctype == "bark":

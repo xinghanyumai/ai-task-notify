@@ -108,6 +108,16 @@ DEFAULT_CONFIG = {
             # 旧样式，所以默认开着；关掉就退回单行截断。
             "wrap": True,
         },
+        # 微信 ClawBot：复用 WorkBuddy 自己已经绑定的微信助理。
+        # bot_token 留空 = 自动去宿主的状态目录探测；填了就优先用填的。
+        {
+            "type": "clawbot",
+            "enabled": False,
+            "bot_token": "",
+            "to_user_id": "",
+            "context_token": "",
+            "auto_discover": True,
+        },
         # 企业微信自建应用：markdown 自由排版，不限条数
         {
             "type": "wecom_app",

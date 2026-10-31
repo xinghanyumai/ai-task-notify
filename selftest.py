@@ -5,6 +5,7 @@
     python selftest.py --dry      # 只渲染不发送，检查文案
     python selftest.py --status   # 只看 hooks 安装状态与通道配置
     python selftest.py --encoding # 只跑编码回归检查，不发消息
+    python selftest.py --channel clawbot  # 只给这一个通道发一条真实消息
 
 它会模拟真实 hook payload，走完整流水线（含过滤、去重、限流），
 所以能验证「装完到底能不能收到」。
@@ -523,6 +524,37 @@ def adopt_wxmp_template() -> int:
     return 0
 
 
+def send_one_channel(ctype: str) -> int:
+    """只给**一个**通道发一条真实消息。
+
+    存在的理由：`--dry` 不发、默认模式一次发 4 条给所有启用的通道。
+    调试某个通道（尤其带自动探测凭证的 `clawbot`）时，这两种都不合适——
+    前者验证不了链路，后者会把别的通道也惊动一遍。
+
+    走的是**磁盘上的配置**，和「测试此通道」按钮同一条链路
+    （`channels.send_one`），所以结果可信。
+    """
+    cfg = config.load()
+    if ctype not in channels.CHANNEL_META:
+        print(f"✗ 未知通道 {ctype!r}")
+        print(f"  可选：{', '.join(sorted(channels.CHANNEL_META))}")
+        return 2
+    ch = config.get_channel(cfg, ctype)
+    if not ch:
+        print(f"✗ config.json 里没有 {ctype} 这条通道，先到设置中心加一条")
+        return 2
+
+    timeout = int(cfg.get("advanced", {}).get("http_timeout") or 8)
+    print(f"→ 发送 {ctype} …（超时 {timeout}s）")
+    ok, msg = channels.send_one(
+        ch, "WBN 自检", "这是一条来自 selftest 的测试消息。", {}, timeout
+    )
+    # 和 send_all 同一个格式：状态页读的就是这种行
+    store.log(f"channel={ctype} ok={ok} msg={msg[:120]}")
+    print(f"{'✓' if ok else '✗'} channel={ctype} ok={ok} msg={msg}")
+    return 0 if ok else 1
+
+
 def main() -> int:
     ap = argparse.ArgumentParser(description="WorkBuddy 通知自检")
     ap.add_argument("--version", action="version", version=f"wbn {__version__}")
@@ -532,11 +564,14 @@ def main() -> int:
     ap.add_argument("--wrap", action="store_true", help="只跑详情折行检查")
     ap.add_argument("--wxmp", action="store_true", help="诊断微信模板字段")
     ap.add_argument("--adopt", action="store_true", help="自动切换到标题有意义的微信模板")
+    ap.add_argument("--channel", metavar="TYPE", help="只给这一个通道发一条真实消息")
     args = ap.parse_args()
 
     config.ensure_dirs()
     config.save_default_if_missing()
 
+    if args.channel:
+        return send_one_channel(args.channel)
     if args.status:
         show_status()
         return 0

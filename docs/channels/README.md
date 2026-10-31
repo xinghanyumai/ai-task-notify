@@ -1,6 +1,6 @@
 # 推送通道
 
-内置 10 个通道，每个通道一页，写清申请步骤、字段含义和各自的坑。
+内置 11 个通道，每个通道一页，写清申请步骤、字段含义和各自的坑。
 
 ## 共同的几件事
 
@@ -22,6 +22,7 @@
 | 通道 | `type` | 需要准备什么 | 文档 |
 |---|---|---|---|
 | 微信测试号 | `wxmp` | appID、appsecret、模板 ID，openid 可自动取 | [wechat-sandbox.md](wechat-sandbox.md) |
+| 微信 ClawBot | `clawbot` | 不用准备，WorkBuddy 绑过微信就自动探测到 | [clawbot.md](clawbot.md) |
 | 企业微信自建应用 | `wecom_app` | 企业 ID、Secret、AgentId | [wecom-app.md](wecom-app.md) |
 | Bark | `bark` | 装 App，取设备 key | [bark.md](bark.md) |
 | ntfy | `ntfy` | 装 App，起一个 topic | [ntfy.md](ntfy.md) |

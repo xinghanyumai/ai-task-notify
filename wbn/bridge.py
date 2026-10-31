@@ -704,6 +704,11 @@ class Bridge:
                 "enabled": bool(ch.get("enabled")),
                 "ready": channels.is_ready(ctype, ch),
                 "missing": channels.missing_fields(ctype, ch),
+                # 只有 clawbot 用得上：凭证从哪来（手动 / 自动探测 / 没有）。
+                # 别的通道凭证就在 `values` 里，这里给空串，前端按空处理。
+                "credential": (
+                    channels.clawbot_source_label(ch) if ctype == "clawbot" else ""
+                ),
                 "subtitle": subtitle,
                 "level": level,
                 "on": lit,
