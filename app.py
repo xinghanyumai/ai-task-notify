@@ -274,6 +274,42 @@ def _sandbox_off_args() -> bool:
     return os.environ.get("WBN_WEBVIEW_NOSANDBOX") == "1"
 
 
+def _remembered_no_sandbox() -> bool:
+    """上次启动是不是「关掉沙箱才起来的」。
+
+    **`WBN_WEBVIEW_SANDBOX=1` 优先于记忆**：那是用户在排查，不是日常启动。
+    记忆读不出来（文件坏了 / 权限）一律当 False，走老的「先探测 10 秒」路径——
+    宁可多等一次，也不要把关沙箱当成默认（W10 §2.2）。
+    """
+    if os.environ.get("WBN_WEBVIEW_SANDBOX") == "1":
+        return False
+    try:
+        from wbn import store
+
+        return store.prefer_no_sandbox()
+    except Exception:
+        return False
+
+
+def _remember_no_sandbox() -> None:
+    """子进程用 `--no-sandbox` 真的把界面画出来了 → 记下来。
+
+    **只在「是降级启动」且「bridge 已调通」时写**（调用点在 `_first_activity`）：
+    写早了等于替一个还没验证的猜测背书，下次启动就永远关着沙箱。
+    """
+    if os.environ.get("WBN_WEBVIEW_NOSANDBOX") != "1":
+        return
+    try:
+        from wbn import store
+
+        if store.prefer_no_sandbox():
+            return                              # 已经记过，不重复写盘
+        store.set_prefer_no_sandbox(True)
+        _log("降级启动成功（bridge 已调通），已记住「下次直接关沙箱」")
+    except Exception:
+        pass
+
+
 def _retry_without_sandbox() -> bool:
     """黑窗降级：带 `--no-sandbox` 重启一次自己。
 
@@ -446,7 +482,11 @@ def run_ui() -> int:
     # WebView2 用户数据目录都可能让浏览器进程起不来。所以留一条**失败即降级**
     # 的路：看门狗判定「bridge 超时没通」（正是黑窗的症状）时，带
     # `--no-sandbox` 重启一次自己，见 `_retry_without_sandbox()`。
-    if _sandbox_off_args():
+    if _remembered_no_sandbox():
+        # 上次就是关沙箱才画出来的，这次别等那 10 秒（W10 §2.2）
+        _log("按记住的偏好：直接关沙箱启动，跳过 10 秒探测")
+        os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--no-sandbox")
+    elif _sandbox_off_args():
         os.environ.setdefault("WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS", "--no-sandbox")
 
     alive = threading.Event()
@@ -456,6 +496,9 @@ def run_ui() -> int:
         if alive.is_set():
             return
         alive.set()
+        # 走到这里说明窗口真的画出来了。如果这次是降级启动，就把「这台机器
+        # 要关沙箱」记下来，下次不用再等 10 秒（W10 §2.2）。
+        _remember_no_sandbox()
         if os.environ.get("WBN_BENCH") == "1":
             ms = (time.perf_counter() - _PROCESS_T0) * 1000
             _bench(f"[bench] first-interactive {ms:.0f}ms")

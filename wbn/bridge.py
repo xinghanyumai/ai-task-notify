@@ -633,6 +633,33 @@ class Bridge:
             "msg": note,
         }
 
+    # ------------------------------------------------------------ 沙箱偏好
+
+    @_guard
+    def sandbox_pref_get(self) -> dict:
+        """上次是不是「关掉沙箱才起来的」。
+
+        **不读配置**：这是程序自己观察出来的事实（写进 `state/ui.json`），
+        不是用户填的意图。放进 `config.json` 会多出第二真相。
+        """
+        self._touch()
+        from wbn import store
+
+        return {"prefer_no_sandbox": store.prefer_no_sandbox()}
+
+    @_guard
+    def sandbox_pref_reset(self) -> dict:
+        """忘掉降级偏好，下次启动回到「带沙箱 + 最多等 10 秒探测」。
+
+        用户点「恢复默认」的语义是「我不想要这个记忆」，所以是**删字段**，
+        不是写 `false`——留着 `false` 以后谁也说不清是他选的还是程序写的。
+        """
+        self._touch()
+        from wbn import store
+
+        store.set_prefer_no_sandbox(False)
+        return {"prefer_no_sandbox": store.prefer_no_sandbox()}
+
     # ------------------------------------------------------------ 通道页
 
     @_guard

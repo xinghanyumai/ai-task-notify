@@ -17,6 +17,7 @@ from .sanitize import clean_obj, redact
 
 RUNTIME_PATH = config.STATE_DIR / "runtime.json"
 QUEUE_PATH = config.STATE_DIR / "queue.jsonl"
+UI_PREF_PATH = config.STATE_DIR / "ui.json"
 
 # 说明：这里刻意不加文件锁。
 # 实测在本机沙箱环境下 unlink 单次约 700ms（删除会被拦截审计），
@@ -56,6 +57,47 @@ def load_runtime() -> dict:
 
 def save_runtime(rt: dict) -> None:
     _write_json(RUNTIME_PATH, rt)
+
+
+# ------------------------------------------------------------ 界面偏好
+#
+# `state/ui.json` 只放「下次启动怎么开窗」这类偏好。**不是配置**——它不该进
+# `config.json`：配置是用户手填的意图，这个是程序自己观察出来的事实
+# （「上次带沙箱起不来，降级后起来了」）。两者混在一起，用户改配置时会莫名其妙
+# 丢掉一个他从来没设置过的字段。
+
+
+def load_ui_pref() -> dict:
+    """读界面偏好。文件没有 / 坏了 / 不是对象 → 空字典，走默认行为。"""
+    pref = _read_json(UI_PREF_PATH, {})
+    return pref if isinstance(pref, dict) else {}
+
+
+def save_ui_pref(pref: dict) -> None:
+    _write_json(UI_PREF_PATH, pref)
+
+
+def prefer_no_sandbox() -> bool:
+    """上次是不是「关掉沙箱才起来的」。
+
+    坏文件当 False：宁可多等 10 秒探测一次，也不要因为一个读不出来的标记
+    就把安全降级当成默认——沙箱关掉是净损失。
+    """
+    return load_ui_pref().get("prefer_no_sandbox") is True
+
+
+def set_prefer_no_sandbox(on: bool) -> None:
+    """记下 / 忘掉「这台机器要关沙箱」。
+
+    `on=False` 是**删字段**而不是写 `false`：用户在设置里点「恢复默认」之后，
+    文件里不该再留一条痕迹，否则以后谁看到都会以为他选过什么。
+    """
+    pref = load_ui_pref()
+    if on:
+        pref["prefer_no_sandbox"] = True
+    else:
+        pref.pop("prefer_no_sandbox", None)
+    save_ui_pref(pref)
 
 
 def _num(value, default: float = 0.0) -> float:

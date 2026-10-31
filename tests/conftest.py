@@ -37,6 +37,10 @@ def isolated_state(tmp_path, monkeypatch):
 
     monkeypatch.setattr(store, "RUNTIME_PATH", state / "runtime.json", raising=True)
     monkeypatch.setattr(store, "QUEUE_PATH", state / "queue.jsonl", raising=True)
+    # ui.json 存的是「上次关沙箱才起来」这种启动偏好。漏掉这一行，
+    # 测试就会往**真实的** state/ui.json 里写「以后别开沙箱」——
+    # 后果是开发者本机下次启动悄悄关掉沙箱，而且没人知道是谁写的。
+    monkeypatch.setattr(store, "UI_PREF_PATH", state / "ui.json", raising=True)
 
     return tmp_path
 

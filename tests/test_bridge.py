@@ -862,6 +862,9 @@ def test_bridge_exposes_only_implemented_methods():
         # 状态**只认启动文件夹里那个 .lnk**，不进 config.json；
         # `autostart_set` 操作完必须重读，不回显入参
         "autostart_get", "autostart_set",
+        # W10 §2.2 状态页「界面渲染方式」：降级偏好是程序观察出来的事实，
+        # 存 state/ui.json，不进 config.json；用户能点「恢复默认」撤销它
+        "sandbox_pref_get", "sandbox_pref_reset",
     }
 
 

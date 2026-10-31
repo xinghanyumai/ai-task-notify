@@ -31,6 +31,7 @@
     built: false,
     counted: false,   /* 数字滚动只在首次进入时做一次，切回来不重复 */
     loading: false,
+    sandboxPref: false, /* 上次是否「关沙箱才起来的」，见 paintSandboxPref */
     nodes: {}
   };
 
@@ -80,9 +81,15 @@
     return Promise.all([
       state.ctx.call("stats_today"),
       state.ctx.call("channels_list"),
-      state.ctx.call("autostart_get")
+      state.ctx.call("autostart_get"),
+      /* 沙箱偏好是可选的：老后端没有这个方法，失败就当「没记过」，
+         不许因此让整页报错（status 页的其它三块跟它无关）。 */
+      state.ctx.call("sandbox_pref_get").catch(function () {
+        return { prefer_no_sandbox: false };
+      })
     ]).then(function (res) {
       paint(res[0], res[1], res[2]);
+      paintSandboxPref(res[3]);
     }).catch(function (e) {
       showError(e);
     }).then(function () {
@@ -316,6 +323,51 @@
     row.appendChild(cb);
 
     box.appendChild(row);
+    renderSandboxPref();
+  }
+
+  /** 「上次是关沙箱才起来的」那一行。**只在真的记着的时候出现**——
+   *
+   * 正常机器上永远看不到它。一旦出现，说明这台机器的 WebView2 带沙箱起不来，
+   * 而程序已经替用户做了降级决定，就必须给他一个**撤销**的入口，
+   * 否则那个记忆是他永远不知道、也永远改不掉的东西。
+   */
+  function paintSandboxPref(o) {
+    state.sandboxPref = !!(o && o.prefer_no_sandbox === true);
+    renderSandboxPref();
+  }
+
+  function renderSandboxPref() {
+    var ctx = state.ctx;
+    var box = state.nodes.asBox;
+    if (!box) return;
+    var old = box.querySelector('[data-role="sandbox-pref"]');
+    if (old) old.remove();
+    if (!state.sandboxPref) return;
+
+    var row = ctx.el("div", "row");
+    row.setAttribute("data-role", "sandbox-pref");
+
+    var cell = ctx.el("div", "text");
+    cell.appendChild(ctx.el("div", "title", "界面渲染方式"));
+    cell.appendChild(ctx.el("div", "desc",
+      "上次是关掉 Chromium 沙箱才把窗口画出来的，已记住，之后启动不再等 10 秒。"));
+    row.appendChild(cell);
+
+    var btn = ctx.el("button", "btn btn-secondary", "恢复默认（带沙箱）");
+    btn.type = "button";
+    btn.addEventListener("click", resetSandboxPref);
+    row.appendChild(btn);
+
+    box.appendChild(row);
+  }
+
+  function resetSandboxPref() {
+    state.ctx.call("sandbox_pref_reset").then(function (o) {
+      paintSandboxPref(o);
+    }).catch(function (e) {
+      showAutostartError(String((e && e.message) || e));
+    });
   }
 
   /** 点一下 → 落盘 → **用后端重读到的状态覆盖控件**（不是用点击后的值）。
