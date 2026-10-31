@@ -409,6 +409,14 @@ def run_ui() -> int:
     if not _acquire_lock_or_focus():
         return 0
 
+    # 首次运行把默认配置落盘。绿色便携的前提是「拷走文件夹 = 带走配置」，
+    # 而 `install` / `selftest` / `tray` 三个入口都调了 `save_default_if_missing()`，
+    # **唯独双击进来的这条路径漏了**——W14 §3 干净目录实测：窗口起来了，
+    # 目录里却一个 config.json 都没有，用户想手改配置连文件都找不到。
+    from wbn import config as _cfg_first_run
+
+    _cfg_first_run.save_default_if_missing()
+
     # **这个 try 只包 `import webview`。** 它是唯一「装没装第三方包」的判断。
     #
     # 我们自己的模块 import 失败**必须炸出来**——那是打包漏文件、改名、
