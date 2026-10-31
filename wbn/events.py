@@ -244,11 +244,51 @@ def project_name(cwd: str) -> str:
         return str(cwd)
 
 
+_FENCE = "```"
+_TABLE_CHARS = set("|-: ")
+
+
+def _flatten_md_tables(text: str) -> str:
+    """把 markdown 表格压平成 ` · ` 连接的纯文本行，顺手丢掉代码围栏标记。
+
+    为什么非做不可：目标通道（微信 / ClawBot / Bark / ntfy / 短信）**都不渲染
+    markdown**，`|---|---|---|` 对用户是纯噪声；更要命的是分隔行每行白吃十几个
+    字符的摘要预算——三行表格就吃掉 200 字上限的近 1/3，正文还没开始就被截断。
+    这是「摘要越来越没用」的直接原因。
+
+    **只动表格行和围栏行，其余行原样保留**：`summarize()` 被所有模板共用，
+    顺手「美化」别的东西等于一次改 11 个通道的正文。
+    """
+    out: list[str] = []
+    for line in text.splitlines():
+        s = line.strip()
+        # ① 围栏标记行整行丢。围栏里的**内容**不丢，那不是本轮的事。
+        if s.startswith(_FENCE):
+            continue
+        # ② 表格分隔行：整行只有 | - : 空格，且必须有 -。
+        #    要带 `"-" in s`，否则 `|  |` 这种空表格行也会被吞掉。
+        if s and "-" in s and not (set(s) - _TABLE_CHARS):
+            continue
+        # ③ 数据行 → 去首尾 |、按 | 切、空单元格丢掉、用 ` · ` 连接。
+        #    要求至少两个单元格：`| grep foo` 这种 shell 片段不许被改成 `grep foo`。
+        if s.startswith("|"):
+            cells = [c.strip() for c in s.strip("|").split("|")]
+            cells = [c for c in cells if c]
+            if len(cells) >= 2:
+                out.append(" · ".join(cells))
+                continue
+        out.append(line)
+    return "\n".join(out)
+
+
 def summarize(text: str, max_chars: int = 200) -> str:
     """压缩成一行摘要，保留首句与尾部信息。"""
     if not text:
         return "（无摘要）"
-    flat = re.sub(r"\s+", " ", text).strip()
+    # 先压平表格，再走原来的空白折叠 / 修饰符清理 / 截断。
+    # 顺序不能反：折叠会把多行表格并成一行，之后就分不清哪是分隔行了。
+    flat = _flatten_md_tables(text)
+    flat = re.sub(r"\s+", " ", flat).strip()
     # 去掉 markdown 修饰符，避免推送里一堆星号
     flat = re.sub(r"[*_`#>]+", "", flat)
     flat = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", flat)
