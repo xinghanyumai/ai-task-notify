@@ -67,8 +67,11 @@ def main(argv: list[str]) -> int:
     if int(time.time()) % 10 == 0:
         try:
             pipeline.retry_queue()
-        except Exception:
-            pass
+        except Exception as e:
+            # W12 只修了 `store.enqueue`（**写入**失败留痕），队列**整体重试**
+            # 失败这里还是 `pass`——写进去了、重试时炸了，消息照样无声消失。
+            # 复用 `store.log`，不另起日志通道：一个程序两套日志等于没有日志。
+            store.log(f"重试队列处理失败：{type(e).__name__}: {e}")
 
     cfg = config.load()
     store.prune_logs(int(cfg.get("advanced", {}).get("log_retention_days") or 14))

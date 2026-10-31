@@ -86,16 +86,35 @@ def _norm(p: str) -> str:
     return str(p or "").replace("\\", "/").lower()
 
 
+def _our_hook_py_paths() -> list[str]:
+    """所有「可能是我们写的」`hook.py` 路径（已规范化）。
+
+    为什么不止 `HOOK_PATH` 一个：打包后 `ROOT` 是 `_MEIPASS` 那个**临时解压
+    目录**，`HOOK_PATH` 跟着变成 `%TEMP%\\_MEIxxxx\\hook.py`。而用户机器上真
+    被写进宿主的，是源码版 `install` 留下的 `<仓库>/hook.py`——两个路径对不上。
+
+    对不上的后果不是「多留一条」，是**每个事件挂两条 hook**：旧的那条清不掉，
+    新的 exe 那条又追加进去，宿主重启后同一个事件跑两遍，用户收到两条一模一
+    样的通知。W14 §2.3 实测就是这个现象（源码版装过 → 换成 exe）。
+    """
+    paths = [_norm(str(HOOK_PATH))]
+    if getattr(sys, "frozen", False):
+        # exe 旁边就是源码目录时的常见迁移场景：exe 是 `tools/build_exe.py`
+        # 打在仓库根上的，源码版 install 写的也正是这里的 hook.py。
+        paths.append(_norm(str(Path(sys.executable).resolve().parent / "hook.py")))
+    return paths
+
+
 def is_our_hook(entry: dict) -> bool:
     """判断某条 hook 配置是不是本程序写入的。"""
-    target = _norm(str(HOOK_PATH))
+    targets = _our_hook_py_paths()
     # 打包后写进宿主的是 `"<exe>" hook --app x`，没有 `hook.py` 这个文件名，
     # 只认 HOOK_PATH 的话 uninstall 会认不出自己写的条目 → 残留一堆指向
     # 已删除 exe 的 hook，宿主每次事件都白等超时。所以两种身份都认。
     exe = _norm(str(sys.executable)) if getattr(sys, "frozen", False) else ""
     for h in entry.get("hooks", []) or []:
         cmd = _norm(str(h.get("command", "")))
-        if "hook.py" in cmd and (target in cmd or "wbn" in cmd):
+        if "hook.py" in cmd and (any(t in cmd for t in targets) or "wbn" in cmd):
             return True
         if exe and exe in cmd and " hook " in f" {cmd} ":
             return True
