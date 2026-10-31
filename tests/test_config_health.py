@@ -10,6 +10,7 @@
 from __future__ import annotations
 
 import json
+import pathlib
 import re
 
 import pytest
@@ -174,6 +175,36 @@ def test_concurrent_loads_report_success_not_failure(isolated_state):
     assert len(_backups(isolated_state)) == 1
     assert all("备份失败" not in e for e in errors), errors
     assert all(_backups(isolated_state)[0].name in e for e in errors), errors
+
+
+def test_transient_permission_error_on_rename_is_retried(isolated_state, monkeypatch):
+    """Windows 上「改名一个正被别人打开的文件」会 EACCES。
+
+    CI 真撞到过（`windows-latest / py3.12`，2026-10-31 06:38）：另一个线程
+    正 `read_text()`，这个线程去改名，`PermissionError` 一路冒到用户面前变成
+    「原文件备份失败」——而备份其实一秒钟后就成功了。
+
+    这里把**第一次** `Path.replace` 打成必失败，钉住「等一下再试」这条路。
+    不重试的话这条用例会红。
+    """
+    _broken_cfg(isolated_state)
+    real = pathlib.Path.replace
+    state = {"n": 0}
+
+    def _flaky(self, target):
+        if self.name == "config.json" and state["n"] == 0:
+            state["n"] += 1
+            raise PermissionError(13, "另一个线程还开着它")
+        return real(self, target)
+
+    monkeypatch.setattr(pathlib.Path, "replace", _flaky)
+
+    config.load()
+
+    assert state["n"] == 1, "第一次必须真的失败过，否则这条用例什么都没验"
+    assert len(_backups(isolated_state)) == 1
+    assert "备份失败" not in config._last_load_error
+    assert _backups(isolated_state)[0].name in config._last_load_error
 
 
 def test_roundtrip_still_works(isolated_state):

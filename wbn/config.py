@@ -17,6 +17,7 @@ import os
 import subprocess
 import sys
 import threading
+import time
 from datetime import datetime
 from pathlib import Path
 
@@ -357,8 +358,9 @@ def _merge_channels(defaults: list, user: list | None) -> list:
 # 看到「文件不存在」就会把这条错误抹掉，警示条还没画出来就消失了。
 _last_load_error: str = ""
 
-# 隔离坏配置时互斥：见 `_quarantine_broken_config()` 里关于并发的说明。
-_quarantine_lock = threading.Lock()
+# 读配置 + 隔离坏配置时互斥。**必须是 RLock**：`load()` 自己要在锁里调用
+# `_quarantine_broken_config()`，普通 Lock 会自己把自己锁死。
+_quarantine_lock = threading.RLock()
 
 
 def _newest_broken(path: Path) -> str:
@@ -397,6 +399,17 @@ def _quarantine_broken_config(path: Path) -> str:
         try:
             path.replace(target)
         except OSError:
+            # **Windows 上「改名一个正被别人打开的文件」会 EACCES**，哪怕对方
+            # 只是 `read_text()`。同进程的兄弟线程、或者另一个 hook 进程，
+            # 都可能正好开着它。读一个小 JSON 是微秒级的，等一下再试就过去了。
+            for _ in range(8):
+                time.sleep(0.02)
+                try:
+                    path.replace(target)
+                except OSError:
+                    continue
+                else:
+                    return target.name
             return _newest_broken(path)
         return target.name
 
@@ -426,25 +439,29 @@ def load() -> dict:
     """
     global _last_load_error
     user = {}
-    if CONFIG_PATH.exists():
-        reason = ""
-        try:
-            user = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
-        except Exception as e:
-            reason = f"解析失败（{type(e).__name__}）"
-        else:
-            reason = _config_shape_error(user)
+    # **读和隔离要在同一把锁里**：读的时候文件是开着的，此刻别的线程去改名
+    # 会 EACCES（Windows 的删除共享语义），于是它报「备份失败」——其实备份
+    # 好好的。加锁把这两个动作串起来，同进程就不会再撞上。
+    with _quarantine_lock:
+        if CONFIG_PATH.exists():
+            reason = ""
+            try:
+                user = json.loads(CONFIG_PATH.read_text(encoding="utf-8"))
+            except Exception as e:
+                reason = f"解析失败（{type(e).__name__}）"
+            else:
+                reason = _config_shape_error(user)
 
-        if reason:
-            backup = _quarantine_broken_config(CONFIG_PATH)
-            _last_load_error = (
-                f"配置文件读不出来：{reason}。"
-                + (f"原文件已备份为 {backup}。" if backup else "原文件备份失败。")
-                + "当前显示的是默认配置，你的凭证还在那个备份里。"
-            )
-            user = {}
-        else:
-            _last_load_error = ""
+            if reason:
+                backup = _quarantine_broken_config(CONFIG_PATH)
+                _last_load_error = (
+                    f"配置文件读不出来：{reason}。"
+                    + (f"原文件已备份为 {backup}。" if backup else "原文件备份失败。")
+                    + "当前显示的是默认配置，你的凭证还在那个备份里。"
+                )
+                user = {}
+            else:
+                _last_load_error = ""
     cfg = deep_merge(DEFAULT_CONFIG, user)
     cfg["channels"] = _merge_channels(
         DEFAULT_CONFIG["channels"], user.get("channels") if isinstance(user, dict) else None
