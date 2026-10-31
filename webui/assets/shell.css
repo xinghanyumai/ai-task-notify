@@ -841,7 +841,7 @@ body[data-route="channels"] .col { max-width: none; }
    数字框和 `23:00-08:00` 都装得下；再往下就只剩 1 列更宽的文本框。
 
    通道页 975 的来历：**不是拍的，是量出来的。** appID 是 18 字符
-   （`wxf38b02d0a4b6b0e5`），实测要输入框 clientWidth ≥ 160px 才不截断，
+   （`wx0000000000000000`），实测要输入框 clientWidth ≥ 160px 才不截断，
    即列宽 ≥ 161、即视口 ≥ 970。取 975 留 5px 余量。
    标定证据按**列宽**看，不依赖某个具体断点：
        列宽 151px → clientWidth 150 / scrollWidth 160 → **文字被切**
