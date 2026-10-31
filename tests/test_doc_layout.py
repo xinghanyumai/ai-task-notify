@@ -159,3 +159,39 @@ def test_every_python_file_is_listed(entries):
         + "\n  ".join(missing)
         + "\n（新加了文件就补一行，别让文档开始撒谎）"
     )
+
+
+# ------------------------------------------------------- README 的验证数
+#
+# W11 把 `clawbot` 真机跑通了，支持矩阵里 ✅ 从 3 行变 4 行，但 README:51
+# 那句「11 个通道里只有 3 个在真实环境验证过」没人想起来改——**数字和矩阵
+# 各说各话**。人眼对着两处相隔 30 行的地方做一致性检查，一定会漏。
+#
+# 所以让它们不可能再脱节：从矩阵里数 ✅，跟那句话里的数字比。
+
+
+def test_readme_verified_count_matches_the_matrix():
+    text = (ROOT / "README.md").read_text(encoding="utf-8")
+
+    # 只抓 `只有 (\d+) 个` 这个捕获组，**不做整句匹配**：
+    # 整句匹配会被换行、标点、中英文混排搞死，而且改一个字就红。
+    m = re.search(r"只有 (\d+) 个", text)
+    assert m, "README 里找不到「只有 N 个…」那句话，守卫失效了"
+    said = int(m.group(1))
+
+    # 支持矩阵那张表：从 `## 支持矩阵` 起，到下一个二级标题为止。
+    # 不划边界的话会把「通知长什么样」里的示例 ✅ 也数进去。
+    start = text.index("## 支持矩阵")
+    rest = text[start:]
+    end = rest.find("\n## ", 1)
+    section = rest if end < 0 else rest[:end]
+
+    n_ok = sum(
+        1 for line in section.splitlines()
+        if line.startswith("|") and "✅" in line
+    )
+
+    assert said == n_ok, (
+        f"README:51 说「只有 {said} 个」验证过，但支持矩阵里有 {n_ok} 行是 ✅。"
+        f"\n改通道验证状态时，两处要一起改。"
+    )
