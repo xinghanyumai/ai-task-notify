@@ -23,7 +23,7 @@ import urllib.parse
 import urllib.request
 from datetime import datetime
 
-from . import config, store
+from . import config, events, store
 from .sanitize import check_http_url, clean_obj, clean_text, one_line, redact
 
 UA = "wbn-notifier/1.0 (+personal-use)"
@@ -1053,10 +1053,15 @@ def _wxmp_values(
     # 失败类优先显示原因，成功类显示摘要——这比把整段正文塞进一个字段有用得多
     if kind in ("task_failed", "tool_failed"):
         detail = str(f.get("error") or f.get("summary") or "")
+        # **错误原因不是 AI 的长回复。** 它本来就短且关键，压掉半句就没法排查了，
+        # 所以下面只对「来源是 summary」的正文做卡片摘要（W16 §4.1）。
+        from_error = bool(str(f.get("error") or "").strip())
     else:
         detail = str(f.get("summary") or "")
+        from_error = False
     if not detail.strip() or detail.strip() in ("（无摘要）", "—"):
         detail = _flatten(content)
+        from_error = False
 
     # 模板里声明了几个详情变量，就切成几段——微信卡片一个变量只占一行，
     # 想多显示几行只能多声明变量，插 \n 是无效的（实测会连后面内容一起丢）。
@@ -1066,6 +1071,24 @@ def _wxmp_values(
 
     label_w = _label_width(tpl_content, slot_vars[0]) if slot_vars else 6
     width = max(24, min(38, _CARD_WIDTH - label_w))
+
+    # **卡片只装得下 slots × width 个半角位。** 200 字的摘要在 4 行卡片里
+    # 有近一半会被 `_wrap_detail` 折掉——白算，而且 `summarize()` 是 `flat[:199]`
+    # 从头硬截的，真正的结论（「675 个用例都通过了」）永远在最后一句，
+    # 一个字都显示不出来（W16 §0 第 2、3 条）。
+    #
+    # 所以切段之前先做一次抽取式摘要：结论优先、整句取舍。预算按**模板实际
+    # 声明的槽位数**算，不写死 68——单变量模板（只有 `{{detail.DATA}}`）
+    # 就该只留一句，那是正确行为不是 bug。
+    #
+    # 只在来源是 summary 时压。错误原因是排查用的，一个字都不许丢。
+    #
+    # **注意顺序：先摘要再 `_flatten`。** 反过来的话 `_flatten` 会把换行压成
+    # 空格，`具体来说…：` + 五条步骤 + 结论粘成**一整句**，而它以「具体来说」
+    # 开头会被当成客套话整句丢掉——实测过，四行只剩一句「好的，我已经完成了…」。
+    # 摘要要看到句子边界，就必须在压平之前做。
+    if not from_error and detail.strip():
+        detail = events.summarize_for_card(detail, slots * width)
 
     flat_detail = _flatten(detail)
     if not flat_detail:

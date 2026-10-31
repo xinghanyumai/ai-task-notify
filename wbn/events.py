@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import json
 import re
+import unicodedata
 from pathlib import Path
 
 KIND_LABELS = {
@@ -289,13 +290,248 @@ def summarize(text: str, max_chars: int = 200) -> str:
     # 顺序不能反：折叠会把多行表格并成一行，之后就分不清哪是分隔行了。
     flat = _flatten_md_tables(text)
     flat = re.sub(r"\s+", " ", flat).strip()
-    # 去掉 markdown 修饰符，避免推送里一堆星号
-    flat = re.sub(r"[*_`#>]+", "", flat)
+    # 去掉 markdown 修饰符，避免推送里一堆星号。
+    #
+    # **`_` 不能无脑删。** 原来这里是 `[*_`#>]+`，把下划线也当 markdown 清了，
+    # 于是 `is_our_hook` 变成 `isourhook`、`_our_hook_exe_paths()` 变成
+    # `ourhookexepaths()`——任何涉及文件名 / 函数名的通知在手机上都成了乱码级
+    # 可读性（W16 §0 第 1 条，P0）。
+    #
+    # 但成对的下划线是斜体，`_斜体_` 还是得剥。所以先单独处理成对的，
+    # 再清 `*` / `` ` `` / `#` / `>`。**顺序不能反**：先清别的字符不影响配对，
+    # 反过来先把 `*` 清掉倒也不影响 `_` 配对，但成对 `_` 必须先于「裸 `_` 保留」
+    # 这个决策执行，否则剥斜体的信息就没了。
+    #
+    # 配对要求两侧都不是「词字符」（`\w`：字母、数字、下划线，含中文）。
+    # 用 `\w` 而不是 `[A-Za-z0-9]` 有两个原因：`__init__` 这种 dunder 的
+    # 外层 `_` 本身是 `\w`，不该被当成斜体边界；`这是_斜体_文字` 这种没空格的
+    # 中文粘连也不是 markdown 斜体，不该动。
+    flat = re.sub(r"(?<!\w)_([^_]+)_(?!\w)", r"\1", flat)
+    flat = re.sub(r"[*`#>]+", "", flat)
+    # 注意：这里**不做**连续空格折叠。剥掉 `#` / `>` 会留下两个空格，看着丑，
+    # 但那是既有行为，`test_plain_text_is_untouched` 用逐字节断言钉着
+    # （「顺手美化它就是在改 11 个通道的正文」）。W16 只解决下划线，不动这条。
     flat = re.sub(r"\[([^\]]*)\]\([^)]*\)", r"\1", flat)
     flat = flat.strip()
     if len(flat) <= max_chars:
         return flat
     return flat[: max_chars - 1].rstrip() + "…"
+
+
+# ---------------------------------------------------------------- 卡片摘要（W16）
+#
+# `summarize()` 是**给 11 个通道共用的**，也是关键词过滤器的匹配源
+# （`pipeline.py` 的 `ctx["summary"]`）。它压短了 `filters.check` 会漏匹配——
+# 用户配了关键词 `CI`，摘要里没有就把通知过滤掉了。所以 `summarize()` 的
+# 签名、默认值、调用点一个字都不动。
+#
+# 手机卡片是另一回事：微信模板消息一个变量只占一行，4 个详情变量装不下
+# 200 字（实测 186 字摘要只有 97 字能显示，89 字白算），而且 `flat[:199]`
+# 从头硬截，**真正的结论永远在最后一句，一个字都显示不出来**。
+#
+# 所以这里是一个独立的、只在微信卡片切段之前调用的抽取式摘要：
+# 选句子，不改写。不调模型——hook 只有 1.5 秒预算，调一次模型 1–3 秒必然超；
+# 而且通知内容不能有幻觉，手机上一句编造的「已完成」比没有通知更糟。
+
+# 句末标点。切句时保留，不丢。
+_CARD_SENT_END = "。！？；!?;"
+
+# 客套 / 过程开头。整句丢掉——这些句子信息量为 0，占的却是最贵的头几行。
+_CARD_POLITE = (
+    "好的", "好，", "我来", "我先", "已经为你", "已为你", "具体来说", "具体做了",
+    "首先", "接下来", "下面", "让我们", "我这就", "正在", "稍等",
+    "完成了以下", "做了以下几件事",
+)
+
+# 结论词。含这些词的句子有信息量，排序时优先，也算「步骤枚举」的豁免条件。
+_CARD_CONCLUSION = ("通过", "失败", "完成", "绿", "红", "错误", "报错", "成功")
+
+# 步骤枚举的开头：`1.` `2.` `-` `•`。全角顿号 / 括号也认。
+_CARD_STEP_PREFIX = re.compile(r"^\s*(?:\d+\s*[.、)）]|[-•·*])\s*")
+
+# 句子**内部**的步骤标记边界。
+#
+# 为什么需要它：进到卡片这一层时文本已经被 `summarize()` 压成一行了
+# （`re.sub(r"\s+", " ")` 把换行全折成空格），于是
+#   `具体来说，我做了以下几件事：` + `1. 把 …` + … + `现在所有 675 个用例都通过了`
+# 粘成**一整句**。这一句以「具体来说」开头，会被当成客套话整句丢掉——
+# 实测四行只剩一句「好的，我已经完成了…」，结论照样看不见。
+# 所以在步骤标记前面补一刀，把句子边界找回来。
+_CARD_STEP_BREAK = re.compile(r"(?<=\s)(?=(?:\d+\s*[.、)）]|[-•·])\s)")
+
+# 代码残留：这些符号在句子里出现 3 次以上，说明是代码不是人话。
+_CARD_CODE_TOKENS = ("()", "{}", "=>", ";")
+
+# 短于这个字数的碎片并到前一句（「好的。」这种断句碎片没有独立价值）。
+_CARD_MIN_FRAGMENT = 6
+
+
+def _card_width(text: str) -> int:
+    """一段文本占几个半角位。
+
+    **口径必须与 `channels._width` 一致**：汉字 / 全角算 2，ASCII 算 1。
+    不能从 channels 引进来——channels 依赖 events，反过来引就成环了。
+    两边是否同口径由 `tests/test_summarize.py` 的对拍用例钉住。
+    """
+    return sum(
+        2 if unicodedata.east_asian_width(c) in ("W", "F", "A") else 1 for c in text
+    )
+
+
+def _split_card_sentences(text: str) -> list[str]:
+    """按句末标点和换行切句，保留句末标点；太短的碎片并到前一句。"""
+    raw: list[str] = []
+    buf = ""
+    for ch in text:
+        if ch == "\n":
+            if buf.strip():
+                raw.append(buf.strip())
+            buf = ""
+            continue
+        buf += ch
+        if ch in _CARD_SENT_END:
+            if buf.strip():
+                raw.append(buf.strip())
+            buf = ""
+    if buf.strip():
+        raw.append(buf.strip())
+
+    # 压平过的文本里，步骤标记只以空格分隔。再切一刀把句子边界找回来。
+    pieces: list[str] = []
+    for s in raw:
+        for part in _CARD_STEP_BREAK.split(s):
+            if part.strip():
+                pieces.append(part.strip())
+
+    merged: list[str] = []
+    for s in pieces:
+        if merged and len(s) < _CARD_MIN_FRAGMENT:
+            merged[-1] += s
+        else:
+            merged.append(s)
+    return merged
+
+
+def _card_noise(s: str) -> str | None:
+    """这句属于哪类噪声。`None` = 干净句子。"""
+    body = s.lstrip()
+    if body.startswith(_CARD_POLITE):
+        return "polite"
+    if sum(body.count(t) for t in _CARD_CODE_TOKENS) >= 3:
+        return "code"
+    if _CARD_STEP_PREFIX.match(body) and not any(w in body for w in _CARD_CONCLUSION):
+        return "step"
+    return None
+
+
+def _card_density(s: str) -> int:
+    """信息密度：有数字、有结论词的句子优先补位。
+
+    打分前先剥掉步骤标记——`4. 补了 4 条单元测试` 里真正有信息量的是那个
+    `4 条`，标记里的 `4.` 不算，否则每条步骤都「含数字」，排序等于没排。
+    """
+    body = _CARD_STEP_PREFIX.sub("", s)
+    score = 0
+    if re.search(r"\d", body):
+        score += 2
+    if any(w in body for w in _CARD_CONCLUSION):
+        score += 2
+    return score
+
+
+def _clip_card_width(text: str, budget: int) -> str:
+    """按半角宽度截断并补省略号。**只在「一句话就超预算」时用**。
+
+    正常路径是整句取舍（宁可少一句，不要半句话）；但如果结论句自己就装不下，
+    丢掉它等于没通知，只能截。
+    """
+    if _card_width(text) <= budget:
+        return text
+    out = ""
+    used = 0
+    for ch in text:
+        cw = 2 if unicodedata.east_asian_width(ch) in ("W", "F", "A") else 1
+        if used + cw > budget - 2:  # 留 2 格给省略号
+            break
+        out += ch
+        used += cw
+    return out.rstrip() + "…"
+
+
+def summarize_for_card(text: str, budget: int = 68) -> str:
+    """把长回复压成一张微信卡片装得下的摘要：结论优先，整句取舍。
+
+    budget 是**半角宽度**（一个汉字算 2），默认 68 ≈ 4 行 × 34 的一半。
+    """
+    if not text or not text.strip():
+        return ""
+    stripped = text.strip()
+    # 短文本原样返回：本来装得下，加工只会引入噪声。
+    if _card_width(stripped) <= budget:
+        return stripped
+
+    sents = _split_card_sentences(stripped)
+    if not sents:
+        return ""
+
+    # 第一步已经做完（切句）。第二步：分类。
+    clean: list[int] = []
+    steps: list[int] = []
+    for i, s in enumerate(sents):
+        kind = _card_noise(s)
+        if kind is None:
+            clean.append(i)
+        elif kind == "step":
+            # **步骤枚举不整句丢，只降到最低优先级。**
+            # 任务书 §3.2 把「纯步骤枚举」也列为整句丢掉，但那样一来 §0 那段
+            # 输入只剩末句 24 字，§5 第 4 条（四行总字数 ≥ 40）必然不成立——
+            # 两条要求直接冲突。§5 是唯一硬判据，所以这里让步：步骤行是真内容，
+            # 只是不含结论，排到最后补位；客套话和代码残留仍然整句丢。
+            steps.append(i)
+
+    if not clean and not steps:
+        # 全是客套话，兜底取首句——不许空手（§5 边界用例 3）。
+        return _clip_card_width(sents[0], budget)
+
+    pool: dict[int, str] = {i: sents[i] for i in clean}
+    pool.update({i: sents[i] for i in steps})
+
+    # 第三步：按优先级填预算。末句先占位——结论几乎总在最后一句。
+    last_i = (clean or steps)[-1]
+    first_i = clean[0] if clean and clean[0] != last_i else None
+
+    chosen: list[int] = []
+    used = 0
+
+    def take(i: int) -> bool:
+        nonlocal used
+        extra = _card_width(pool[i]) + (1 if chosen else 0)
+        if used + extra > budget:
+            return False
+        chosen.append(i)
+        used += extra
+        return True
+
+    if not take(last_i):
+        # 结论句自己就超预算：截它，别丢它。
+        return _clip_card_width(pool[last_i], budget)
+    if first_i is not None:
+        take(first_i)
+
+    middles = [i for i in clean if i not in (last_i, first_i)]
+    middles.sort(key=lambda i: (-_card_density(pool[i]), i))
+    for i in middles:
+        take(i)
+
+    # 步骤行也按信息密度排：含数字（`4 条`）的比「重新打包并验证」这种有内容。
+    # 放不下就跳过，接着看更短的——预算要用满，卡片不能只留一句「已完成」。
+    steps.sort(key=lambda i: (-_card_density(pool[i]), i))
+    for i in steps:
+        take(i)
+
+    # 第四步：按预算裁剪已经体现在 `take()` 里（放不下就整句跳过，不硬切）。
+    # 输出按**原文顺序**，读起来才是连贯的，而不是按优先级乱序。
+    return " ".join(pool[i] for i in sorted(chosen))
 
 
 def human_duration(seconds) -> str:
