@@ -209,16 +209,30 @@ def _fake_winforms(*, is_chromium=True, has_flag=True):
     return m
 
 
-def _run_ui(monkeypatch, *, webview, winforms=None, timeout=None):
+def _run_ui(monkeypatch, *, webview, winforms=None, timeout=None, handoff=None):
     """跑一次 `run_ui()`，返回它传给 `fallback_no_webview` 的 reason 列表。
 
     `webview=BLOCKED` 表示「import 就失败」，用来造没装包。
     `timeout` 只在 no_render 那条用——把 `UI_ALIVE_TIMEOUT` 临时调小，
     否则每条要等 10 秒。**源文件里的常量不动。**
+
+    `handoff` 默认把 `_retry_without_sandbox` 按成 `lambda: False`，即**不许
+    真交棒**。理由是 W10 §1 之后真交棒的末尾是 `os._exit(0)`：
+
+    看门狗是 daemon 线程，`run_ui()` 返回后它还活着，`monkeypatch` 的还原却
+    已经发生。以前那个线程醒来最多偷偷 spawn 一个 `pythonw app.py`（多一个
+    真窗口）；现在它会**把 pytest 整个进程当场带走**，退出码还是 0——
+    2026-10-31 实测：全量跑到 59% 输出突然截断，没有任何失败信息。
+
+    所以这个默认值不是「省事」，是**必须**：任何一条走 `run_ui()` 的用例都不许
+    让看门狗摸到真的交棒函数。
     """
     recorded: list[str] = []
     monkeypatch.setattr(app, "fallback_no_webview", recorded.append)
     monkeypatch.setenv("WBN_BENCH", "1")      # 跳过单实例锁，别去抢真窗口
+    monkeypatch.setattr(
+        app, "_retry_without_sandbox", (lambda: False) if handoff is None else handoff
+    )
 
     if webview is BLOCKED:
         monkeypatch.setitem(sys.modules, "webview", None)
@@ -295,15 +309,16 @@ def test_watchdog_timeout_reports_no_render(monkeypatch):
     `UI_ALIVE_TIMEOUT` 临时调到 0.05s 只是为了不真等 10 秒；**源文件里的常量
     没动**，`test_platform.py` 之外也没有别处改它。
 
-    **必须把 `_retry_without_sandbox` 按成 False。** W7 给看门狗加了一步
-    「先带 --no-sandbox 重启自己」；不按的话这条测试会真的 spawn 一个
-    `pythonw app.py` 出来（跑测试的机器上就多一个真窗口），而且 reason
-    一个都不记——那正是它第一版红掉的原因。
+    **必须把 `_retry_without_sandbox` 按成 False**（`_run_ui` 的 `handoff=`
+    默认值就是它）。W7 给看门狗加了一步「先带 --no-sandbox 重启自己」；不按的话
+    这条测试会真的 spawn 一个 `pythonw app.py` 出来（跑测试的机器上就多一个真
+    窗口），而且 reason 一个都不记——那正是它第一版红掉的原因。
+    到 W10 §1，真交棒末尾是 `os._exit(0)`，不按的后果从「多一个窗口」升级成
+    「pytest 跑到一半无声退出」，所以这个默认值现在是硬要求。
     """
-    monkeypatch.setattr(app, "_retry_without_sandbox", lambda: False)
     fake = _FakeWebview(hold=0.4)
     recorded = _run_ui(monkeypatch, webview=fake, winforms=_fake_winforms(),
-                       timeout=0.05)
+                       timeout=0.05, handoff=lambda: False)
     assert recorded == ["no_render"]
     assert fake.calls == ["create_window", "start"], "这条必须真走到开窗之后"
 
@@ -314,8 +329,30 @@ def test_watchdog_hands_off_instead_of_complaining(monkeypatch):
     这条和上一条是一对：上一条守「降不了级要说清楚」，这一条守
     「降得了级就别打扰」。两条都断掉的话，黑窗自救就是死代码。
     """
-    monkeypatch.setattr(app, "_retry_without_sandbox", lambda: True)
     fake = _FakeWebview(hold=0.4)
     recorded = _run_ui(monkeypatch, webview=fake, winforms=_fake_winforms(),
-                       timeout=0.05)
+                       timeout=0.05, handoff=lambda: True)
     assert recorded == [], "交棒成功就不该再弹提示框"
+
+
+def test_watchdog_is_dead_after_run_ui_returns(monkeypatch):
+    """`run_ui()` 返回之后，看门狗**不许**再交棒。
+
+    这是 W10 §1 带出来的一个真 bug（不是测试洁癖）：看门狗是 daemon 线程，
+    `webview.start()` 返回（用户关窗 / 启动失败）它可能还在 `alive.wait(10)`
+    里睡着。醒来之后它照样会 spawn 一个新进程并 `os._exit(0)`——
+    也就是说**用户关掉窗口 10 秒后，程序自己又弹一个出来**。
+
+    在 pytest 里症状更直接：全量跑到 59% 输出突然截断、退出码 0、没有任何
+    失败信息——因为那个线程把跑测试的进程 `os._exit` 掉了。
+
+    这里用 `hold=0` 让 `start()` 立刻返回，看门狗随即醒来；它必须什么都不做。
+    """
+    calls: list[int] = []
+    fake = _FakeWebview(hold=0.0)
+    _run_ui(monkeypatch, webview=fake, winforms=_fake_winforms(), timeout=0.05,
+            handoff=lambda: calls.append(1) or False)
+
+    time.sleep(0.3)          # 远远超过 0.05s，看门狗一定已经醒过
+
+    assert calls == [], "run_ui 已经返回了，看门狗还在交棒——窗口会被重新拉起来"

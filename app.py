@@ -112,6 +112,18 @@ def acquire_single_instance() -> bool:
     return acquire(MUTEX_NAME)
 
 
+def release_single_instance() -> None:
+    """放掉本进程持有的那把 UI 锁。只给「降级交棒」用（W10 §1）。
+
+    交棒流程是 `spawn 子进程 → 放锁 → os._exit(0)`。放锁必须在退出之前：
+    子进程一起来就会 acquire，父进程这时还占着名字的话，子进程会以为
+    「已有实例在跑」——而那唯一的实例正是马上要消失的自己。
+    """
+    from wbn.winapi import release_single_instance as release
+
+    release(MUTEX_NAME)
+
+
 def focus_existing() -> bool:
     """把已经开着的窗口拉到前台。窗口还没建好时返回 False。"""
     if sys.platform != "win32":
@@ -263,7 +275,11 @@ def _sandbox_off_args() -> bool:
 
 
 def _retry_without_sandbox() -> bool:
-    """黑窗降级：带 `--no-sandbox` 重启一次自己。返回 True = 已经交棒。
+    """黑窗降级：带 `--no-sandbox` 重启一次自己。
+
+    **成功交棒时这个函数不返回**——`os._exit(0)` 当场结束进程（见末尾）。
+    返回值只有两种：`False` = 没交棒（调用方走提示框）。
+    （`True` 在语义上永远到不了，保留类型标注只是为了让调用方读起来是布尔判断。）
 
     **为什么是重启而不是改参数重来**：`webview.start()` 在一个进程里只能调
     一次，参数在它之前就定死了。要换 `WEBVIEW2_ADDITIONAL_BROWSER_ARGUMENTS`
@@ -286,7 +302,9 @@ def _retry_without_sandbox() -> bool:
 
     env = child_env()
     env["WBN_WEBVIEW_NOSANDBOX"] = "1"
-    # 让子进程跳过单实例锁：父进程此刻还握着它。
+    # 只用来跳过 `focus_existing`，**不再跳过单实例锁**（W10 §1）。
+    # 旧注释写的是「让子进程跳过锁：父进程此刻还握着它」——那个前提已经不成立：
+    # 父进程在 spawn 之后会先 release 再 os._exit，锁在子进程 acquire 时是空的。
     env["WBN_REPLACING_SELF"] = "1"
     # 打点文件别传给子进程，否则 bench 会把「重启后那次」当成第二轮
     env.pop("WBN_BENCH_FILE", None)
@@ -310,20 +328,49 @@ def _retry_without_sandbox() -> bool:
     except Exception as exc:
         _log(f"带 --no-sandbox 重启失败：{exc}")
         return False
-    return True
+
+    # ---- 交棒完成：放锁 → 硬退（W10 §1）----
+    #
+    # **必须是 `os._exit(0)`，不是 `return`。** return 之后要走回
+    # `webview.start()`，而它在我们销毁窗口之后**不会返回**——这正是 2026-10-31
+    # 那 14 个僵尸进程的成因：父进程卡在 start() 里，锁永远在它手里，
+    # 窗口却已经在新进程身上了。
+    #
+    # `os._exit` 跳过 atexit / 析构，对这个场景是对的：子进程已经起来了，
+    # 父进程没有任何要收尾的东西（配置在子进程里会重新加载，日志早就落了）。
+    #
+    # 日志必须在退出**之前**落：这一行是 E3 那 40 条里的一半，退出去再写就没了。
+    _log("已带 --no-sandbox 重启一次（黑窗降级）")
+    release_single_instance()
+    os._exit(0)
+
+
+def _acquire_lock_or_focus() -> bool:
+    """拿单实例锁。返回 False = 不该继续（调用方直接 `return 0`）。
+
+    三条分支，一条都不能省：
+
+    | 环境 | 行为 | 为什么 |
+    |---|---|---|
+    | `WBN_BENCH=1` | 直接放行，**连试都不试** | `tools/bench_ui.py` 要连起好几个进程，锁的语义是「只许一个」，不跳就量不到东西 |
+    | 拿到锁 | 继续开窗 | 正常路径 |
+    | 拿不到锁 | 让位；只有**不是交棒来的**才 focus | 交棒场景下父窗口正在销毁，focus 它等于什么都没发生 |
+
+    **`WBN_REPLACING_SELF` 只跳过 focus，不跳过 acquire**（W10 §1）。
+    旧代码让交棒来的子进程整个跳过锁，后果是「有窗口的那个进程没有锁」——
+    单实例从此形同虚设。
+    """
+    if os.environ.get("WBN_BENCH") == "1":
+        return True
+    if acquire_single_instance():
+        return True
+    if os.environ.get("WBN_REPLACING_SELF") != "1":
+        focus_existing()
+    return False
 
 
 def run_ui() -> int:
-    # 基准测试时跳过单实例锁：`tools/bench_ui.py` 要连续起好几个进程，
-    # 而锁的语义是「只许一个」——不跳的话第二次起就静默退出，量不到东西。
-    #
-    # `WBN_REPLACING_SELF` 同理：黑窗降级会带 `--no-sandbox` 重启自己，
-    # 那时父进程还握着锁没放，不跳的话子进程会以为「已有实例在跑」→
-    # 去 focus 一个马上就要销毁的窗口 → 直接退出。降级变成死路。
-    if os.environ.get("WBN_BENCH") != "1" and os.environ.get(
-        "WBN_REPLACING_SELF"
-    ) != "1" and not acquire_single_instance():
-        focus_existing()
+    if not _acquire_lock_or_focus():
         return 0
 
     # **这个 try 只包 `import webview`。** 它是唯一「装没装第三方包」的判断。
@@ -481,27 +528,38 @@ def run_ui() -> int:
     win.events.closing += _on_closing
 
     # 存活探针。`create_window` 没抛异常、也返回了对象，窗口照样可能是
-    # **一块黑**：WebView2 初始化回调报成功，控制器随后失效，页面
+    # **一块黑**：WebView2 初始化回调报成功，控制器随后失效，
     # 一次都没画出来（本机 2026-10 实测，MSHTML 后端同代码正常）。
     # 唯一可信的判据是「前端到底调通没调通 bridge」，所以拿 config_get 当心跳。
+    #
+    # `stopped` 是给看门狗的刹车（W10 §1 带出来的真 bug）：它是 daemon 线程，
+    # `webview.start()` 返回后它可能还睡在 `alive.wait()` 里。醒来之后它照样会
+    # spawn 新进程并 `os._exit(0)`——**用户关掉窗口 10 秒后，程序自己又弹一个**。
+    # 所以 `start()` 一返回就把它按住。
+    stopped = threading.Event()
+
     def _watchdog() -> None:
         if alive.wait(UI_ALIVE_TIMEOUT):
+            return
+        if stopped.is_set():
+            # UI 已经正常结束了（用户关窗 / 启动失败），这不是「黑窗」，
+            # 别再交棒——否则等于把用户刚关掉的窗口重新拉起来。
             return
         _log(
             f"WebView2 窗口 {UI_ALIVE_TIMEOUT:.0f}s 内没有调通 bridge，"
             "判定 UI 未启动"
         )
         # 先试一次「关沙箱重启」——2026-10-27 那个黑窗就是这个原因。
-        # 成功交棒的话就不再弹提示框（用户会看到新进程的窗口）。
-        if _retry_without_sandbox():
-            _log("已带 --no-sandbox 重启一次（黑窗降级）")
-        else:
+        # **交棒成功时这个函数不返回**：父进程在 spawn 之后 release + `os._exit(0)`
+        # 当场结束（W10 §1）。所以能走到下面的，只有「没交棒成功」。
+        # 这里不再有「成功就不用弹框」的分支——成功的那个进程已经不存在了。
+        if not _retry_without_sandbox():
             fallback_no_webview("no_render")
-        for w in list(getattr(webview, "windows", [])):
-            try:
-                w.destroy()
-            except Exception:
-                pass
+            for w in list(getattr(webview, "windows", [])):
+                try:
+                    w.destroy()
+                except Exception:
+                    pass
 
     threading.Thread(target=_watchdog, daemon=True).start()
 
@@ -511,7 +569,10 @@ def run_ui() -> int:
         # 与 create_window 失败同一类：运行时在，但初始化起不来
         _log(f"webview.start() 抛异常：{traceback.format_exc()}")
         fallback_no_webview("no_runtime")
-    # 看门狗交棒了：新进程已经带 `--no-sandbox` 起来了，本进程安静退出。
+    finally:
+        # 必须在 finally 里按：`start()` 抛异常时同样要按住看门狗，
+        # 否则它 10 秒后会把一个已经失败过的 UI 再交棒一次。
+        stopped.set()
     return 0
 
 

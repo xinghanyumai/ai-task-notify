@@ -21,9 +21,10 @@ APP_USER_MODEL_ID = "Wbn.TaskNotify.Desktop.1"
 ERROR_ALREADY_EXISTS = 183
 
 # 互斥量句柄必须活到进程结束：句柄一丢，锁就没了。
-# 用列表而不是单个变量，是因为这里要同时服务 UI 和托盘两把锁（同一个进程里
-# 不会都拿，但共用一份代码更省事，也避免将来加第三把锁时改结构）。
-_mutexes: list[int] = []
+# 用 **名字 → 句柄** 的字典而不是列表，是因为 `release_single_instance()` 要
+# 精确关掉**那一个**名字的句柄（W10 §1 的交棒场景）——列表只能全关，
+# 而托盘和 UI 两把锁可能同进程共存（见下面 acquire 的说明）。
+_mutexes: dict[str, int] = {}
 
 
 def set_app_user_model_id(app_id: str = APP_USER_MODEL_ID) -> None:
@@ -83,7 +84,43 @@ def acquire_single_instance(name: str) -> bool:
             return True
         if ctypes.get_last_error() == ERROR_ALREADY_EXISTS:
             return False
-        _mutexes.append(handle)
+        _mutexes[name] = handle
         return True
     except Exception:
         return True
+
+
+def release_single_instance(name: str) -> None:
+    """显式释放同名互斥量。只给「降级交棒」用。
+
+    为什么必须显式：handle 在 `_mutexes` 里躺着，进程不退出它就一直有效。
+    交棒场景下父进程马上就要退出，但**退出前那段窗口期**子进程要拿锁，
+    不先放掉的话子进程会以为自己是被拦的那个。
+
+    ## 为什么是「关自己的句柄」，而不是 `ReleaseMutex`
+
+    任务书原本写的是 `OpenMutexW` + `ReleaseMutex` + `CloseHandle`。本机实测
+    **那个配方不生效**（2026-10-31，见 `tests/test_single_instance_handoff.py`
+    的模块 docstring 有完整输出）：
+
+        ReleaseMutex(h) = 0 err= 288        # 288 = ERROR_NOT_OWNER
+        配方执行后再建同名互斥量: err= 183   # 仍然被占用
+
+    因为 `acquire_single_instance` 用的是 `CreateMutexW(None, 0, name)`，
+    `bInitialOwner=0` 意味着**没有任何进程"拥有"它**——"被占用"的判据是
+    **对象存在**，而对象只要还有句柄开着就存在。所以真正的释放只有一条路：
+    把**我们自己创建的那个句柄**关掉，对象随之销毁，别人再建就是全新的。
+
+    任何异常都吞掉：释放失败不该让交棒失败（父进程反正要退出，
+    句柄会随进程结束自动关）。
+    """
+    if sys.platform != "win32":
+        return
+    try:
+        handle = _mutexes.pop(name, None)
+        if not handle:
+            return
+        k32 = ctypes.WinDLL("kernel32", use_last_error=True)
+        k32.CloseHandle(ctypes.c_void_p(handle))
+    except Exception:
+        pass
