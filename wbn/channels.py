@@ -819,9 +819,25 @@ def _in_word(ch: str) -> bool:
     return ch.isascii() and (ch.isalnum() or ch in "._-/:@%")
 
 
-# 可以在其「之后」断行的 ASCII 字符。点号算断点，这样 sys.stdin.buffer
-# 断成 sys.stdin / buffer，而不是把 buffer 劈成 bu + ffer。
-_BREAK_AFTER = " \t(/.,-_:;@"
+# 可以在其「之后」断行的 ASCII 字符。
+#
+# **这里只许放「不是标识符组成字符」的符号。** `_in_word()` 认定的词内字符是
+# `._-/:@%`，只要 `_BREAK_AFTER` 里混进其中一个，`_take_width` 就会优先在它
+# 后面断行——`summarize_for_card` 于是在手机上显示成 `summarize_` / `for_card`
+# 两行，用户以为是两个东西（W19 §1）。
+#
+# W19 之前这里是 `" \t(/.,-_:;@"`，混着 `_` `.` `-` `:` 四个。去掉之后
+# `sys.stdin.buffer` 不再断在点号后面，而是退到更前面的空格或 `/`——
+# 宁可短行，也不要把一个名字劈成两半。
+_BREAK_AFTER = " \t(/;@"
+
+# **一级回退找不到断点时的二级回退**：标识符内部的分隔符。
+#
+# 只有整行都是同一个长 token（前面一个空格类断点都没有）时才会用到，比如
+# `requests.exceptions.ConnectionError` 这种 38 个字符的异常名。这种情况下
+# 断在点号后面总好过硬切在 `ConnectionErro` / `r` 中间（R42 的原始症状）。
+# 有空格可退时永远走一级，所以 `summarize_for_card` 不会被劈开。
+_IDENT_SEP = "._-:"
 
 # 中文排版的行首禁则：这些符号不能出现在一行的开头，断到行首就直接吞掉，
 # 因为换行本身已经起了停顿作用，留个逗号在行首反而难看。
@@ -853,10 +869,13 @@ def _take_width(text: str, budget: int, break_at: float = 0.7) -> str:
     之后时才为断句少放几个字，否则宁可切在字中间——把一行的空间
     浪费掉比断在逗号后面更难看。
 
-    **英文词不劈开。** 切点落在词中间时退回最近的断点（空格或 `/ . : - _ , ; ( @`），
+    **英文词不劈开。** 切点落在词中间时退回最近的断点（空格或 `/ ; ( @`），
     退完可能只剩半行——**认了**。实测：宁可短行，也不要把 `pyside6` 切成
-    `pysi` / `de6`，手机上一眼看不出这是什么。只有整段里一个断点都没有
-    （比如一长串没有空格的 hash）时才真的切在词中间。
+    `pysi` / `de6`，手机上一眼看不出这是什么。
+
+    一级断点一个都没有时（整行是同一个长 token，比如
+    `requests.exceptions.ConnectionError`），退到标识符内部的分隔符（`_IDENT_SEP`），
+    再没有才真的切在词中间（一长串没有分隔符的 hash 走这条）。
     """
     w = 0
     cut = 0
@@ -871,6 +890,9 @@ def _take_width(text: str, budget: int, break_at: float = 0.7) -> str:
 
     if _in_word(text[cut - 1]) and _in_word(text[cut]):
         sp = max(text.rfind(c, 0, cut) for c in _BREAK_AFTER)
+        if sp < 0:
+            # 二级回退：没有空格可退，退到标识符内部的分隔符，别硬切在词中间
+            sp = max(text.rfind(c, 0, cut) for c in _IDENT_SEP)
         if sp >= 0 and text[: sp + 1].strip():
             cut = sp + 1               # 断点符号留在行尾，读起来才连贯
 

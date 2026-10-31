@@ -413,3 +413,114 @@ def test_tight_wrap_is_only_the_fallback():
     assert sig.parameters["break_at"].default == 0.7, "兜底阈值被改成默认了"
     assert channels._TIGHT_BREAK_AT > 0.7, "兜底阈值没有比默认更紧"
 
+
+# ---------------------------------------------------------------- W19 标识符不许被折断
+#
+# `_BREAK_AFTER` 里混着 `_` `.` `-` `:` 四个**标识符组成字符**，`_take_width`
+# 会优先在它们后面断行，于是 `summarize_for_card` 在手机上显示成 `summarize_` /
+# `for_card` 两行，用户会以为是两个东西。
+#
+# 判据是表驱动：四段文本各跑一次 `_wxmp_values`（3 槽 width=36），**任意两行
+# 拼起来不许出现「行尾字母数字 + 行首字母数字」**。中文标点被劈不算问题——
+# 中文本来就没有词边界，任意位置断行都是正常排版，只盯拉丁标识符和数字。
+
+_IDENT_TEXTS = {
+    "摘要": (
+        "改完了，修改 wbn/channels.py 的 _wxmp_values 函数，新增 "
+        "summarize_for_card 调用，测试 700 个用例都通过了。"
+    ),
+    "安装": (
+        "这次改的是安装器，新增 _our_hook_exe_paths() 返回候选列表，"
+        "install.py 里的 is_our_hook 支持 onedir。"
+    ),
+    "断行": (
+        "这次修的是摘要那块，导致 summarize_for_card 在手机上显示成两行，"
+        "看着像两个东西。"
+    ),
+    "路径": (
+        "断行阈值里混着下划线，wbn/channels.py 的 _wxmp_values "
+        "就被劈成两行显示出来了。"
+    ),
+}
+
+# 词内字符：拼词时用来把两行的碎片还原成一个完整单词
+_WORD_CHARS = "._-"
+
+# 任务书 §1.3 点名要完整的标识符（外加路径里常见的两个）
+_IDENTS = (
+    "summarize_for_card",
+    "_our_hook_exe_paths()",
+    "install.py",
+    "is_our_hook",
+    "wbn/channels.py",
+    "_wxmp_values",
+)
+
+
+def _split_word(a: str, b: str) -> str | None:
+    """行尾是字母数字、行首也是字母数字 → 被劈开。返回拼起来的词。"""
+    if not a or not b:
+        return None
+    if not (a[-1].isascii() and a[-1].isalnum()):
+        return None
+    if not (b[0].isascii() and b[0].isalnum()):
+        return None
+    i = len(a)
+    while i > 0 and a[i - 1].isascii() and (a[i - 1].isalnum() or a[i - 1] in _WORD_CHARS):
+        i -= 1
+    j = 0
+    while j < len(b) and b[j].isascii() and (b[j].isalnum() or b[j] in _WORD_CHARS):
+        j += 1
+    return a[i:] + b[:j]
+
+
+def _card_of(text: str) -> list[str]:
+    """把一段正文按真实模板（3 槽 width=36）渲染成三行。"""
+    fields = {
+        "kind": "task_done", "kind_label": "任务完成", "emoji": "✅",
+        "title": "✅ WorkBuddy 任务完成", "project": "Work buddy 通知",
+        "duration": "1 分 46 秒", "summary": text, "error": "",
+        "host": "XingHan", "date": "2026-11-01",
+    }
+    v = channels._wxmp_values(
+        fields["title"], text, fields, "00:30", wrap=True, tpl_content=_tpl_for(3, 36)
+    )
+    return [v[k] for k in ("detail", "detail2", "detail3")]
+
+
+@pytest.mark.parametrize("name", list(_IDENT_TEXTS))
+def test_no_identifier_is_split_across_lines(name: str):
+    """§1.4 表驱动：四段文本里任意两行都不许在词中间断开。"""
+    segs = _card_of(_IDENT_TEXTS[name])
+
+    bad = [
+        w for a, b in zip(segs, segs[1:], strict=False) if (w := _split_word(a, b))
+    ]
+    assert not bad, f"{name}：{bad} 被劈开了 → {segs}"
+
+    # 通用规则漏掉 `install.` + `py` 这种（行尾是点号），再按标识符点名核一遍
+    joined = "\n".join(segs)
+    broken = [i for i in _IDENTS if i in joined.replace("\n", "") and i not in joined]
+    assert not broken, f"{name}：{broken} 跨行了 → {segs}"
+
+
+def test_break_after_holds_no_identifier_char():
+    """`_BREAK_AFTER` 里一个标识符组成字符都不许有——这是整条修法的根。"""
+    for ch in "_.-:":
+        assert ch not in channels._BREAK_AFTER, (
+            f"{ch!r} 又混回 _BREAK_AFTER 了：{channels._BREAK_AFTER!r}"
+        )
+
+
+def test_long_dotted_token_still_breaks_at_a_dot():
+    """整行没有空格可退时，二级回退退到点号——不许硬切在词中间。
+
+    `requests.exceptions.ConnectionError` 是 38 个字符的单个 token，
+    一级断点（空格 `/` `;` `(` `@`）一个都找不到。这时候硬切会得到
+    `ConnectionErro` / `r`，比断在点号后面糟得多。
+    """
+    head = channels._take_width("requests.exceptions.ConnectionError", 30)
+    assert head.endswith("."), f"应该在点号后断开，实际 {head!r}"
+    assert "Connection" not in head, head
+
+
