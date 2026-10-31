@@ -14,6 +14,7 @@ from __future__ import annotations
 import copy
 import json
 import os
+import shutil
 import subprocess
 import sys
 import threading
@@ -80,6 +81,115 @@ def resource(*parts: str) -> Path:
     而且测试要能 monkeypatch 它。这个函数一次启动只被调几次，不值得缓存。
     """
     return _resolve_bundle().joinpath(*parts)
+
+
+# ---------------------------------------------------------------- 形态迁移
+#
+# W15 把分发形态从 onefile 换成 onedir，**数据根目录跟着挪了一层**：
+#
+#     onefile（W7.5–W14）   <仓库>/通知.exe          → ROOT = <仓库>
+#     onedir （W15 起）     <仓库>/WBNotify/通知.exe  → ROOT = <仓库>/WBNotify
+#
+# 用户升级上来时，`WBNotify/config.json` 不存在，于是程序**生成一份默认配置**：
+# 微信 appid / appsecret / openid、11 个通道的凭证全部变空，界面上全「待配置」。
+# 而文件其实好端端躺在上一级目录里。这就是 P0-2「凭证丢失」的全部内容——
+# 不是文件没了，是程序换了个地方找，并且一声不响地造了份新的。
+#
+# 所以这里做一次性迁移：**复制**（不是移动）上一级的 config.json / state/ / logs/。
+# 原文件留在原地不动，用户回退到旧版本也照样能用。
+
+MIGRATE_ITEMS = ("config.json", "state", "logs")
+
+# 迁移条件 3 的键校验。用户可能把 zip 解压到 `D:\Tools\`，而
+# `D:\Tools\config.json` 是**别的程序**的配置——没有这两个键就不是我们的。
+REQUIRED_CONFIG_KEYS = ("channels", "version")
+
+
+def _looks_like_our_config(path: Path) -> bool:
+    """能解析成 JSON 对象，且同时含 `channels` 和 `version`。
+
+    键校验不能省：见 `REQUIRED_CONFIG_KEYS` 上面的注释。少一个键就当不是
+    我们的配置——宁可让用户重新填，也不能把别人的配置文件拷进来。
+    """
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except Exception:
+        return False
+    return isinstance(data, dict) and all(k in data for k in REQUIRED_CONFIG_KEYS)
+
+
+def _migrate_from_parent(root: Path) -> Path | None:
+    """onedir 首次启动时，把上一级目录的配置 / 状态 / 日志**复制**过来。
+
+    返回迁移来源目录（`None` = 没迁移）。**四个条件全满足才动手**：
+
+    1. `frozen` 为真，且 `<exe 父目录>/_internal` 是目录（确认自己是 onedir）
+    2. 当前 `root / "config.json"` **不存在**（有就绝不碰——那是用户的现状）
+    3. `<exe 父目录>/../config.json` 存在、能解析、且同时含 `channels` + `version`
+    4. 迁移目标不是 `%LOCALAPPDATA%\\WBNotify`（回落目录不参与，避免自己拷自己）
+
+    第 1 条不只是「判断形态」：源码态下 `root` 就是仓库根，上一级是 `D:\\Code`，
+    那里要真有份同名配置就被误拷了。`_internal` 是 onedir 独有的物理特征。
+    """
+    if not getattr(sys, "frozen", False):
+        return None
+
+    exe_dir = Path(sys.executable).resolve().parent
+    if not (exe_dir / "_internal").is_dir():
+        return None
+
+    # 条件 2
+    if (root / "config.json").exists():
+        return None
+
+    # 条件 4
+    local = os.environ.get("LOCALAPPDATA") or ""
+    if local:
+        fallback = Path(local) / "WBNotify"
+        try:
+            if root.resolve() == fallback.resolve():
+                return None
+        except OSError:
+            pass
+
+    # 条件 3
+    src = exe_dir.parent
+    src_cfg = src / "config.json"
+    if not src_cfg.is_file() or not _looks_like_our_config(src_cfg):
+        return None
+
+    root.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(src_cfg, root / "config.json")
+    for name in MIGRATE_ITEMS[1:]:              # state/ logs/
+        s = src / name
+        if s.is_dir():
+            shutil.copytree(s, root / name, dirs_exist_ok=True)
+    harden_file(root / "config.json")
+    return src
+
+
+def _log_migration(src: Path) -> None:
+    """记一条人话。**故意不用 `store.log` 的第一条路径**。
+
+    迁移发生在 `config` 模块体执行期间，而 `store` 是 `from . import config`
+    的——此刻它可能还没执行完（取决于谁先被 import）。`store.log` 不存在就
+    退回直接写文件，两种都不抛。
+    """
+    msg = f"已从上一级目录迁移配置：{src}"
+    try:
+        from . import store  # 延迟导入：store 依赖 config，顶层导入会成环
+
+        store.log(msg)
+        return
+    except Exception:            # noqa: BLE001
+        pass
+    try:
+        LOG_DIR.mkdir(parents=True, exist_ok=True)
+        stamp = datetime.now().strftime("%H:%M:%S")
+        with (LOG_DIR / f"notify-{datetime.now():%Y-%m-%d}.log").open("a", encoding="utf-8") as f:
+            f.write(f"[{stamp}] {msg}\n")
+    except Exception:            # noqa: BLE001
+        pass
 
 
 # 已下线的通道类型。老版本 config.json 里可能还留着，加载时静默丢弃，
@@ -497,3 +607,14 @@ def get_channel(cfg: dict, ctype: str) -> dict | None:
 
 def enabled_channels(cfg: dict) -> list[dict]:
     return [c for c in cfg.get("channels", []) if c.get("enabled")]
+
+
+# ---------------------------------------------------------------- 模块初始化
+#
+# **必须放在模块体最后**：迁移要用 `harden_file` / `LOG_DIR` / `DEFAULT_CONFIG`，
+# 而且 `store` 是 `from . import config` 的——提前调会在 store 还没执行完时
+# 反向 import 它。放在这里，所有名字都已就绪，`import wbn.config` 返回之前
+# 迁移就已经做完了，所以「任何读写之前」这个要求是满足的。
+_MIGRATED_FROM = _migrate_from_parent(ROOT)
+if _MIGRATED_FROM is not None:
+    _log_migration(_MIGRATED_FROM)
