@@ -32,6 +32,13 @@ from wbn import config  # noqa: E402
 from wbn.winapi import APP_USER_MODEL_ID  # noqa: E402
 
 HOOK_PATH = ROOT / "hook.py"
+
+# 打包形态的两个名字（W15）。`APP_EXE_NAME` 是产物文件名（保留中文，单文件改名
+# 容易且产品名是中文）；`ONEDIR_DIR_NAME` 是产物目录名，**必须是 ASCII**——
+# 它会写进宿主的 hook 命令，而 zip 里的中文目录名在非中文 Windows 上解压
+# 可能变乱码，乱码路径进了 hooks 就是「每次事件都超时」。
+APP_EXE_NAME = "通知.exe"
+ONEDIR_DIR_NAME = "WBNotify"
 # 桌面快捷方式指向的唯一入口。**W5 之前这里是 `ui.py`（tkinter 版）**，
 # 那个文件已经删了——不改这一行的后果是：老用户升级后桌面图标还在，
 # 双击报「找不到文件」，而且他想不到是这次更新弄坏的。
@@ -105,18 +112,54 @@ def _our_hook_py_paths() -> list[str]:
     return paths
 
 
+def _our_hook_exe_paths() -> list[str]:
+    """所有「可能是我们写的」exe 路径（已规范化）。
+
+    W15 把分发形态从 onefile 换成 onedir，exe 从
+    `<仓库>/通知.exe` 挪到 `<仓库>/WBNotify/通知.exe`。`sys.executable` 是
+    **新**路径，跟宿主里那条旧命令的字符串对不上——旧条目认不出来 → 清不掉
+    → 每个事件挂两条 → 用户收到两条通知。这就是 W14 §2.3 那个现象换个形态
+    重演，所以这里必须把「历史形态的路径」全列出来：
+
+    | 形态 | 路径 |
+    |---|---|
+    | 当前进程 | `sys.executable` |
+    | onedir（W15 起） | `<exe 目录>/../通知.exe` ← 上一级的 onefile 旧产物 |
+    | onefile（W7.5–W14） | `<exe 目录>/WBNotify/通知.exe` ← 反向迁移 |
+    | 源码态 | `<仓库>/通知.exe` ← 源码版 install 从不写 exe，但用户可能先装过 exe |
+
+    多列一条的代价是「多匹配一个字符串」，少列一条的代价是**用户收到两条通知**。
+    """
+    paths: list[str] = []
+    if getattr(sys, "frozen", False):
+        exe = Path(sys.executable).resolve()
+        paths.append(_norm(str(exe)))
+        # onedir → onefile：现在跑 WBNotify/通知.exe，上一级是仓库根
+        paths.append(_norm(str(exe.parent.parent / f"{APP_EXE_NAME}")))
+        # onefile → onedir：现在跑仓库根的通知.exe，子目录里可能还有旧的
+        paths.append(_norm(str(exe.parent / ONEDIR_DIR_NAME / APP_EXE_NAME)))
+    else:
+        paths.append(_norm(str(ROOT / APP_EXE_NAME)))
+        paths.append(_norm(str(ROOT / ONEDIR_DIR_NAME / APP_EXE_NAME)))
+    # dict.fromkeys 去重且保序：同一个路径可能被上面两行同时命中
+    return [p for p in dict.fromkeys(paths) if p]
+
+
 def is_our_hook(entry: dict) -> bool:
-    """判断某条 hook 配置是不是本程序写入的。"""
-    targets = _our_hook_py_paths()
-    # 打包后写进宿主的是 `"<exe>" hook --app x`，没有 `hook.py` 这个文件名，
-    # 只认 HOOK_PATH 的话 uninstall 会认不出自己写的条目 → 残留一堆指向
-    # 已删除 exe 的 hook，宿主每次事件都白等超时。所以两种身份都认。
-    exe = _norm(str(sys.executable)) if getattr(sys, "frozen", False) else ""
+    """判断某条 hook 配置是不是本程序写入的。
+
+    两种身份都认：`hook.py`（源码版）和 `<exe> hook`（打包版）。
+    **只认具体路径，不认子串。** 原来这里有个 `or "wbn" in cmd` 的兜底，
+    任何人的 hook 命令里只要出现 `wbn` 三个字母（比如路径里带 `wbn-tools`）
+    就会被我们删掉——那是别人的东西，删了就是事故（W14 登记的 P3）。
+    """
+    py_targets = _our_hook_py_paths()
+    exe_targets = _our_hook_exe_paths()
     for h in entry.get("hooks", []) or []:
         cmd = _norm(str(h.get("command", "")))
-        if "hook.py" in cmd and (any(t in cmd for t in targets) or "wbn" in cmd):
+        if "hook.py" in cmd and any(t in cmd for t in py_targets):
             return True
-        if exe and exe in cmd and " hook " in f" {cmd} ":
+        if any(t in cmd for t in exe_targets) and " hook " in f" {cmd} ":
             return True
     return False
 
@@ -158,6 +201,85 @@ def strip_hooks(existing: dict) -> dict:
         if kept:
             out[ev] = kept
     return out
+
+
+def _form() -> str:
+    """当前进程是哪种形态：`onedir` / `onefile` / `source`。
+
+    判据是 `<exe 目录>/_internal` 在不在——那是 onedir 的物理特征，不靠
+    `sys.frozen` 之外任何猜的东西。onefile 解压出来的是 `_MEIPASS`，exe 旁边
+    没有这个目录。
+    """
+    if not getattr(sys, "frozen", False):
+        return "source"
+    return "onedir" if (Path(sys.executable).resolve().parent / "_internal").is_dir() else "onefile"
+
+
+def verify_hooks(targets: list[tuple[str, Path]]) -> list[str]:
+    """重新读一遍 settings.json，逐事件核对。返回不满足的条目（空 = 全过）。
+
+    **`install` 跑完不许只打印「完成」。** 写进去了不等于写对了：W14 那次
+    「每个事件挂两条」就是「写完打印 ✔」的典型——文件确实改了，改成了错的。
+    所以这里把「本该成立的四条」当成断言跑一遍：
+
+        每个事件恰好 1 条我们的命令
+        每条命令都指向当前形态的正确入口
+        0 条指向根目录的裸 通知.exe（onedir 形态下）
+        0 条含 hook.py（onedir 形态下）
+    """
+    form = _form()
+    onedir_exe = f"{ONEDIR_DIR_NAME}/{APP_EXE_NAME}"
+    problems: list[str] = []
+
+    for app, path in targets:
+        if not path.exists():
+            continue
+        hooks = read_json(path).get("hooks") or {}
+        for ev in HOOK_EVENTS:
+            entries = hooks.get(ev) or []
+            cmds = [str(h.get("command", "")) for e in entries
+                    for h in (e.get("hooks") or [])]
+            ours = [c for c in cmds if is_our_hook({"hooks": [{"command": c}]})]
+            if len(ours) != 1:
+                shown = " | ".join(ours) if ours else "（一条都没有）"
+                problems.append(f"{app}/{ev}：我们有 {len(ours)} 条命令（要求恰好 1 条）：{shown}")
+                continue
+
+            c = _norm(ours[0])
+            if form == "onedir":
+                if _norm(onedir_exe) not in c:
+                    problems.append(
+                        f"{app}/{ev}：命令没指向 {ONEDIR_DIR_NAME}\\{APP_EXE_NAME}：{ours[0]}")
+                elif _norm(APP_EXE_NAME) in c and _norm(ONEDIR_DIR_NAME) not in c:
+                    # 防御：上面那条已经要求含 wbnotify/通知.exe，这里挡住
+                    # 「两个都写了但主入口还是根目录那个」的怪写法。
+                    problems.append(f"{app}/{ev}：命令指向根目录的裸 {APP_EXE_NAME}：{ours[0]}")
+                if "hook.py" in c:
+                    problems.append(f"{app}/{ev}：onedir 形态下还挂着 hook.py：{ours[0]}")
+            elif form == "onefile" and "hook.py" in c:
+                problems.append(f"{app}/{ev}：onefile 形态下还挂着 hook.py：{ours[0]}")
+            elif form == "source" and "hook.py" not in c:
+                problems.append(f"{app}/{ev}：源码态应当指向 hook.py，实际：{ours[0]}")
+
+    return problems
+
+
+def warn_old_onefile_exe() -> None:
+    """§2.5：仓库根还有裸的 `通知.exe` 就提一句，**不自动删**。
+
+    那是用户的文件，也可能是他还没迁移完的备份。删别人的东西不是安装器该做的。
+    """
+    if _form() != "onedir":
+        return
+    old = Path(sys.executable).resolve().parent.parent / APP_EXE_NAME
+    if not old.exists():
+        return
+    st = old.stat()
+    stamp = time.strftime("%Y-%m-%d %H:%M", time.localtime(st.st_mtime))
+    print(
+        f"\n⚠ 检测到旧的单文件 {APP_EXE_NAME}（{st.st_size / 1e6:.1f}MB，{stamp}）。"
+        f"\n  hooks 已全部指向 {ONEDIR_DIR_NAME}\\{APP_EXE_NAME}，旧文件不会再被调用，可以手动删除。"
+    )
 
 
 def read_json(path: Path) -> dict:
@@ -407,6 +529,28 @@ def _psdq(text: str) -> str:
     return f'"{esc}"'
 
 
+def _lnk_points_to(lnk: Path, target: str) -> bool:
+    """`.lnk` 磁盘字节里有没有这个目标路径。
+
+    **为什么读字节而不是问 WScript.Shell**：`.lnk` 的本地基础路径按系统 ANSI
+    码页存（中文 Windows 是 GBK），长路径/Unicode 分支按 UTF-16LE 存。而
+    `_ps()` 是按 UTF-8 解 stdout 的——问回来的中文路径是乱码（实测 `通知`
+    → `֪ͨ`），拿它去比永远不等。读原始字节，两种编码都试一遍最省事。
+    """
+    try:
+        raw = lnk.read_bytes()
+    except OSError:
+        return False
+    want = target.replace("/", "\\").lower()
+    for enc in ("gbk", "utf-16-le", "utf-8"):
+        try:
+            if want in raw.decode(enc, "ignore").lower():
+                return True
+        except (LookupError, UnicodeError):
+            continue
+    return False
+
+
 def make_shortcut(
     lnk: Path,
     script: Path,
@@ -450,8 +594,28 @@ def make_shortcut(
         "$s.Save();"
         'Write-Output "OK"'
     )
+    # **改写已存在的 .lnk 会静默失败，必须删掉重建。**
+    #
+    # W15 实测三次（含非沙箱）：桌面上那个 17:45 的 lnk，`CreateShortcut()` 打开、
+    # 赋值、`Save()`、`Write-Output "OK"` 一路成功，而**磁盘上 mtime 一动不动、
+    # TargetPath 还是旧路径**。同一台机器同一个脚本，改成「先 unlink 再新建」
+    # 就正常。所以这里不能省这一步。
+    #
+    # 症状是「install 说 ✔ 已建，双击图标毫无反应」——和本项目其它几个坑一样，
+    # 属于「报成功但其实没做」。删不掉就直接返回 False，不往下装样子。
+    try:
+        lnk.unlink(missing_ok=True)
+    except OSError as e:
+        print(f"  ✘ 删不掉旧的快捷方式 {lnk.name}：{e}")
+        return False
+
+    # **写完还要回读校验。** 删掉重建之后 `lnk.exists()` 只能证明「建出来了」，
+    # 证明不了「目标写对了」。判据落到磁盘字节上（见 `_lnk_points_to`）。
     out = _ps(ps)
     ok = out.strip().endswith("OK") and lnk.exists()
+    if ok and not _lnk_points_to(lnk, py):
+        print("  ✘ 快捷方式写了但没生效：磁盘里的目标不是 " + py)
+        return False
     if ok:
         # 写 AUMID 失败**不算致命**：任务栏图标会退回 Python 图标，但程序能跑。
         # 「能启动」是根本，「图标好看」是锦上添花——不许因为后者 return False。
@@ -616,7 +780,8 @@ def remove_shortcuts() -> None:
 # ------------------------------------------------------------------ 主流程
 
 
-def install(also_legacy: bool = False) -> None:
+def install(also_legacy: bool = False) -> int:
+    """写入 hooks，**写完自己核一遍**。返回退出码（0 = 全过）。"""
     config.ensure_dirs()
     created = config.save_default_if_missing()
     if created:
@@ -641,12 +806,33 @@ def install(also_legacy: bool = False) -> None:
         except Exception as e:
             print(f"  ✘ {app} 写入失败: {e}")
 
+    # ---- 写完必须自己核（§2.4）：写进去了 ≠ 写对了 --------------------
+    problems = verify_hooks(targets)
+    print("\n[核对 hooks]")
+    if problems:
+        print(f"  ✘ {len(problems)} 条不满足：")
+        for p in problems:
+            print(f"      - {p}")
+        print(
+            "\n  这是**会发两遍通知**的状态，别重启宿主。\n"
+            "  多半是旧形态的条目没被认出来——去看 install.is_our_hook 的候选路径列表。",
+            flush=True,
+        )
+    else:
+        n = len(HOOK_EVENTS)
+        where = {"onedir": f"{ONEDIR_DIR_NAME}\\{APP_EXE_NAME}",
+                 "onefile": APP_EXE_NAME, "source": "hook.py"}[_form()]
+        print(f"  ✔ {len(targets)} 个宿主 × {n} 个事件，每事件恰好 1 条，全部指向 {where}")
+
+    warn_old_onefile_exe()
+
     print(
         "\n⚠ 重要：hooks 配置在宿主启动时读取并缓存，"
         "\n   必须【完全退出并重启】WorkBuddy / CodeBuddy 才会生效。"
         "\n   注意 WorkBuddy 点窗口关闭按钮只是隐藏到托盘，"
         "\n   要在托盘图标上右键 → 退出，或用任务管理器结束进程。"
     )
+    return 1 if problems else 0
 
 
 def uninstall() -> None:
@@ -715,8 +901,9 @@ def main() -> int:
         uninstall()
         return 0
 
+    code = 0
     if args.action in ("install", "all"):
-        install(also_legacy=args.also_legacy)
+        code = install(also_legacy=args.also_legacy)
     if args.action in ("shortcut", "all"):
         create_shortcuts(with_autostart=not args.no_autostart)
 
@@ -725,7 +912,7 @@ def main() -> int:
         for line in hooks_status():
             print("  " + line)
         print("\n下一步：双击桌面「AI 任务通知」，选一个手机通道并点『发送测试』。")
-    return 0
+    return code
 
 
 if __name__ == "__main__":

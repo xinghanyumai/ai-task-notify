@@ -14,6 +14,7 @@ W14 §2.3 实测踩到的坑：先在仓库里跑过源码版 `install`（宿主
 
 from __future__ import annotations
 
+import json
 import sys
 
 import install
@@ -81,3 +82,110 @@ def test_uninstall_still_recognizes_the_source_hook(monkeypatch, tmp_path):
     assert "Stop" not in stripped or not stripped["Stop"], (
         f"uninstall 没认出源码版那条，残留在：{stripped}"
     )
+
+
+# ---------------------------------------------------------------- W15：onedir
+
+
+def _onedir_exe(tmp_path):
+    """造一个 onedir 的 exe 路径：`<tmp>/WBNotify/通知.exe` + `_internal/`。"""
+    d = tmp_path / "WBNotify"
+    d.mkdir()
+    (d / "_internal").mkdir()
+    exe = d / "通知.exe"
+    exe.write_bytes(b"stub")
+    return exe
+
+
+def test_onedir_replaces_the_onefile_entry(monkeypatch, tmp_path):
+    """onefile 装过（hooks 指着仓库根的 通知.exe），换成 onedir 再 install。
+
+    旧条目必须被认出来并清掉——`sys.executable` 现在是
+    `WBNotify/通知.exe`，跟旧的 `<仓库>/通知.exe` 不是同一个字符串。
+    认不出来就是每个事件挂两条、用户收到两条通知（W14 §2.3 换个形态重演）。
+    """
+    exe = _onedir_exe(tmp_path)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe), raising=True)
+
+    old = f'"{tmp_path}/通知.exe" hook --app WorkBuddy'
+    existing = {"Stop": [{"hooks": [{"type": "command", "command": old, "timeout": 15}]}]}
+
+    cmds = _cmds(install.merge_hooks(existing, "WorkBuddy"))
+
+    assert not any(c.lower().count("通知.exe") == 1 and "wbnotify" not in c.lower()
+                   for c in cmds), f"根目录那条旧 exe 条目没清掉：{cmds}"
+    assert len(cmds) == 1, f"同一个事件只该有一条我们的 hook，实际 {len(cmds)} 条：{cmds}"
+    assert "wbnotify" in cmds[0].lower(), f"新命令没指向 WBNotify\\通知.exe：{cmds[0]}"
+
+
+def test_onefile_still_replaces_the_onedir_entry(monkeypatch, tmp_path):
+    """反向迁移也要认得出：现在跑根目录的 exe，宿主里挂着 WBNotify 那条。"""
+    exe = tmp_path / "通知.exe"
+    exe.write_bytes(b"stub")
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe), raising=True)
+
+    old = f'"{tmp_path}/WBNotify/通知.exe" hook --app WorkBuddy'
+    existing = {"Stop": [{"hooks": [{"type": "command", "command": old, "timeout": 15}]}]}
+
+    cmds = _cmds(install.merge_hooks(existing, "WorkBuddy"))
+
+    assert len(cmds) == 1, f"反向迁移时旧条目没清掉，实际 {len(cmds)} 条：{cmds}"
+    assert "wbnotify" not in cmds[0].lower(), f"没换成根目录那条：{cmds[0]}"
+
+
+def test_a_path_containing_wbn_is_not_our_hook(monkeypatch, tmp_path):
+    """P3：别人的命令里出现 `wbn` 三个字母，不许被我们删掉。
+
+    原来判据里有个 `or "wbn" in cmd` 的兜底，`wbn-tools` 这种路径会被误判成
+    我们的 hook 然后被删——那是别人的东西。
+    """
+    exe = _onedir_exe(tmp_path)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe), raising=True)
+
+    foreign = {"hooks": [{"type": "command",
+                          "command": "python /opt/wbn-tools/run.py hook.py --app X"}]}
+    existing = {"Stop": [foreign]}
+
+    cmds = _cmds(install.merge_hooks(existing, "WorkBuddy"))
+
+    assert any("wbn-tools" in c for c in cmds), f"把别人的 wbn-tools hook 删了：{cmds}"
+    assert len(cmds) == 2, f"应当「别人的 + 我们的一条」，实际 {len(cmds)} 条：{cmds}"
+
+
+def test_verify_hooks_catches_a_double_entry(monkeypatch, tmp_path):
+    """§2.4：写完必须自己核——一个事件挂两条我们的命令就是「会发两遍」。"""
+    exe = _onedir_exe(tmp_path)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe), raising=True)
+
+    settings = tmp_path / "settings.json"
+    new = install.hook_command("WorkBuddy")
+    old = f'"{tmp_path}/通知.exe" hook --app WorkBuddy'
+    settings.write_text(
+        json.dumps({"hooks": {"Stop": [
+            {"hooks": [{"type": "command", "command": old}]},
+            {"hooks": [{"type": "command", "command": new}]},
+        ]}}),
+        encoding="utf-8",
+    )
+
+    problems = install.verify_hooks([("WorkBuddy", settings)])
+
+    assert problems, "两条并存却没报错——这正是「一条通知发两遍」的状态"
+    assert any("Stop" in p and "2 条" in p for p in problems), problems
+
+
+def test_verify_hooks_passes_after_a_clean_install(monkeypatch, tmp_path):
+    """干净的 9 个事件要全过，否则这个断言本身就成了噪音。"""
+    exe = _onedir_exe(tmp_path)
+    monkeypatch.setattr(sys, "frozen", True, raising=False)
+    monkeypatch.setattr(sys, "executable", str(exe), raising=True)
+
+    settings = tmp_path / "settings.json"
+    settings.write_text(json.dumps({"hooks": install.build_hooks("WorkBuddy")}),
+                        encoding="utf-8")
+
+    assert install.verify_hooks([("WorkBuddy", settings)]) == []
