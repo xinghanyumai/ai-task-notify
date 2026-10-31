@@ -4,7 +4,7 @@
 ![platform](https://img.shields.io/badge/platform-Windows%2010%20%2F%2011-0078D4)
 ![python](https://img.shields.io/badge/python-3.10%2B-3776AB)
 ![core deps](https://img.shields.io/badge/core%20deps-stdlib%20only-brightgreen)
-![channels](https://img.shields.io/badge/channels-10%20%C2%B7%203%20verified-orange)
+![channels](https://img.shields.io/badge/channels-11%20%C2%B7%204%20verified-orange)
 ![license](https://img.shields.io/badge/license-MIT-green)
 
 任务一停就推到手机，**每条通知都能在本地查到发没发出去**。
@@ -88,7 +88,7 @@ Windows 10 / 11 · 个人自用 · 零服务器 · 零订阅费 · 零实名
 | 通道 | 费用 / 实名 | 真实投递验证 | 到达方式 |
 |---|---|---|---|
 | 微信测试号 `wxmp` | 免费不限条 / 不要 | ✅ **100+ 次成功**（另有 128 次失败，见下） | 微信聊天列表 |
-| 微信 ClawBot `clawbot` | 免费 / 不要 | ⚠️ **未验证**（真机发送被 `ret=-2` 拒，见下） | 微信聊天（WorkBuddy 助理会话） |
+| 微信 ClawBot `clawbot` | 免费 / 不要 | ✅ **1 次**（2026-10-31 真机） | 微信聊天（WorkBuddy 助理会话） |
 | 本地日志 `log` | 免费 / — | ✅ 250+ 次 | 文件 |
 | 自定义 Webhook `webhook` | 免费 / — | ✅ 2 次（本地服务） | 你自己的服务 |
 | 企业微信自建应用 `wecom_app` | 免费不限条 / 不要 | ⚠️ **未验证** | 企业微信 / 微信插件 |
@@ -104,12 +104,12 @@ Windows 10 / 11 · 个人自用 · 零服务器 · 零订阅费 · 零实名
 > `ok=False msg=…`——那行是服务端返回的原文。
 
 > **`clawbot` 这条通道读的是 WorkBuddy 自己的运行时状态目录**（`~/.workbuddy-ai/claw-state/`），
-> **那不是公开 API**——WorkBuddy 改了目录结构或编码方式，它就断。所以它排在 `wxmp` 之后、
+> **那不是公开 API**——WorkBuddy 改了目录结构或协议版本，它就断。所以它排在 `wxmp` 之后、
 > 默认关闭，而且允许你手动填 `bot_token` 绕过自动探测。
-> 它「未验证」的具体原因：本机 2026-10-31 真机发送被服务端拒绝，
-> 返回 `{"ret":-2,"errmsg":"invalid arguments"}`——缺 `to_user_id`。这个值本地没有任何数据源
-> （游标文件里只有 token，`getupdates` 只返回空消息列表），只能等你在微信里先给助理发一句话
-> 把会话「热」起来。`ret=-2` 的含义见下面「已经有官方通知」那节。
+> 2026-10-31 真机验证通过（`channel=clawbot ok=True`），但这条链路上有两处是「跟着宿主抄」的：
+> 凭证从它的私有游标文件里解，协议版本号和鉴权头对齐它的客户端实现。
+> 宿主一改，这里就要跟着改——[docs/channels/clawbot.md](docs/channels/clawbot.md) 里存了一张
+> 从宿主 `app.asar` 读出来的协议对照表，就是为这件事准备的。
 
 > **`wxmp` 那 128 次失败全部发生在 2026-10-26 至 10-29**，根因是模板变量前缺「标签：」导致正文渲染为空
 > 而接口仍返回 `errcode: 0`。修复后 10-30 单日 **100+ 次投递全部成功**。这条留在这里是因为它比
@@ -362,7 +362,7 @@ HTTP 200、4 个 IPv4 TLS 握手全 OK），但**照它的 README 逐字配置�
 | [docs/archive/design.md](docs/archive/design.md) | 📦 已归档：tkinter 时代的界面语汇、设计令牌、自绘控件 |
 | [docs/security.md](docs/security.md) | 凭证处理、请求边界、不可信输入、截图脱敏 |
 | [docs/troubleshooting.md](docs/troubleshooting.md) | 症状对照表、日志位置、编码事故完整复盘 |
-| [docs/channels/](docs/channels/) | 10 个通道各一页，申请步骤与坑 |
+| [docs/channels/](docs/channels/) | 11 个通道各一页，申请步骤与坑 |
 | [docs/adr/](docs/adr/) | 7 条决策记录，写的是为什么这样选 |
 | [docs/reviews/](docs/reviews/) | 2026-10-26 的开源就绪审查报告（01–04、07） |
 | [SECURITY.md](SECURITY.md) | 怎么报安全问题、凭证泄露后的处置 |
