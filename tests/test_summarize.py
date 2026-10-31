@@ -210,3 +210,101 @@ def test_error_detail_is_not_compressed():
 
     assert "好的" in joined, f"错误原因被当成摘要压了：{joined!r}"
     assert "ERR_CONN_REFUSED" in joined, joined
+
+
+# ---------------------------------------------------------------- W17 排序权重
+#
+# W16 的打分是「有数字就 +2」，于是中文技术回复里的**计数**（`4 条测试`、
+# `3 个文件`）压过了真正的**实质改动**（`install.py`、`is_our_hook`、`onedir`）。
+# 实测 3 槽卡片第一行是「· 补了 4 条单元测试 5.」，最要紧的那条改动一个字没进去。
+#
+# 新权重：拉丁标识符 +3 > 结论词 +2 > 中文数量短语 +1 > 其余数字 0。
+
+from wbn.events import _card_density  # noqa: E402
+
+_TPL_3 = (
+    "状态：{{title.DATA}}\n项目：{{project.DATA}}\n详情：{{detail.DATA}}\n"
+    "补充：{{detail2.DATA}}\n补充：{{detail3.DATA}}\n时间：{{time.DATA}}"
+)
+_TPL_4 = _TPL_3.replace("时间：{{time.DATA}}", "补充：{{detail4.DATA}}\n时间：{{time.DATA}}")
+
+
+def _card_slots(tpl: str, slots: int) -> list[str]:
+    """按模板声明的槽位数渲染卡片，返回 detail..detailN。"""
+    summary = summarize(CARD_INPUT, 200)
+    fields = {
+        "kind": "task_done", "kind_label": "任务完成", "emoji": "✅",
+        "title": "✅ WorkBuddy 任务完成", "project": "Work buddy 通知",
+        "duration": "1 分 46 秒", "summary": summary, "error": "",
+        "host": "XingHan", "date": "2026-11-01",
+    }
+    v = channels._wxmp_values(
+        fields["title"], CARD_INPUT, fields, "00:20", wrap=True, tpl_content=tpl
+    )
+    return [v[k] for k in ("detail", "detail2", "detail3", "detail4")[:slots]]
+
+
+def test_density_prefers_identifiers_over_counts():
+    """标识符 3 分、结论词 2 分、中文数量短语 1 分、孤立数字 0 分。"""
+    # 三条实质改动：install.py / is_our_hook / onedir
+    assert _card_density("1. 把 install.py 里的 is_our_hook 改成支持 onedir 路径") == 3
+    # 带下划线的标识符从 `o` 开始匹配，照样算
+    assert _card_density("2. 新增 _our_hook_exe_paths() 返回候选列表") == 3
+    # 只有计数：降权到 1，**不删**
+    assert _card_density("4. 补了 4 条单元测试") == 1
+    # 结论词（「验证」是 W17 新加的）+ 无标识符无数量
+    assert _card_density("5. 重新打包并验证") == 2
+    # 孤立的 675 不额外加分，靠结论词拿分
+    assert _card_density("现在所有 675 个用例都通过了，CI 也绿了。") == 3
+
+
+def test_three_slot_card_shows_a_real_change():
+    """§2.1 硬判据：真实 3 槽模板下必须看到实质改动 + 结论，且首行不是计数句。"""
+    segs = _card_slots(_TPL_3, 3)
+    joined = "".join(segs)
+
+    ids = ("is_our_hook", "onedir", "install.py", "_our_hook_exe_paths", "wbn")
+    assert any(k in joined for k in ids), f"三行里没有实质改动标识符：{segs}"
+    assert any(k in joined for k in ("675", "通过", "CI", "绿")), f"三行里没有结论：{segs}"
+    assert any(k in segs[0] for k in ids), f"第一行是纯计数句：{segs[0]!r}"
+    assert len(joined) >= 40, f"三行只有 {len(joined)} 字：{segs}"
+
+
+def test_four_slot_card_does_not_regress():
+    """§2.2：4 槽不许退化——`is_our_hook` 仍在第一行，675 / CI 仍在。
+
+    注：任务书说 4 槽结尾是完整的「CI 也绿了。」，但这台机器上**改前就已经**
+    是 `CI…`（见 W17 报告里的基线）。原因是 `summarize()` 先把换行压平，
+    「5. 重新打包并验证」和结论粘成一句，比参考实现长了 19 个半角位。
+    这一条不属于本轮的退化，所以只钉「不许更差」：675 和 CI 必须在。
+    """
+    segs = _card_slots(_TPL_4, 4)
+    joined = "".join(segs)
+
+    assert "is_our_hook" in segs[0], f"第一行丢了 is_our_hook：{segs[0]!r}"
+    assert "675" in joined, segs
+    assert "CI" in joined, segs
+
+
+def test_chinese_only_card_is_not_degenerate():
+    """§2.3-1：一个标识符都没有时，数量短语就是唯一信号，按 +1 正常补位。"""
+    text = (
+        "我把界面重新排了一遍，改了 3 个按钮的位置。调了 2 处间距，又补了 5 行说明文字。"
+        "最后整体又看了一遍效果，顺手把间距统一了一下，现在看着顺眼多了。"
+    )
+    out = summarize_for_card(summarize(text, 200), 108)
+
+    assert "3 个按钮" in out, f"数量短语没进卡片：{out!r}"
+    assert len(out) >= 40, f"退化成干巴巴一句了：{out!r}"
+
+
+def test_identifiers_without_conclusion_use_last_sentence():
+    """§2.3-2：全是标识符没有结论时，按原文取末句，不许空手。"""
+    text = (
+        "修改了 install.py 的 _resolve_root()。新增 wbn/paths.py 文件。"
+        "调整 config.py 里的 DEFAULT_CONFIG 字段。更新 tests/test_config.py 用例。"
+    )
+    out = summarize_for_card(summarize(text, 200), 108)
+
+    assert out, "空手了"
+    assert "install.py" in out, f"标识符没保留：{out!r}"

@@ -344,7 +344,30 @@ _CARD_POLITE = (
 )
 
 # 结论词。含这些词的句子有信息量，排序时优先，也算「步骤枚举」的豁免条件。
-_CARD_CONCLUSION = ("通过", "失败", "完成", "绿", "红", "错误", "报错", "成功")
+_CARD_CONCLUSION = (
+    "通过", "失败", "完成", "绿", "红", "错误", "报错", "成功",
+    # W17 补两个：`5. 重新打包并验证` 原来 0 分，但「验证」在这类回复里
+    # 就是结论性动作；「已推送」同理。
+    "验证", "推送",
+)
+
+# 拉丁标识符：`install.py` / `is_our_hook` / `onedir` / `_our_hook_exe_paths`。
+# 首位必须是字母（下划线开头的 `_our_hook_exe_paths` 会从 `o` 开始匹配，
+# 长度照样够），后面允许字母数字和 `. _ - /`。
+_CARD_IDENT = re.compile(r"[A-Za-z][A-Za-z0-9_.\-/]{1,}")
+
+# 不算标识符的英文短词。`ok` / `error` / `true` / `false` / `None` 这类
+# 在技术回复里是**状态词**不是标识符，给它们加分等于给噪声加分。
+_CARD_IDENT_STOP = frozenset({
+    "ok", "okay", "error", "true", "false", "none", "null", "nil",
+    "and", "the", "for", "with", "this", "that", "from", "not", "yes", "no",
+    "is", "in", "or", "to", "of", "on", "at", "by", "as", "if", "it", "be",
+    "was", "are", "has", "have", "had", "but", "so", "we", "you", "all",
+})
+
+# 中文数量短语：`4 条` `3 个` `2 处`。**降权到 +1，但不删**——纯中文回复里
+# 它还是唯一能区分「有没有具体信息」的信号（§2.3 第 1 条）。
+_CARD_COUNT_PHRASE = re.compile(r"\d+\s*(?:条|个|处|项|次|行|块)")
 
 # 步骤枚举的开头：`1.` `2.` `-` `•`。全角顿号 / 括号也认。
 _CARD_STEP_PREFIX = re.compile(r"^\s*(?:\d+\s*[.、)）]|[-•·*])\s*")
@@ -424,18 +447,37 @@ def _card_noise(s: str) -> str | None:
     return None
 
 
-def _card_density(s: str) -> int:
-    """信息密度：有数字、有结论词的句子优先补位。
+def _card_is_ident(token: str) -> bool:
+    """这个拉丁词算不算「实质改动标识符」。"""
+    t = token.strip(".,;:()[]{}\"'")
+    if len(t) < 3:
+        return False
+    return t.lower() not in _CARD_IDENT_STOP
 
-    打分前先剥掉步骤标记——`4. 补了 4 条单元测试` 里真正有信息量的是那个
-    `4 条`，标记里的 `4.` 不算，否则每条步骤都「含数字」，排序等于没排。
+
+def _card_density(s: str) -> int:
+    """信息密度：**标识符 > 结论词 > 数量短语 > 其余数字**。
+
+    打分前先剥掉步骤标记——`4. 补了 4 条单元测试` 里标记的 `4.` 不算数。
+
+    W17 换掉了 W16 那套「有数字就 +2」。原因是中文技术回复里的数字绝大多数
+    出现在**计数**里：`4 条测试`、`3 个文件`、`2 处`——这些说明不了改了什么。
+    真正说明「改了什么」的是拉丁标识符：`install.py`、`is_our_hook`、`onedir`。
+
+    W16 实测的病根就在这：那段输入里六句话，三条实质改动（`is_our_hook` /
+    `_our_hook_exe_paths` / `or "wbn" in cmd`）全是 0 分，唯一有数字的
+    「补了 4 条单元测试」拿 2 分排第一，于是手机上第一行是「补了 4 条单元测试」，
+    最要紧的「把 is_our_hook 改成支持 onedir 路径」一个字都没进卡片。
     """
     body = _CARD_STEP_PREFIX.sub("", s)
     score = 0
-    if re.search(r"\d", body):
-        score += 2
+    if any(_card_is_ident(m) for m in _CARD_IDENT.findall(body)):
+        score += 3
     if any(w in body for w in _CARD_CONCLUSION):
         score += 2
+    if _CARD_COUNT_PHRASE.search(body):
+        score += 1
+    # 其余数字不加分：结论句里已经有结论词了，单独的 `675` 不额外说明什么。
     return score
 
 
