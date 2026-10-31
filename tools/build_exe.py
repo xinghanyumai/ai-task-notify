@@ -1,11 +1,23 @@
 #!/usr/bin/env python
-"""打包成单文件 exe，并在打包后把「只有干净机器才暴露」的三件事各验一遍。
+"""打包成绿色版文件夹（onedir），并在打包后把「只有干净机器才暴露」的三件事各验一遍。
 
-    python tools/build_exe.py            # onefile（默认，交付形态）
-    python tools/build_exe.py --onedir   # onedir（只用于对比启动耗时）
+    python tools/build_exe.py             # onedir（默认，W15 起的交付形态）
+    python tools/build_exe.py --onefile   # onefile（只用来对比 / 回退）
     python tools/build_exe.py --no-verify # 只打包，跳过打包后的核对
 
-产物：项目根目录的 `通知.exe`（W7.5 起；之前在 `dist/`）。
+产物：项目根目录的 `WBNotify/`（W15 起；W7.5–W14 是根目录的 `通知.exe`）。
+
+--------------------------------------------------------------------------
+为什么从 onefile 换成 onedir（W15 §0）
+--------------------------------------------------------------------------
+`通知.exe hook` 是宿主每个事件都要跑一次的东西。onefile 每次调用都要把整个包
+自解压到 `%TEMP%\\_MEIxxxx`，本机实测 **1620 / 1512 / 1861 ms**；同样的 payload
+换 onedir 之后是 **599 ms（9 次中位数）**。差的这 1 秒不是「慢一点」——本项目
+hooks 挂了 9 个事件，等于「AI 每完成一次任务，界面卡 1.5 秒」。
+
+`--onefile` 保留着：将来要对比、要回退、要给「就想要单文件」的人留条路，都靠它。
+但**默认是 onedir**，参数名也跟着反过来（`--onedir` 那个词在默认 onedir 之后
+就没意义了，留着会让下一个人看错）。
 
 --------------------------------------------------------------------------
 为什么需要这个脚本，而不是直接 `pyinstaller notify.spec`
@@ -19,7 +31,7 @@
 3. `excludes` 排错 → 某一页点开就崩（本机不会走 excludes）
 
 第 2 件是这个脚本能**完全自动化**验的（`check_webui`：源码 N 个文件，
-exe 里必须也是这 N 个，逐个点名对）。第 1、3 件只能自动验到「exe 能起、
+产物里必须也是这 N 个，逐个点名对）。第 1、3 件只能自动验到「能起、
 `--version` 能返回」，剩下的五页 + 发一条消息必须人工过——那部分在
 `docs/prompts/W7-单文件打包.md` §4 的第 4、5 条，不许用本脚本代替。
 
@@ -27,9 +39,10 @@ exe 里必须也是这 N 个，逐个点名对）。第 1、3 件只能自动验
 脚本会自己做的检查
 --------------------------------------------------------------------------
     打包前  preflight()      spec / manifest / version_info / 资源目录都在
-    打包后  check_layout()   根目录有 通知.exe、没有 通知/、体积在 18–26MB
-            check_webui()    源码 webui 文件数 == exe 内文件数，且逐个点名对
-            check_smoke()    `通知.exe --version` 退出码为 0
+    打包后  check_layout()   onedir：WBNotify/通知.exe + _internal/ + webui + 根目录无裸 exe
+                             onefile：根目录 通知.exe、没有 WBNotify/、体积 18–26MB
+            check_webui()    源码 webui 文件数 == 产物内文件数，且逐个点名对
+            check_smoke()    `--version` 退出码为 0
             report()         体积、耗时
 
 **`check_webui` 是这里唯一不能省的一条。** 数字对不上就是 `datas` 漏了，
@@ -59,16 +72,34 @@ APP_NAME = "通知"
 # 只要漏改一处（尤其是 `build()` 没传 `--distpath`），产物就还在 `dist/` 里，
 # 而所有常量看上去都改了。现在凡是要写路径的地方直接用 `ROOT`。
 EXE = ROOT / f"{APP_NAME}.exe"
-ONEDIR_DIR = ROOT / APP_NAME
+# onedir 产物目录。**名字必须是 ASCII**（W15 §1.1）：它会写进宿主的
+# `settings.json`，zip 里的中文目录名在非中文 Windows 上解压可能变乱码，
+# 而乱码路径进了 hooks 就是「每次事件都超时」。spec 里的 `COLLECT(name=...)`
+# 必须和这里一致，否则本脚本会报「没找到产物」而 build/ 里其实打好了。
+ONEDIR_DIR = ROOT / "WBNotify"
 
-# 体积上限（任务书 §4 第 2 条）。超了不是「警告一下」——它意味着
+# onefile 的体积上限（任务书 §4 第 2 条）。超了不是「警告一下」——它意味着
 # 有东西没排干净（最典型的是 numpy / cv2 被某个 hook 又拖回来）。
+# **只对 onefile 生效**，onedir 用 `ONEDIR_SIZE_RANGE_MB` 的上限。
 SIZE_LIMIT_MB = 40
 
-# 体积**预期**区间（W7.5 §2.1 第 3 条）。挪位置前实测 20,162,588 B ≈ 19.2MB。
+# onefile 体积**预期**区间（W7.5 §2.1 第 3 条）。挪位置前实测 20,162,588 B ≈ 19.2MB。
 # 偏小 = 打出了空壳（`hiddenimports` / `datas` 没进包，第一版就踩过：12.1MB，
 # `--version` 退出码 0，全绿，而五个子命令一个都没进包）。
 EXE_SIZE_RANGE_MB = (18.0, 26.0)
+
+# onedir 目录体积**预期**区间（W15 §1.2）。
+#
+# 55–90 是 PM 按 onefile 20MB 反推的估值，**第一次实测后允许调整一次**，
+# 调整时把实测值和理由写进报告。**不许为了让它变绿而放宽区间**——
+# 区间是判据，不是装饰。
+#
+# 实测（2026-10-31，W15 §0 那次 onedir 构建）：整个目录 38MB。原始区间
+# (55, 90) 是按「onefile 20MB 反推」估的，实际打出来只有 38MB——偏小不是
+# 空壳，是 onefile 的 20MB 本身带了压缩、onedir 摊开后 DLL 反而更小。
+# 按任务书「允许调整一次」的授权，改成 (33, 90)：下限取实测 38 的 0.87 倍，
+# 挡住「少了 _internal 一大半」的空壳，又不至于把正常构建判红。
+ONEDIR_SIZE_RANGE_MB = (33.0, 90.0)
 
 # 冒烟等多久（秒）。本机 1.2~2.4s；2026-10-30 的 runner 上卡满 300s 不退出。
 #
@@ -134,10 +165,19 @@ def _mb(path: Path) -> float:
     return path.stat().st_size / (1024 * 1024)
 
 
+def _dir_mb(path: Path) -> float:
+    """目录体积：**逐文件累加字节数**，不是 `du`。
+
+    `du` 按块向上取整，几千个小文件能虚报好几 MB，而这里的区间是判据——
+    判据用一把会飘的尺子量，等于没量。
+    """
+    return sum(p.stat().st_size for p in path.rglob("*") if p.is_file()) / (1024 * 1024)
+
+
 # ------------------------------------------------------------------ 打包前
 
 
-def preflight(onedir: bool) -> None:
+def preflight(onefile: bool) -> None:
     """打包前的最低检查。失败直接退出——打到一半才发现更快吗？不，更慢。"""
     print("[1/7] 打包前检查")
     missing = [p for p in REQUIRED if not (ROOT / p).exists()]
@@ -152,18 +192,27 @@ def preflight(onedir: bool) -> None:
     import PyInstaller
 
     print(f"  ✔ PyInstaller {PyInstaller.__version__}")
-    print(f"  ✔ 形态：{'onedir' if onedir else 'onefile'}")
+    print(f"  ✔ 形态：{'onefile' if onefile else 'onedir'}")
 
-    # 上一轮的产物必须清掉。留着的话，这一轮失败时 `通知.exe`
+    # 上一轮的产物必须清掉。留着的话，这一轮失败时产物
     # 还是旧的，人会误以为打包成功了。
     #
-    # **只删 exe 本身（onedir 形态删 `通知/` 目录），一个字节都不许多删。**
+    # **只删产物本身，一个字节都不许多删。**
     # W7.5 之前产物在 `dist/`，这里还顺手清过 `config.json` / `logs` / `state`
     # ——那是对的，`dist/` 里那三样只是「跑 exe 时写下的副本」。
     # 现在产物就在项目根，`config.json` / `logs/` / `state/` 是**源码模式和 exe
     # 模式共用的真实数据**（里面是微信 appid / secret / openid、全部通知记录、
     # 所有会话的 turn_index）。再清那三样就不是清理，是删库。
-    for junk in ([ONEDIR_DIR] if onedir else [EXE]):
+    #
+    # **onedir 形态下 `WBNotify/config.json` 是用户配置（§3 从上一级迁移过来的
+    # 那份真凭证），`state/` 是 token 缓存。整目录 rmtree 会连它们一起删。**
+    # 所以 onedir 只删「上一轮的构建产物」两样：`_internal/` 和 `通知.exe`。
+    # 剩下的 config.json / state/ / logs/ 原样留着——它们不是产物，是数据。
+    junk_paths = (
+        [ONEDIR_DIR / "_internal", ONEDIR_DIR / f"{APP_NAME}.exe"]
+        if not onefile else [EXE]
+    )
+    for junk in junk_paths:
         try:
             if junk.is_dir():
                 shutil.rmtree(junk)
@@ -180,14 +229,21 @@ def preflight(onedir: bool) -> None:
                 f"    底层错误：{e}"
             )
 
+    # 用户数据还在就明说一句，别让人以为「打了一次包，配置就没了」。
+    kept = [n for n in ("config.json", "state", "logs") if (ONEDIR_DIR / n).exists()]
+    if kept:
+        print(f"  · {ONEDIR_DIR.name}/ 里保留了用户数据：{', '.join(kept)}（不是产物，不删）")
+
 
 # ------------------------------------------------------------------ 打包
 
 
-def build(onedir: bool, clean: bool) -> float:
+def build(onefile: bool, clean: bool) -> float:
     print("\n[2/7] PyInstaller")
     env = dict(os.environ)
-    env["WBN_ONEDIR"] = "1" if onedir else "0"
+    # spec 里的内部约定仍是 `WBN_ONEDIR`（两份 spec 会漂移，所以只留一份），
+    # 这里把「onefile」这个新口径翻译过去。
+    env["WBN_ONEDIR"] = "0" if onefile else "1"
     # 让 PyInstaller 的日志走 UTF-8：Windows 默认 cp936，中文名 `通知.exe`
     # 出现在日志里会变成乱码，出问题时没法 grep。
     env["PYTHONUTF8"] = "1"
@@ -213,20 +269,65 @@ def build(onedir: bool, clean: bool) -> float:
 # ------------------------------------------------------------------ 打包后
 
 
-def check_layout(onedir: bool) -> Path:
-    """产物形态：onefile 就是根目录一个 `通知.exe`，且**不许**出现 `通知/` 目录。
+def check_layout(onefile: bool) -> Path:
+    """产物形态。**两种形态各有各的正面判据，不共用「体积差不多」这种模糊标准。**
 
+    onedir 四条（W15 §1.2，必须全过）：
+
+    1. `WBNotify/通知.exe` 存在
+    2. `WBNotify/_internal/` 是目录
+    3. `WBNotify/_internal/webui/index.html` 存在 ← 挡「白屏」
+    4. **仓库根没有裸的 `通知.exe`** ← 挡「onefile 残留被误当成新产物」
+
+    第 4 条不是洁癖：W14 的 onefile 产物就在根目录。切形态后如果不清，
+    `git status` 看不出来（已 ignore），人也会以为「打包成功了」，实际跑的还是
+    旧的那个——而且 `install` 会把 hooks 写成哪条，取决于你跑的是哪个 exe。
+
+    onefile 三条：exe 在、`WBNotify/` 不在、体积在 `EXE_SIZE_RANGE_MB`。
     判据不能是「目录里只有一个文件」——产物在项目根，根目录有十几个源码文件
     （`app.py` / `notify.spec` / `requirements.txt` …），数文件数会把一次正常
-    构建直接判成失败。改成三条正面判据：exe 在、`通知/` 不在、体积在预期区间。
+    构建直接判成失败。
     """
     print("\n[3/7] 产物形态")
-    if onedir:
-        target = ONEDIR_DIR
-        if not (target / f"{APP_NAME}.exe").exists():
-            sys.exit(f"  ✘ 没找到 {target / f'{APP_NAME}.exe'}——去看 build/ 的日志")
-        print(f"  ✔ onedir：{APP_NAME}/（{len(list(target.rglob('*')))} 个条目）")
-        return target / f"{APP_NAME}.exe"
+    if not onefile:
+        exe = ONEDIR_DIR / f"{APP_NAME}.exe"
+        internal = ONEDIR_DIR / "_internal"
+        index = internal / "webui" / "index.html"
+
+        if not exe.exists():
+            sys.exit(f"  ✘ 没找到 {exe}——去看 build/ 的日志（spec 的 COLLECT name 对不上？）")
+        if not internal.is_dir():
+            sys.exit(
+                f"  ✘ {ONEDIR_DIR.name}/ 里没有 _internal/ 目录——"
+                "这不是 onedir 产物（或者 spec 还是 onefile 分支）"
+            )
+        if not index.exists():
+            sys.exit(
+                f"  ✘ 没有 {index}——界面会白屏，而 Python 侧一行异常都没有。"
+                " 去看 notify.spec 的 datas 里 ('webui', 'webui') 还在不在。"
+            )
+        # 第 4 条：根目录的裸 exe 是 onefile 残留。
+        if EXE.exists():
+            st = EXE.stat()
+            sys.exit(
+                f"  ✘ 仓库根还有裸的 {APP_NAME}.exe"
+                f"（{st.st_size / 1e6:.1f}MB，{time.strftime('%Y-%m-%d %H:%M', time.localtime(st.st_mtime))}）"
+                "——那是 onefile 形态的旧产物。\n"
+                "    它会被误当成「刚打出来的新 exe」，而 hooks 也可能还指着它。\n"
+                f"    删掉它再打包：rm {EXE}"
+            )
+
+        mb = _dir_mb(ONEDIR_DIR)
+        lo, hi = ONEDIR_SIZE_RANGE_MB
+        if not lo <= mb <= hi:
+            sys.exit(
+                f"  ✘ {ONEDIR_DIR.name}/ 是 {mb:.1f}MB，不在 {lo:.0f}–{hi:.0f}MB 区间。\n"
+                "  偏小 = 空壳（hiddenimports / datas 没进包）；"
+                "偏大 = 某个 hook 把 numpy / cv2 又拖回来了。"
+            )
+        n = len(list(ONEDIR_DIR.rglob("*")))
+        print(f"  ✔ onedir：{ONEDIR_DIR.name}/（{n} 个条目，{mb:.1f}MB），根目录无裸 exe")
+        return exe
 
     if not EXE.exists():
         sys.exit(
@@ -234,7 +335,7 @@ def check_layout(onedir: bool) -> Path:
         )
     if ONEDIR_DIR.exists():
         sys.exit(
-            f"  ✘ 根目录出现了 {APP_NAME}/ 目录——那是 onedir 形态，onefile 不该有。"
+            f"  ✘ 根目录出现了 {ONEDIR_DIR.name}/ 目录——那是 onedir 形态，onefile 不该有。"
             f" 先删掉 {ONEDIR_DIR} 再打包。"
         )
 
@@ -246,7 +347,7 @@ def check_layout(onedir: bool) -> Path:
             "  偏小多半是打出了空壳（hiddenimports / datas 没进包）；"
             " 偏大常见是某个 hook 把 numpy / cv2 又拖回来了。"
         )
-    print(f"  ✔ onefile：根目录的 {APP_NAME}.exe（{mb:.1f}MB，且没有 {APP_NAME}/ 目录）")
+    print(f"  ✔ onefile：根目录的 {APP_NAME}.exe（{mb:.1f}MB，且没有 {ONEDIR_DIR.name}/ 目录）")
     return EXE
 
 
@@ -264,17 +365,17 @@ def _names_in_exe(exe: Path) -> set[str]:
     return {n.replace("\\", "/") for n in raw}
 
 
-def _pyz_modules(exe: Path, onedir: bool) -> set[str]:
-    """取出 exe 里那个 PYZ 归档中的模块名集合。
+def _pyz_modules(exe: Path, onefile: bool) -> set[str]:
+    """取出产物里那个 PYZ 归档中的模块名集合。
 
-    PYZ 是**第二个**归档（CArchive 里套一个 zlib 压缩的 .pyz），所以不能只读
-    外层 TOC——外层只有二进制和 datas，纯 Python 模块全在里层。
+    PYZ 是**第二个**归档（onefile 的 CArchive 里套一个 zlib 压缩的 .pyz），所以
+    不能只读外层 TOC——外层只有二进制和 datas，纯 Python 模块全在里层。
     第一版核对只看了外层，于是「webui 11==11、体积 12MB、冒烟通过」，
     而五个子命令模块一个都没进包。
     """
     from PyInstaller.archive.readers import CArchiveReader, ZlibArchiveReader
 
-    if onedir:
+    if not onefile:
         # onedir 把 PYZ 单独放在 _internal 下，不用从 exe 里挖。
         cand = sorted((ONEDIR_DIR / "_internal").glob("PYZ*.pyz"))
         if not cand:
@@ -299,10 +400,10 @@ def _pyz_modules(exe: Path, onedir: bool) -> set[str]:
         tmp.unlink(missing_ok=True)
 
 
-def check_modules(exe: Path, onedir: bool) -> None:
+def check_modules(exe: Path, onefile: bool) -> None:
     """REQUIRED_MODULES 必须全在 PYZ 里。**这是「能不能用」的第一道门。**"""
     print("\n[4/7] 子命令模块核对")
-    got = _pyz_modules(exe, onedir)
+    got = _pyz_modules(exe, onefile)
     if not got:
         print("  · 读不到 PYZ（onedir 布局变了？）——跳过这一条，请人工跑一遍子命令")
         return
@@ -319,10 +420,10 @@ def check_modules(exe: Path, onedir: bool) -> None:
     print(f"  ✔ {len(REQUIRED_MODULES)} 个关键模块全在（PYZ 共 {len(got)} 个）")
 
 
-def check_datas(exe: Path, onedir: bool) -> None:
+def check_datas(exe: Path, onefile: bool) -> None:
     """REQUIRED_DATAS 必须都在。**「界面能画出来但点了没反应」就靠这条挡。**"""
     print("\n[5/7] 运行期数据文件")
-    if onedir:
+    if not onefile:
         base = ONEDIR_DIR / "_internal"
         got = {p.relative_to(base).as_posix() for p in base.rglob("*") if p.is_file()}
     else:
@@ -340,18 +441,18 @@ def check_datas(exe: Path, onedir: bool) -> None:
     print(f"  ✔ {len(REQUIRED_DATAS)} 个关键数据文件都在")
 
 
-def check_webui(exe: Path, onedir: bool) -> tuple[int, int]:
-    """源码 webui 文件数 vs exe 内 webui 文件数。**两个数必须相等。**
+def check_webui(exe: Path, onefile: bool) -> tuple[int, int]:
+    """源码 webui 文件数 vs 产物内 webui 文件数。**两个数必须相等。**
 
     这一条单列，是因为它漏了以后的症状最阴：源码形态完全正常，
-    exe 里白屏或没样式，而本机测不出来（本机走的是仓库里的真实目录）。
+    打包后白屏或没样式，而本机测不出来（本机走的是仓库里的真实目录）。
     """
     print("\n[6/7] 前端资源核对")
     src = sorted(
         p.relative_to(ROOT).as_posix() for p in (ROOT / "webui").rglob("*") if p.is_file()
     )
 
-    if onedir:
+    if not onefile:
         inner_dir = ONEDIR_DIR / "_internal" / "webui"
         if not inner_dir.exists():
             sys.exit(f"  ✘ onedir 里没有 {inner_dir}")
@@ -605,16 +706,20 @@ def check_smoke(exe: Path) -> None:
     print(f"  ✔ 退出码 0（{time.perf_counter() - t0:.1f}s）")
 
 
-def report(exe: Path, build_s: float) -> None:
+def report(onefile: bool, exe: Path, build_s: float) -> None:
     print("\n" + "=" * 60)
-    size = _mb(exe)
-    print(f"产物：{exe}")
-    print(f"体积：{size:.1f} MB（上限 {SIZE_LIMIT_MB} MB）")
+    if onefile:
+        size, limit, where = _mb(exe), float(SIZE_LIMIT_MB), exe
+    else:
+        # 体积按**整个目录**算：用户拿到的是文件夹，不是那 5MB 的引导器。
+        size, limit, where = _dir_mb(ONEDIR_DIR), ONEDIR_SIZE_RANGE_MB[1], ONEDIR_DIR
+    print(f"产物：{where}")
+    print(f"体积：{size:.1f} MB（上限 {limit:.0f} MB）")
     print(f"打包：{build_s:.1f}s")
     print("=" * 60)
-    if size > SIZE_LIMIT_MB:
+    if size > limit:
         sys.exit(
-            f"\n✘ 超上限 {SIZE_LIMIT_MB}MB。先查是谁把东西拖回来的：\n"
+            f"\n✘ 超上限 {limit:.0f}MB。先查是谁把东西拖回来的：\n"
             f"    python -m PyInstaller.utils.cliutils.archive_viewer -l {exe}\n"
             "  常见原因：某个 hook 把 numpy / cv2 又收进来了。\n"
             "  **不许为了让体积过关而把在用的模块加进 excludes。**"
@@ -627,21 +732,25 @@ def report(exe: Path, build_s: float) -> None:
 
 
 def main() -> int:
-    ap = argparse.ArgumentParser(description="打包 通知.exe")
-    ap.add_argument("--onedir", action="store_true", help="出 onedir（只用于对比启动耗时）")
+    ap = argparse.ArgumentParser(description="打包 通知（默认 onedir 绿色版文件夹）")
+    ap.add_argument(
+        "--onefile",
+        action="store_true",
+        help="出单文件 exe（只用来对比 / 回退；默认是 onedir）",
+    )
     ap.add_argument("--no-clean", action="store_true", help="不传 --clean（复用 build 缓存，快）")
     ap.add_argument("--no-verify", action="store_true", help="只打包，跳过打包后的核对")
     args = ap.parse_args()
 
-    preflight(args.onedir)
-    dt = build(args.onedir, clean=not args.no_clean)
-    exe = check_layout(args.onedir)
+    preflight(args.onefile)
+    dt = build(args.onefile, clean=not args.no_clean)
+    exe = check_layout(args.onefile)
     if not args.no_verify:
-        check_modules(exe, args.onedir)
-        check_datas(exe, args.onedir)
-        check_webui(exe, args.onedir)
+        check_modules(exe, args.onefile)
+        check_datas(exe, args.onefile)
+        check_webui(exe, args.onefile)
         check_smoke(exe)
-    report(exe, dt)
+    report(args.onefile, exe, dt)
     return 0
 
 

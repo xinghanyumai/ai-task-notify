@@ -189,11 +189,35 @@ def test_package_smoke_checks_exit_code(workflow):
     )
 
 
-def test_package_uploads_exe_artifact(workflow):
+def test_package_uploads_the_onedir_artifact(workflow):
+    """W15 起交付形态是 `WBNotify/` 目录，不再是一个 `通知.exe`。
+
+    上传路径和 artifact 名要跟着变——只改打包脚本不改 CI 的话，CI 会绿，
+    但下载下来的 artifact 是空的（`if-no-files-found: error` 会兜住，
+    可一旦有人顺手改成 `warn` 就静默了）。
+    """
     steps = _steps(workflow, "package")
     upload = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact")]
     assert upload, "没有上传产物，CI 打包就白打了"
-    assert upload[0]["with"]["path"] == "通知.exe"
+    paths = [str(s["with"]["path"]) for s in upload]
+    names = [str(s["with"]["name"]) for s in upload]
+
+    assert "WBNotify/" in paths, f"没上传 onedir 目录：{paths}"
+    assert "notify-onedir" in names, f"artifact 名没跟着改：{names}"
+    assert "通知.exe" not in paths, f"还在传根目录的裸 exe：{paths}"
+
+
+def test_package_uploads_the_zip(workflow):
+    """分发物是 zip（`tools/make_zip.py`），CI 也要把它传上去。"""
+    steps = _steps(workflow, "package")
+    runs = " ".join(str(s.get("run", "")) for s in steps)
+    assert "tools/make_zip.py" in runs, "CI 没打 zip，交付物就还得手工补"
+
+    upload = [s for s in steps if str(s.get("uses", "")).startswith("actions/upload-artifact")]
+    paths = [str(s["with"]["path"]) for s in upload]
+    assert any("WBNotify-v" in p and p.endswith(".zip") for p in paths), (
+        f"zip 没上传：{paths}"
+    )
 
 
 # ---------------------------------------------------------------- pytest 配置

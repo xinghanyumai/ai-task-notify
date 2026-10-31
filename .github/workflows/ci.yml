@@ -120,10 +120,11 @@ jobs:
       # 一旦 stdout 上又开始抛异常，这里立刻以退出码非 0 报出来。
       - name: 冒烟（--version）
         run: |
-          if (-not (Test-Path "通知.exe")) { throw "没产出 通知.exe（应在仓库根）" }
+          if (-not (Test-Path "WBNotify\通知.exe")) { throw "没产出 WBNotify\通知.exe（应在仓库根的子目录里）" }
+          if (-not (Test-Path "WBNotify\_internal\webui\index.html")) { throw "WBNotify\_internal\webui\index.html 不在——界面会白屏" }
           $out = Join-Path $env:RUNNER_TEMP "version.out"
           $err = Join-Path $env:RUNNER_TEMP "version.err"
-          $p = Start-Process -FilePath ".\通知.exe" -ArgumentList "--version" -Wait -PassThru `
+          $p = Start-Process -FilePath ".\WBNotify\通知.exe" -ArgumentList "--version" -Wait -PassThru `
             -RedirectStandardOutput $out -RedirectStandardError $err
           $text = if (Test-Path $out) { Get-Content $out -Raw } else { "" }
           $diag = if (Test-Path $err) { Get-Content $err -Raw } else { "" }
@@ -136,10 +137,23 @@ jobs:
           Write-Output "冒烟通过：退出码 0，输出 $($text.Trim())"
         shell: pwsh
 
+      # 分发形态变了，交付物也从「一个 exe」变成「一个 zip」。
+      # make_zip.py 自己会拒绝打包「源头脏」的目录（config.json / state / logs
+      # 还在 WBNotify/ 里），所以这一步红 = 有凭证会被打进包里。
+      - name: 打 zip
+        run: python tools/make_zip.py
+
       - uses: actions/upload-artifact@v4
         with:
-          name: notify-exe
-          path: 通知.exe
+          name: notify-onedir
+          path: WBNotify/
           # 打包是唯一不可逆的交付物，别让它 7 天后自动消失
+          retention-days: 30
+          if-no-files-found: error
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: notify-zip
+          path: WBNotify-v*-win64.zip
           retention-days: 30
           if-no-files-found: error

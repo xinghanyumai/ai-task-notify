@@ -714,6 +714,19 @@ def main(argv: list[str] | None = None) -> int:
         from wbn import __version__
 
         print(f"AI 任务通知 {__version__}")
+        # `WBN_DEBUG_PATHS=1` 时把三个路径打出来（W15 §4.1）。
+        # **为什么要这个开关**：onedir 之后 `_MEIPASS` 从「%TEMP% 里的解压目录」
+        # 变成了「exe 旁边的 _internal」，`ROOT` 从仓库根变成了 `WBNotify/`。
+        # 这三个值指错一个的症状分别是：配置写到临时目录（重启就没了）、
+        # 界面白屏（webui 从错的地方读）、日志落在找不到的地方——而 Python 侧
+        # **一行异常都没有**。所以留一个能当场看见它们的手段，比事后猜便宜。
+        if os.environ.get("WBN_DEBUG_PATHS") == "1":
+            from wbn import config
+
+            print(f"exe      = {sys.executable}")
+            print(f"_MEIPASS = {getattr(sys, '_MEIPASS', '(源码态，没有这个属性)')}")
+            print(f"ROOT     = {config.ROOT}")
+            print(f"BUNDLE   = {config.BUNDLE}")
         return 0
 
     if argv and argv[0] in SUBCOMMANDS:

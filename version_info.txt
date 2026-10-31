@@ -10,8 +10,8 @@
 # 写成 `040904b0`（英文）也能跑，但中文 Windows 的文件属性页会显示成英文表。
 VSVersionInfo(
     ffi=FixedFileInfo(
-        filevers=(1, 0, 0, 0),
-        prodvers=(1, 0, 0, 0),
+        filevers=(1, 1, 0, 0),
+        prodvers=(1, 1, 0, 0),
         mask=0x3F,
         flags=0x0,
         OS=0x40004,      # VOS_NT_WINDOWS32
@@ -27,12 +27,12 @@ VSVersionInfo(
                     [
                         StringStruct('CompanyName', 'AI 任务通知'),
                         StringStruct('FileDescription', 'AI 任务通知 · 桌面通知客户端'),
-                        StringStruct('FileVersion', '1.0.0.0'),
+                        StringStruct('FileVersion', '1.1.0.0'),
                         StringStruct('InternalName', 'notify'),
                         StringStruct('LegalCopyright', '个人自用，未授权分发'),
                         StringStruct('OriginalFilename', '通知.exe'),
                         StringStruct('ProductName', 'AI 任务通知'),
-                        StringStruct('ProductVersion', '1.0.0.0'),
+                        StringStruct('ProductVersion', '1.1.0.0'),
                     ],
                 )
             ]

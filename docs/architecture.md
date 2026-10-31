@@ -232,7 +232,8 @@ Windows 上不支持彩色 emoji，且界面观感与现代桌面应用差距太
 │   ├── bridge.py        暴露给 JS 的 API，返回值统一 {ok,data,error}
 │   └── winapi.py        Windows 进程级 API（AUMID、命名互斥量），只依赖 ctypes
 ├── tools/               开发 / 验收脚本，**不打包**
-│   ├── build_exe.py     打包 + 打包后七道核对（W7）
+│   ├── build_exe.py     打包 + 打包后七道核对（W7；W15 起默认 onedir）
+│   ├── make_zip.py      把 WBNotify/ 打成分发用 zip（排除凭证 / state / logs）
 │   ├── bench_ui.py      首屏可交互耗时基线（源码形态 / exe 形态两种口径）
 │   ├── a11y_contrast.py 扫真实计算样式的对比度（playwright + CDP）
 │   ├── shot_webview.py  WebView2 窗口截图（WGC；ImageGrab 只能拍到黑块）
@@ -249,10 +250,10 @@ Windows 上不支持彩色 emoji，且界面观感与现代桌面应用差距太
 └── assets/              图标与界面截图
 ```
 
-**打包产物 `通知.exe` 就落在上面这棵树的根上**（W7.5 起；之前在 `dist/` 下，
-那个目录已经没有了）。它**故意不写进树里**——这棵树被 `tests/test_doc_layout.py`
-守着「写了就必须真实存在」，而 exe 只在打完包之后才有，干净克隆和 CI 里不存在，
-写进去会让守卫在没打包的机器上假红。`/通知.exe` 已在 `.gitignore` 里，不进仓库。
+**打包产物是 `WBNotify/` 目录，落在上面这棵树的根上**（W15 起；W7.5–W14 是根目录
+一个 `通知.exe`）。它**故意不写进树里**——这棵树被 `tests/test_doc_layout.py`
+守着「写了就必须真实存在」，而产物只在打完包之后才有，干净克隆和 CI 里不存在，
+写进去会让守卫在没打包的机器上假红。`/WBNotify/` 已在 `.gitignore` 里，不进仓库。
 
 **路径解析分两个根，不许混**（`wbn/config.py`）：
 

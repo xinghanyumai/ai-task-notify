@@ -4,10 +4,10 @@
 用法（不要直接 `pyinstaller notify.spec`，用 `tools/build_exe.py`，
 它会在打包前后各做一遍检查）：
 
-    python tools/build_exe.py            # onefile，默认
-    python tools/build_exe.py --onedir   # onedir，只用来对比启动耗时
+    python tools/build_exe.py            # onedir，默认（W15 起）
+    python tools/build_exe.py --onefile  # onefile，只用来对比 / 回退
 
-产物：项目根目录的 `通知.exe`（`build_exe.py` 用 `--distpath` 指过去；
+产物：`WBNotify/` 目录（`build_exe.py` 用 `--distpath` 指过去；
 单独跑 `pyinstaller notify.spec` 不带 `--distpath` 的话仍会落到 `dist/`）。
 
 --------------------------------------------------------------------------
@@ -166,7 +166,12 @@ if ONEDIR:
         a.datas,
         strip=False,
         upx=False,
-        name="通知",
+        # **目录名必须是 ASCII（W15 §1.1）。** 它会出现在两处用户可见的地方：
+        # 解压后的文件夹、写进宿主 `settings.json` 的 hook 命令。zip 里的中文
+        # 目录名在非中文 Windows 上解压可能变成乱码，而乱码路径一旦写进 hooks
+        # 就是「每次事件都超时」——排查时看到的是一个对不上号的路径。
+        # exe 文件名保留 `通知.exe`：单文件改名容易，且产品名是中文。
+        name="WBNotify",
     )
 else:
     exe = EXE(

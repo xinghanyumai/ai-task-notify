@@ -47,7 +47,8 @@ Windows 10 / 11 · 个人自用 · 零服务器 · 零订阅费 · 零实名
 **代价，先说清楚：**
 
 - 只支持**已经装好 hooks 机制**的宿主。宿主不发 hook，本项目收不到任何东西。
-- 通知延迟取决于宿主：源码形态约 70ms；**单文件 exe 形态每次要自解压，1.5–2.2 秒**，一条通知端到端约 3–4.5 秒。对「任务完成提醒」无感，对「毫秒级告警」不合适。
+- 通知延迟取决于宿主：源码形态约 70ms；**绿色版约 0.4 秒**（本机 9 次采样中位 599ms，
+  最慢 753ms），一条通知端到端约 2 秒。对「任务完成提醒」无感，对「毫秒级告警」不合适。
 - 11 个通道里只有 4 个在真实环境验证过，见下面的[支持矩阵](#支持矩阵)。
 
 ## 为什么不是一堆推送脚本
@@ -76,10 +77,10 @@ Windows 10 / 11 · 个人自用 · 零服务器 · 零订阅费 · 零实名
 ### 什么情况下别装本项目
 
 - 只是想让任务结果出现在微信里 → 装 `wechat-clawbot-push` 就够，**不用装本项目**（详见下面「已经有官方通知」那节）
-- 要毫秒级告警 → exe 形态端到端 3–4.5 秒，不合适
+- 要毫秒级告警 → 绿色版端到端约 2 秒，不合适
 - 不是 Windows → 本项目是 Windows 专有实现（DWM 标题栏、`icacls`、`WebView2`），不跨平台
 - 宿主不发 hooks → 收不到任何东西，装也没用
-- 不想在机器上装 Python → 可以用 exe，但每次 hook 要多等约 2 秒（R54）
+- 不想在机器上装 Python → 用绿色版文件夹，hook 单次约 0.6 秒（比源码版多约 0.2 秒）
 
 ## 支持矩阵
 
@@ -198,46 +199,64 @@ WorkBuddy 点窗口关闭按钮只是隐藏到托盘，要右键托盘图标选�
 端到端只有一个验证方法：在 WorkBuddy 里跑一个长任务，然后看手机。
 测试消息收得到、真实任务一条都没有的话，看 [docs/troubleshooting.md](docs/troubleshooting.md)。
 
-## 打成单文件 exe（可选）
+## 打成绿色版文件夹（可选）
 
-不想在目标机器上装 Python，就打包一个 exe 拷过去：
+不想在目标机器上装 Python，就打包一个文件夹拷过去：
 
 ```bash
 .venv\Scripts\python.exe -m pip install pyinstaller
 .venv\Scripts\python.exe tools\build_exe.py
+.venv\Scripts\python.exe tools\make_zip.py
 ```
 
-产物是**项目根目录的 `通知.exe`**（约 19MB，一个文件）。`build_exe.py` 会在打包前后做七道
-核对：产物形态（根目录有 exe、没有 `通知/` 目录、体积 18–26MB）、五个子命令模块在不在包里、
-pywebview 的注入脚本在不在、`webui/` 文件数源码 == exe、`--version` 冒烟。
-**任何一道红都别绕过**——它们挡的是「exe 能启动但一件正事都干不了」那类问题，本机测不出来。
+产物是 **`WBNotify/` 目录（约 38MB）**，`tools\build_exe.py` 打完会顺手做成
+`WBNotify-v1.1.0-win64.zip`（`make_zip.py` 也可以单独跑）。`build_exe.py` 会在打包前后
+做七道核对：产物形态（`WBNotify\通知.exe` 在、`_internal\` 在、`_internal\webui\index.html`
+在、根目录没有残留的旧 `通知.exe`、体积 33–90MB）、五个子命令模块在不在包里、
+pywebview 的注入脚本在不在、`webui/` 文件数源码 == 产物、`--version` 冒烟。
+**任何一道红都别绕过**——它们挡的是「能启动但一件正事都干不了」那类问题，本机测不出来。
 
-**交付只发根目录的 `通知.exe` 这一个文件，别把整个项目文件夹发出去。** 它和源码模式共用
-同一份 `config.json` / `logs\` / `state\`——里面是你本机的微信 appid / appsecret / openid
-和全部通知记录。
+> 为什么是文件夹而不是单文件：单文件 exe 每次被 hook 调用都要自解压到 `%TEMP%`，
+> 本机实测 **1620ms**；同一个 payload 换成文件夹形态是 **599ms**（9 次中位数）。
+> 本项目挂了 9 个 hook 事件，差的这 1 秒就是「AI 每完成一次任务，界面卡 1.5 秒」。
+> 想要单文件仍然可以：`tools\build_exe.py --onefile`。
 
-**发给别人时只发 `通知.exe` 这一个文件。** `config.json` 里是你的微信凭证，
-连同目录一起打包就等于把推送权限一起给了对方——对方能往你的微信里发消息，
-也能看到你历史上的每一条通知。真发出去了怎么补救见
+**交付发 `WBNotify-v1.1.0-win64.zip`，对方解压即用。** 别把**自己的** `WBNotify/` 目录
+直接打包发出去（里面可能有 `config.json`），用 `make_zip.py` 打出来的包不含它。
+
+`config.json` 里是你的微信凭证，连同目录一起打包就等于把推送权限一起给了对方——
+对方能往你的微信里发消息，也能看到你历史上的每一条通知。真发出去了怎么补救见
 [docs/troubleshooting.md](docs/troubleshooting.md#我把整个文件夹发给朋友了有问题吗)。
 
 ```bash
-通知.exe                 # 开设置窗口（双击就是这个）
-通知.exe install         # 挂 hooks + 建快捷方式
-通知.exe uninstall       # 撤掉
-通知.exe tray --silent   # 托盘常驻
-通知.exe --version       # 版本号
+WBNotify\通知.exe                 # 开设置窗口（双击就是这个）
+WBNotify\通知.exe install         # 挂 hooks + 建快捷方式
+WBNotify\通知.exe uninstall       # 撤掉
+WBNotify\通知.exe tray --silent   # 托盘常驻
+WBNotify\通知.exe --version       # 版本号
 ```
 
-配置和日志写在 **exe 旁边**，也就是项目根目录（`config.json` / `logs/` / `state/`）。
-这和源码模式是**同一份**——在界面里改完，两边看到的一致。放在 `C:\Program Files`
-这种写不进去的目录时，自动回落到 `%LOCALAPPDATA%\WBNotify\`——状态页会显示实际用的路径。
+**安装位置**：解压到任意可写目录（比如 `D:\Tools\WBNotify`）就能用。
+别放进 `C:\Program Files`——那里不可写，配置会回落到 `%LOCALAPPDATA%\WBNotify\`，
+状态页会显示实际路径。
+
+配置和日志写在 **exe 旁边**，也就是 `WBNotify\` 里（`config.json` / `logs\` / `state\`）。
+**这和源码模式不再是同一份**：源码模式在仓库根，绿色版在 `WBNotify\`。这是好事
+（互不污染），但升级时要知道——第一次启动会**自动从上一级目录复制**一份过来
+（`config.json` / `state\` / `logs\`，原文件留在原地不动），日志里有一行
+`已从上一级目录迁移配置：<源路径>`。
 
 排查问题用调试版（带控制台，能看见 traceback）：
 
 ```bash
-set WBN_CONSOLE=1 && .venv\Scripts\python.exe -m PyInstaller --noconfirm --distpath . notify.spec
+set WBN_CONSOLE=1 && .venv\Scripts\python.exe tools\build_exe.py --onefile
 通知-debug.exe
+```
+
+想看三个关键路径（`_MEIPASS` / `ROOT` / `BUNDLE`）实际指向哪：
+
+```bash
+set WBN_DEBUG_PATHS=1 && WBNotify\通知.exe --version
 ```
 
 ## 选哪个通道
@@ -377,12 +396,11 @@ HTTP 200、4 个 IPv4 TLS 握手全 OK），但**照它的 README 逐字配置�
 
 exe 形态另外三条：
 
-- **每次 hook 事件要多等约 2 秒。** onefile 每次启动都要把 19MB 解压到
-  `%TEMP%`。宿主的 hook 超时是 10–15 秒，不会超时，但 agent 的每次事件都被
-  拖了一下。嫌慢就用源码形态（`python app.py install`），那条路径 ~70ms。
-  实测口径（R54）：hook 单次 **1571–2259ms**，一条通知端到端 **3–4.5 秒**、写盘 **66MB**；
-  exe 双击到窗口可交互中位数 **2549ms**（含自解压约 **970ms**），内存 private **381.3MB** /
-  working set **578.2MB**。
+- **每次 hook 事件要多等约 0.2 秒。** 绿色版不用自解压，但每次仍要冷启一次
+  Python 运行时。实测口径（W15，同机同一条命令同一个 payload）：hook 单次
+  **599ms**（9 次中位数，最慢 753ms），源码形态 **412–477ms**。
+  对照：W15 之前的单文件形态是 **1620ms**（中位数），每次都要把 19MB 解压到
+  `%TEMP%`——那条路已经不走默认了，`--onefile` 还留着。
 - **WebView2 沙箱默认开着**，只在判定「窗口一片黑」时自动带 `--no-sandbox`
   重启一次。想强制带沙箱排查：`set WBN_WEBVIEW_SANDBOX=1`。
 - **没在「没装 Python 的干净机器」上验过**（开发机只有一台）。本机能做到的
